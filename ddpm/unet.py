@@ -3,6 +3,258 @@ import torch.nn as nn
 
 
 
+
+class UNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        pass
+
+    def forward(self):
+        pass
+
+
+#-----------------------------------------------------------------------------
+class DownBlock(nn.Module):
+    """
+    down block/s of the u-net used in ddpm models
+    steps:
+        1. Conv3 followed by TimeEmbedding
+        2. Conv3 layer
+        3. add a skip-connection from the input to the output of step 2
+        4. self-attention on the output
+        5. add a skip-connection from step 3 to the output of step 4
+        6. down-sampling (if enabled)
+
+    """
+    def __init__(self, in_channels, out_channels, time_embed_dim=128, num_layers=2, down_sample=True):
+        super().__init__()
+        self.num_layers = num_layers
+        self.conv1 = nn.ModuleList([
+            Conv3(
+                in_channels=in_channels if i==0 else out_channels,
+                out_channels=out_channels,
+                num_groups=8,
+                kernel_size=3,
+                norm=True,
+                activation=True
+            ) for i in range(self.num_layers)
+        ])
+        self.conv2 = nn.ModuleList([
+            Conv3(
+                in_channels=out_channels,
+                out_channels=out_channels,
+                num_groups=8,
+                kernel_size=3,
+                norm=True,
+                activation=True
+            ) for _ in range(self.num_layers)
+        ])
+        self.time_embedding = nn.ModuleList([
+            TimeEmbedding(
+                output_dim=out_channels,
+                embed_dim=time_embed_dim
+            ) for _ in range(self.num_layers)
+        ])
+        self.attention = nn.ModuleList([
+            Attention(
+                num_channels=out_channels,
+                num_groups=8,
+                num_heads=4,
+                norm=True
+            ) for _ in range(self.num_layers)
+        ])
+        self.down_sampling = DownSampling(
+            in_channels=out_channels,
+            out_channels=out_channels,
+            down_sampling_factor=2,
+            conv_block=True,
+            max_pool=True
+        ) if down_sample else nn.Identity()
+        self.resnet = nn.ModuleList([
+            nn.Conv2d(
+                in_channels=in_channels if i == 0 else out_channels,
+                out_channels=out_channels,
+                kernel_size=1
+            ) for i in range(num_layers)
+
+        ])
+
+    def forward(self, batch, embed_time):
+
+        output = batch
+        for i in range(self.num_layers):
+            resnet_input = output
+            output = self.conv1[i](output)
+            output = output + self.time_embedding[i](embed_time)[:, :, None, None]
+            output = self.conv2[i](output)
+            output = output + self.resnet[i](resnet_input)
+            out_attn = self.attention[i](output)
+            output = output + out_attn
+
+        output = self.down_sampling(output)
+
+        return output
+
+#------------------------------------------------------------------------------
+class MiddleBlock(nn.Module):
+    """
+    middle block/s of the u-net used in ddpm models
+    steps:
+        1. resnet with time embedding
+        2. n  self-attention + resnet with time embedding
+    """
+    def __init__(self, in_channels, out_channels, time_embed_dim=128, num_layers=2):
+        super().__init__()
+        self.num_layers = num_layers
+        self.conv1 = nn.ModuleList([
+            Conv3(
+                in_channels=in_channels if i == 0 else out_channels,
+                out_channels=out_channels,
+                num_groups=8,
+                kernel_size=3,
+                norm=True,
+                activation=True
+            ) for i in range(self.num_layers+1)
+        ])
+        self.conv2 = nn.ModuleList([
+            Conv3(
+                in_channels=out_channels,
+                out_channels=out_channels,
+                num_groups=8,
+                kernel_size=3,
+                norm=True,
+                activation=True
+            ) for _ in range(self.num_layers+1)
+        ])
+        self.time_embedding = nn.ModuleList([
+            TimeEmbedding(
+                output_dim=out_channels,
+                embed_dim=time_embed_dim
+            ) for _ in range(self.num_layers+1)
+        ])
+        self.attention = nn.ModuleList([
+            Attention(
+                num_channels=out_channels,
+                num_groups=8,
+                num_heads=4,
+                norm=True
+            ) for _ in range(self.num_layers)
+        ])
+        self.resnet = nn.ModuleList([
+            nn.Conv2d(
+                in_channels=in_channels if i == 0 else out_channels,
+                out_channels=out_channels,
+                kernel_size=1
+            ) for i in range(num_layers+1)
+
+        ])
+
+    def forward(self, batch, embed_time):
+        output = batch
+
+        resnet_input = output
+        output = self.conv1[0](output)
+        output = output + self.time_embedding[0](embed_time)[:, :, None, None]
+        output = self.conv2[0](output)
+        output = output + self.resnet[0](resnet_input)
+
+        for i in range(self.num_layers):
+            out_attn = self.attention[i](output)
+            output = output + out_attn
+            resnet_input = output
+            output = self.conv1[i + 1](output)
+            output = output + self.time_embedding[i + 1](embed_time)[:, :, None, None]
+            output = self.conv2[i + 1](output)
+            output = output + self.resnet[i + 1](resnet_input)
+
+        return output
+
+#------------------------------------------------------------------------------
+class UpBlock(nn.Module):
+    """
+    up-sampling of the u-net used in ddpm models
+    steps:
+        1. up-sampling
+        2. conv3 + time embedding
+        3. conv3
+        4. skip-connection from 1.
+        5. self-attention
+        6. skip-connection from 3.
+
+    """
+    def __init__(self, in_channels, out_channels, time_embed_dim=128, num_layers=2, up_sampling=True):
+        super().__init__()
+        self.num_layers = num_layers
+        self.conv1 = nn.ModuleList([
+            Conv3(
+                in_channels=in_channels if i == 0 else out_channels,
+                out_channels=out_channels,
+                num_groups=8,
+                kernel_size=3,
+                norm=True,
+                activation=True
+            ) for i in range(self.num_layers)
+        ])
+        self.conv2 = nn.ModuleList([
+            Conv3(
+                in_channels=out_channels,
+                out_channels=out_channels,
+                num_groups=8,
+                kernel_size=3,
+                norm=True,
+                activation=True
+            ) for _ in range(self.num_layers)
+        ])
+        self.time_embedding = nn.ModuleList([
+            TimeEmbedding(
+                output_dim=out_channels,
+                embed_dim=time_embed_dim
+            ) for _ in range(self.num_layers)
+        ])
+        self.attention = nn.ModuleList([
+            Attention(
+                num_channels=out_channels,
+                num_groups=8,
+                num_heads=4,
+                norm=True
+            ) for _ in range(self.num_layers)
+        ])
+        self.up_sampling = UpSampling(
+            in_channels=in_channels,
+            out_channels=in_channels//2,
+            up_sampling_factor=2,
+            conv_block=True,
+            up_sampling=True
+        ) if up_sampling else nn.Identity()
+        self.resnet = nn.ModuleList([
+            nn.Conv2d(
+                in_channels=in_channels if i == 0 else out_channels,
+                out_channels=out_channels,
+                kernel_size=1
+            ) for i in range(num_layers)
+
+        ])
+
+    def forward(self, batch, skip_connection, embed_time):
+
+        batch = self.up_sampling(batch)
+        batch = torch.cat(tensors=[batch, skip_connection], dim=1)
+
+        output = batch
+        for i in range(self.num_layers):
+            resnet_input = output
+
+            output = self.conv1[i](output)
+            output = output + self.time_embedding[i](embed_time)[:, :, None, None]
+            output = self.conv2[i](output)
+            output = output + self.resnet[i](resnet_input)
+
+            out_attn = self.attention[i](output)
+            output = output + out_attn
+
+        return output
+
+#------------------------------------------------------------------------
 class Conv3(nn.Module):
     """conv 3 block"""
     def __init__(self, in_channels, out_channels, num_groups=8, kernel_size=3, norm=True, activation=True):
@@ -94,13 +346,11 @@ class UpSampling(nn.Module):
         self.conv_block = conv_block
         self.up_sampling = up_sampling
 
-        # up sampling using convolution
         self.conv = nn.Sequential(
             nn.ConvTranspose2d(in_channels=in_channels, out_channels=out_channels//2 if conv_block else out_channels, kernel_size=4, stride=up_sampling_factor, padding=1),
             nn.Conv2d(in_channels=out_channels//2 if up_sampling else out_channels, out_channels=out_channels//2 if up_sampling else out_channels, kernel_size=1, stride=1, padding=0)
         ) if conv_block else nn.Identity()
 
-        # up sampling using nn.Upsample
         self.up_sample = nn.Sequential(
             nn.Upsample(scale_factor=up_sampling_factor, mode="bilinear", align_corners=False),
             nn.Conv2d(in_channels=in_channels, out_channels=out_channels//2 if conv_block else out_channels, kernel_size=1, stride=1, padding=0)
@@ -116,7 +366,12 @@ class UpSampling(nn.Module):
 
         return torch.cat(tensors=[self.conv(batch), self.up_sample(batch)], dim=1)
 
-#-----------------------------------------------------------------------------
+
+
+
+
+
+
 
 
 

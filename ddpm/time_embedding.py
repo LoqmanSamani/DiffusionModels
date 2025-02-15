@@ -2,26 +2,24 @@ import torch
 import torch.nn as nn
 
 
+
 class TimeEmbedding(nn.Module):
     """
-    positional time embedding module.
-    implements sinusoidal embeddings based on the paper "attention is all you need".
+    positional time embedding
     """
-
-    def __init__(self, embedd_dim):
+    def __init__(self, embed_dim):
         super().__init__()
-        assert embedd_dim % 2 == 0, "The embedding dimension must be even"
-        self.embedd_dim = embedd_dim
+        assert embed_dim % 2 == 0, "The embedding dimension must be divisible by two"
+        self.embed_dim = embed_dim
 
-    def forward(self, time_steps):
+    def forward(self,  time_steps):
 
-        time_steps = time_steps[:, None]  # expand to (batch_size, 1)
-        log_base = torch.log(torch.tensor(10000.0, device=time_steps.device))
-        factor = torch.exp(- (2 * torch.arange(self.embedd_dim // 2, device=time_steps.device, dtype=torch.float32) / self.embedd_dim) * log_base)
-        embedded_time = time_steps * factor
-        out = torch.cat(tensors=[torch.sin(embedded_time), torch.cos(embedded_time)], dim=-1)  # shape: (batch_size, embedd_dim)
+        factor = (2 * torch.arange(start=0, end=self.embed_dim//2, dtype=torch.float32, device=time_steps.device)) / self.embed_dim
+        embed_time = time_steps[:, None]
+        embed_time = embed_time / factor
+        embed_time = torch.cat(tensors=[torch.sin(embed_time), torch.cos(embed_time)], dim=1)
 
-        return out
+        return embed_time
 
 
 
