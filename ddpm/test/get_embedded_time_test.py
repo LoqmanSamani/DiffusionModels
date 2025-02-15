@@ -1,5 +1,5 @@
 import torch
-from time_embedding import TimeEmbedding
+from unet import GetEmbeddedTime
 
 
 
@@ -7,7 +7,7 @@ def test_time_embedding():
     batch_size = 4
     embedd_dim = 16
 
-    time_emb = TimeEmbedding(embedd_dim)
+    time_emb = GetEmbeddedTime(embedd_dim)
 
     time_steps = torch.randint(0, 1000, (batch_size,))
     embeddings = time_emb(time_steps)

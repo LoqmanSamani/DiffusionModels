@@ -3,15 +3,110 @@ import torch.nn as nn
 
 
 
-
 class UNet(nn.Module):
-    def __init__(self):
+    """
+    U-net architecture which is used to predict noise
+    in the paper "Denoising Diffusion Probabilistic Model"
+    """
+    def __init__(
+            self,
+            in_channels,
+            down_channels,
+            mid_channels,
+            up_channels,
+            down_sampling,
+            time_embed_dim,
+            num_down_blocks,
+            num_mid_blocks,
+            num_up_blocks
+    ):
         super().__init__()
-        pass
+        self.in_channels = in_channels or 3 # RGB
+        self.down_channels = down_channels or [32, 64, 128, 256]
+        self.mid_channels = mid_channels or [256, 256, 128]
+        self.up_channels = up_channels or [256, 128, 64, 16]
+        self.down_sampling = down_sampling or [True, True, False]
+        self.time_embed_dim = time_embed_dim or 128
+        self.num_down_blocks = num_down_blocks or 2
+        self.num_mid_blocks = num_mid_blocks or 2
+        self.num_up_blocks = num_up_blocks or 2
 
-    def forward(self):
-        pass
+        self.up_sampling = list(reversed(self.down_sampling))
+        # initial convolution layer
+        self.conv1 = nn.Conv2d(
+            in_channels=self.in_channels,
+            out_channels=self.down_channels[0],
+            kernel_size=3,
+            padding=1
+        )
+        # initial time embedding projection
+        self.time_projection = nn.Sequential(
+            nn.Linear(in_features=self.time_embed_dim, out_features=self.time_embed_dim),
+            nn.SiLU(),
+            nn.Linear(in_features=self.time_embed_dim, out_features=self.time_embed_dim)
+        )
+        # down blocks
+        self.down_blocks = nn.ModuleList([
+            DownBlock(
+                in_channels=self.down_channels[i],
+                out_channels=self.down_channels[i+1],
+                time_embed_dim=self.time_embed_dim,
+                num_layers=self.num_down_blocks,
+                down_sample=self.down_sampling[i]
+            ) for i in range(len(self.down_channels)-1)
+        ])
+        # middle blocks
+        self.mid_blocks = nn.ModuleList([
+            MiddleBlock(
+                in_channels=self.mid_channels[i],
+                out_channels=self.mid_channels[i+1],
+                time_embed_dim=self.time_embed_dim,
+                num_layers=self.num_mid_blocks
+            ) for i in range(len(self.mid_channels)-1)
+        ])
+        # up blocks
+        self.up_blocks = nn.ModuleList([
+            UpBlock(
+                in_channels=self.up_channels[i],
+                out_channels=self.up_channels[i+1],
+                time_embed_dim=self.time_embed_dim,
+                num_layers=self.num_up_blocks,
+                up_sampling=self.up_sampling[i]
+            ) for i in range(len(self.up_channels)-1)
+        ])
+        # final convolution layer
+        self.conv2 = nn.Sequential(
+            nn.GroupNorm(num_groups=8, num_channels=self.up_channels[-1]),
+            nn.Conv2d(in_channels=self.up_channels[-1], out_channels=self.in_channels, kernel_size=3, padding=1)
+        )
 
+    def forward(self, batch, t):
+
+        output = self.conv1(batch)
+        # time projection
+        time_embed = GetEmbeddedTime(embed_dim=self.time_embed_dim)(time_steps=t)
+        time_embed = self.time_projection(time_embed)
+
+        # store the skip connections
+        skip_connections = []
+        # down blocks
+        for down in self.down_blocks:
+            skip_connections.append(output)
+            output = down(batch=output, embed_time=time_embed)
+
+        # middle blocks
+        for mid in self.mid_blocks:
+            output = mid(batch=output, embed_time=time_embed)
+
+        # up blocks
+        for up in self.up_blocks:
+            skip_connection = skip_connections.pop()
+            output = up(batch=output, skip_connection=skip_connection, embed_time=time_embed)
+
+        # final convolution layer
+        output = self.conv2(output)
+
+        return output
 
 #-----------------------------------------------------------------------------
 class DownBlock(nn.Module):
@@ -286,6 +381,25 @@ class TimeEmbedding(nn.Module):
         return self.embedding(batch)
 
 #----------------------------------------------------------------
+class GetEmbeddedTime(nn.Module):
+    """
+    positional time embedding
+    """
+    def __init__(self, embed_dim):
+        super().__init__()
+        assert embed_dim % 2 == 0, "The embedding dimension must be divisible by two"
+        self.embed_dim = embed_dim
+
+    def forward(self,  time_steps):
+
+        factor = (2 * torch.arange(start=0, end=self.embed_dim//2, dtype=torch.float32, device=time_steps.device)) / self.embed_dim
+        embed_time = time_steps[:, None]
+        embed_time = embed_time / factor
+        embed_time = torch.cat(tensors=[torch.sin(embed_time), torch.cos(embed_time)], dim=1)
+
+        return embed_time
+
+#----------------------------------------------------------------
 class Attention(nn.Module):
     """group norm and multi-head attention"""
     def __init__(self, num_channels, num_groups=8, num_heads=4, norm=True):
@@ -365,14 +479,3 @@ class UpSampling(nn.Module):
             return self.conv(batch)
 
         return torch.cat(tensors=[self.conv(batch), self.up_sample(batch)], dim=1)
-
-
-
-
-
-
-
-
-
-
-
