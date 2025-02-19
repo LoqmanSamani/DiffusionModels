@@ -6,7 +6,6 @@ from forward_ddpm import ForwardDDPM
 
 
 
-
 class TrainConfig:
     """configuration class for training"""
 
@@ -18,8 +17,8 @@ class TrainConfig:
             loss, # initialized loss metric
             save_path, # path to store trained model/s
             num_epochs=100,
-            in_channels=1,
-            learning_rate=0.00001,
+            in_channels=3, # for RGB images
+            learning_rate=0.1e-4,
             num_diffusion_steps=1000,
             num_time_steps=1000,
             beta_start=1e-4,
@@ -78,7 +77,7 @@ class Train:
 
             # loop over dataloader
             for batch, _ in tqdm(self.train_loader):
-                print(batch.shape)
+                #print(batch.shape)
 
                 batch = batch.to(self.device)
                 self.optimizer.zero_grad()
@@ -111,5 +110,3 @@ class Train:
                 torch.save(self.model, self.save_path)
 
         print(f'Training Process is Finished!')
-
-

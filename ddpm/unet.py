@@ -32,7 +32,7 @@ class UNet(nn.Module):
         self.num_up_blocks = num_up_blocks or 2
 
         self.up_sampling = list(reversed(self.down_sampling))
-        # initial convolution layer
+        # initial convolution layer (input: (batch, in_channels, H, W), output:(batch, out_channels, H, W))
         self.conv1 = nn.Conv2d(
             in_channels=self.in_channels,
             out_channels=self.down_channels[0],
@@ -383,19 +383,20 @@ class TimeEmbedding(nn.Module):
 #----------------------------------------------------------------
 class GetEmbeddedTime(nn.Module):
     """
-    positional time embedding
+    positional time embedding based on sinusoidal functions
     """
+
     def __init__(self, embed_dim):
         super().__init__()
         assert embed_dim % 2 == 0, "The embedding dimension must be divisible by two"
         self.embed_dim = embed_dim
 
-    def forward(self,  time_steps):
+    def forward(self, time_steps):
+        i = torch.arange(start=0, end=self.embed_dim // 2, dtype=torch.float32, device=time_steps.device)
+        factor = 10000 ** (2 * i / self.embed_dim)
 
-        factor = (2 * torch.arange(start=0, end=self.embed_dim//2, dtype=torch.float32, device=time_steps.device)) / self.embed_dim
-        embed_time = time_steps[:, None]
-        embed_time = embed_time / factor
-        embed_time = torch.cat(tensors=[torch.sin(embed_time), torch.cos(embed_time)], dim=1)
+        embed_time = time_steps[:, None] / factor  # shape (batch, embed_dim//2)
+        embed_time = torch.cat(tensors=[torch.sin(embed_time), torch.cos(embed_time)], dim=-1)
 
         return embed_time
 
@@ -479,3 +480,9 @@ class UpSampling(nn.Module):
             return self.conv(batch)
 
         return torch.cat(tensors=[self.conv(batch), self.up_sample(batch)], dim=1)
+
+
+
+
+
+
