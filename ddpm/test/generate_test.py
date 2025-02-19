@@ -1,11 +1,11 @@
 import torch
-from generate import Generate, Config
+from generate import Generate, GenerateConfig
 import matplotlib.pyplot as plt
 
 
 def test_generate():
 
-    config = Config(
+    config = GenerateConfig(
         model_path="./model.pth", # path to the trained model
         num_steps=400,
         beta_start=1e-4,

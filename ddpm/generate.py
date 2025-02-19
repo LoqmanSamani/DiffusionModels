@@ -3,7 +3,7 @@ import torch.nn as nn
 from reverse_ddpm import ReverseDDPM
 
 
-class Config:
+class GenerateConfig:
     """
     configuration class for the image generation (Generate class) of ddpm model.
     input information should be identical to those used to train the model.
