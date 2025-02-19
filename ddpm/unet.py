@@ -462,7 +462,7 @@ class UpSampling(nn.Module):
         self.up_sampling = up_sampling
 
         self.conv = nn.Sequential(
-            nn.ConvTranspose2d(in_channels=in_channels, out_channels=out_channels//2 if conv_block else out_channels, kernel_size=4, stride=up_sampling_factor, padding=1),
+            nn.ConvTranspose2d(in_channels=in_channels, out_channels=out_channels//2 if up_sampling else out_channels, kernel_size=4, stride=up_sampling_factor, padding=1),
             nn.Conv2d(in_channels=out_channels//2 if up_sampling else out_channels, out_channels=out_channels//2 if up_sampling else out_channels, kernel_size=1, stride=1, padding=0)
         ) if conv_block else nn.Identity()
 
