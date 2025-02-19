@@ -21,15 +21,15 @@ class UNet(nn.Module):
             num_up_blocks
     ):
         super().__init__()
-        self.in_channels = in_channels or 3 # RGB
-        self.down_channels = down_channels or [32, 64, 128, 256]
-        self.mid_channels = mid_channels or [256, 256, 128]
-        self.up_channels = up_channels or [256, 128, 64, 16]
-        self.down_sampling = down_sampling or [True, True, False]
-        self.time_embed_dim = time_embed_dim or 128
-        self.num_down_blocks = num_down_blocks or 2
-        self.num_mid_blocks = num_mid_blocks or 2
-        self.num_up_blocks = num_up_blocks or 2
+        self.in_channels = in_channels
+        self.down_channels = down_channels
+        self.mid_channels = mid_channels
+        self.up_channels = up_channels
+        self.down_sampling = down_sampling
+        self.time_embed_dim = time_embed_dim
+        self.num_down_blocks = num_down_blocks
+        self.num_mid_blocks = num_mid_blocks
+        self.num_up_blocks = num_up_blocks
 
         self.up_sampling = list(reversed(self.down_sampling))
         # initial convolution layer (input: (batch, in_channels, H, W), output:(batch, out_channels, H, W))
@@ -121,7 +121,7 @@ class DownBlock(nn.Module):
         6. down-sampling (if enabled)
 
     """
-    def __init__(self, in_channels, out_channels, time_embed_dim=128, num_layers=2, down_sample=True):
+    def __init__(self, in_channels, out_channels, time_embed_dim, num_layers, down_sample=True):
         super().__init__()
         self.num_layers = num_layers
         self.conv1 = nn.ModuleList([
@@ -198,7 +198,7 @@ class MiddleBlock(nn.Module):
         1. resnet with time embedding
         2. n  self-attention + resnet with time embedding
     """
-    def __init__(self, in_channels, out_channels, time_embed_dim=128, num_layers=2):
+    def __init__(self, in_channels, out_channels, time_embed_dim, num_layers):
         super().__init__()
         self.num_layers = num_layers
         self.conv1 = nn.ModuleList([
@@ -277,7 +277,7 @@ class UpBlock(nn.Module):
         6. skip-connection from 3.
 
     """
-    def __init__(self, in_channels, out_channels, time_embed_dim=128, num_layers=2, up_sampling=True):
+    def __init__(self, in_channels, out_channels, time_embed_dim, num_layers, up_sampling=True):
         super().__init__()
         self.num_layers = num_layers
         self.conv1 = nn.ModuleList([
@@ -370,7 +370,7 @@ class Conv3(nn.Module):
 #----------------------------------------------------------------
 class TimeEmbedding(nn.Module):
     """time embedding"""
-    def __init__(self, output_dim, embed_dim=128):
+    def __init__(self, output_dim, embed_dim):
         super().__init__()
         self.embedding = nn.Sequential(
             nn.SiLU(),
@@ -480,9 +480,5 @@ class UpSampling(nn.Module):
             return self.conv(batch)
 
         return torch.cat(tensors=[self.conv(batch), self.up_sample(batch)], dim=1)
-
-
-
-
 
 
