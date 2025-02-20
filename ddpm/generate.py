@@ -3,23 +3,6 @@ import torch.nn as nn
 from reverse_ddpm import ReverseDDPM
 
 
-class GenerateConfig:
-    """
-    configuration class for the image generation (Generate class) of ddpm model.
-    input information should be identical to those used to train the model.
-    """
-    def __init__(self, model_path, num_steps=1000, beta_start=1e-4, beta_end=0.02,
-                 device=None, in_channels=3, image_shape=64, num_time_steps=1000):
-
-        self.model_path = model_path
-        self.num_steps = num_steps
-        self.beta_start = beta_start
-        self.beta_end = beta_end
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.in_channels = in_channels
-        self.image_shape = image_shape
-        self.num_time_steps = num_time_steps
-
 
 
 

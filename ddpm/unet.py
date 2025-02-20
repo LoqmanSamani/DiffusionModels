@@ -81,30 +81,43 @@ class UNet(nn.Module):
         )
 
     def forward(self, batch, t):
+        # shapes = []  # store (layer_name, output_shape)
 
         output = self.conv1(batch)
+        # shapes.append(("conv1", output.shape))
+
         # time projection
         time_embed = GetEmbeddedTime(embed_dim=self.time_embed_dim)(time_steps=t)
         time_embed = self.time_projection(time_embed)
 
-        # store the skip connections
+        # store skip connections
         skip_connections = []
-        # down blocks
-        for down in self.down_blocks:
+
+        # Down blocks
+        for i, down in enumerate(self.down_blocks):
             skip_connections.append(output)
             output = down(batch=output, embed_time=time_embed)
+            # shapes.append((f"down_block_{i}", output.shape))
 
         # middle blocks
-        for mid in self.mid_blocks:
+        for i, mid in enumerate(self.mid_blocks):
             output = mid(batch=output, embed_time=time_embed)
+            # shapes.append((f"mid_block_{i}", output.shape))
 
-        # up blocks
-        for up in self.up_blocks:
+        # Up blocks
+        for i, up in enumerate(self.up_blocks):
             skip_connection = skip_connections.pop()
             output = up(batch=output, skip_connection=skip_connection, embed_time=time_embed)
+            # shapes.append((f"up_block_{i}", output.shape))
 
-        # final convolution layer
+        # Final convolution
         output = self.conv2(output)
+        # shapes.append(("conv2", output.shape))
+
+        # Print model structure
+        # print("\nUNet Model Structure:")
+        # for layer_name, shape in shapes:
+        #    print(f"{layer_name}: {shape}")
 
         return output
 
@@ -176,17 +189,31 @@ class DownBlock(nn.Module):
 
     def forward(self, batch, embed_time):
 
+        # shapes = [("input batch:", batch.shape)]
+
         output = batch
         for i in range(self.num_layers):
             resnet_input = output
             output = self.conv1[i](output)
+            # shapes.append((f"conv3 {i}:", output.shape))
             output = output + self.time_embedding[i](embed_time)[:, :, None, None]
+            # shapes.append((f"output + time_embedding {i}:", output.shape))
             output = self.conv2[i](output)
+            # shapes.append((f"conv3 {i}:", output.shape))
             output = output + self.resnet[i](resnet_input)
+            # shapes.append((f"output + resnet {i}:", output.shape))
             out_attn = self.attention[i](output)
+            # shapes.append((f"attention {i}:", out_attn.shape))
             output = output + out_attn
+            # shapes.append((f"output + attention {i}:", output.shape))
 
         output = self.down_sampling(output)
+        # shapes.append((f"down sampling:", output.shape))
+
+        # print("Down Blocks")
+        # print("-"*30)
+        # for layer in shapes:
+        #     print(layer[0], layer[1])
 
         return output
 
@@ -245,22 +272,49 @@ class MiddleBlock(nn.Module):
         ])
 
     def forward(self, batch, embed_time):
+
+        # shapes = [("input batch:", batch.shape)]
+
         output = batch
 
         resnet_input = output
         output = self.conv1[0](output)
+        # shapes.append((f"conv3:", output.shape))
+
         output = output + self.time_embedding[0](embed_time)[:, :, None, None]
+        # shapes.append((f"output + time embedding:", output.shape))
+
         output = self.conv2[0](output)
+        # shapes.append((f"conv3:", output.shape))
+
         output = output + self.resnet[0](resnet_input)
+        # shapes.append((f"output + resnet form input:", output.shape))
 
         for i in range(self.num_layers):
             out_attn = self.attention[i](output)
+            # shapes.append((f"attention {i}:", out_attn.shape))
+
             output = output + out_attn
+            # shapes.append((f"output + attention {i}:", output.shape))
+
             resnet_input = output
             output = self.conv1[i + 1](output)
+            # shapes.append((f"conv3 {i}:", output.shape))
+
             output = output + self.time_embedding[i + 1](embed_time)[:, :, None, None]
+            # shapes.append((f"output + time embedding {i}:", output.shape))
+
             output = self.conv2[i + 1](output)
+            # shapes.append((f"conv3 {i}:", output.shape))
+
             output = output + self.resnet[i + 1](resnet_input)
+            # shapes.append((f"output + resnet{i} form (output + attention) {i}:", output.shape))
+
+        # print("Middle Blocks")
+        # print("-" * 30)
+        # for layer in shapes:
+        #     print(layer[0], layer[1])
+
 
         return output
 
@@ -332,20 +386,42 @@ class UpBlock(nn.Module):
 
     def forward(self, batch, skip_connection, embed_time):
 
+        # shapes = [("input batch:", batch.shape)]
+
+
         batch = self.up_sampling(batch)
+        # shapes.append((f"up sampling:", batch.shape))
+
         batch = torch.cat(tensors=[batch, skip_connection], dim=1)
+        # shapes.append((f"concatenate: output, skip_connection", batch.shape, skip_connection.shape))
+
 
         output = batch
         for i in range(self.num_layers):
             resnet_input = output
 
             output = self.conv1[i](output)
+            # shapes.append((f"conv3 {i}:", output.shape))
+
             output = output + self.time_embedding[i](embed_time)[:, :, None, None]
+            # shapes.append((f"output + time embedding {i}:", output.shape))
+
             output = self.conv2[i](output)
+            # shapes.append((f"conv3 {i}:", output.shape))
+
             output = output + self.resnet[i](resnet_input)
+            # shapes.append((f"output + resnet{i} from (concatenate: output, skip_connection) {i}:", output.shape))
 
             out_attn = self.attention[i](output)
+            # shapes.append((f"attention {i}:", output.shape))
+
             output = output + out_attn
+            # shapes.append((f"output + attention {i}:", output.shape))
+
+        # print("Up Blocks")
+        # print("-" * 30)
+        # for layer in shapes:
+        #     print(layer[0], layer[1])
 
         return output
 
@@ -431,13 +507,15 @@ class DownSampling(nn.Module):
         # down sampling using convolution
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1),
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels // 2 if max_pool else out_channels, kernel_size=4, stride=down_sampling_factor, padding=1)
+            nn.Conv2d(in_channels=in_channels, out_channels=out_channels // 2 if max_pool else out_channels,
+                      kernel_size=4, stride=down_sampling_factor, padding=1)
         ) if conv_block else nn.Identity()
 
         # down sampling using max pool
         self.pool = nn.Sequential(
             nn.MaxPool2d(kernel_size=down_sampling_factor, stride=down_sampling_factor),
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels//2 if conv_block else out_channels, kernel_size=1, stride=1, padding=0)
+            nn.Conv2d(in_channels=in_channels, out_channels=out_channels//2 if conv_block else out_channels,
+                      kernel_size=1, stride=1, padding=0)
         ) if max_pool else nn.Identity()
 
     def forward(self, batch):
@@ -462,13 +540,26 @@ class UpSampling(nn.Module):
         self.up_sampling = up_sampling
 
         self.conv = nn.Sequential(
-            nn.ConvTranspose2d(in_channels=in_channels, out_channels=out_channels//2 if up_sampling else out_channels, kernel_size=4, stride=up_sampling_factor, padding=1),
-            nn.Conv2d(in_channels=out_channels//2 if up_sampling else out_channels, out_channels=out_channels//2 if up_sampling else out_channels, kernel_size=1, stride=1, padding=0)
+            nn.ConvTranspose2d(
+                in_channels=in_channels,
+                out_channels=out_channels//2 if up_sampling else out_channels,
+                kernel_size=4,
+                stride=up_sampling_factor,
+                padding=1
+            ),
+            nn.Conv2d(
+                in_channels=out_channels//2 if up_sampling else out_channels,
+                out_channels=out_channels//2 if up_sampling else out_channels,
+                kernel_size=1,
+                stride=1,
+                padding=0
+            )
         ) if conv_block else nn.Identity()
 
         self.up_sample = nn.Sequential(
             nn.Upsample(scale_factor=up_sampling_factor, mode="bilinear", align_corners=False),
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels//2 if conv_block else out_channels, kernel_size=1, stride=1, padding=0)
+            nn.Conv2d(in_channels=in_channels, out_channels=out_channels//2 if conv_block else out_channels,
+                      kernel_size=1, stride=1, padding=0)
         ) if up_sampling else nn.Identity()
 
     def forward(self, batch):
@@ -480,5 +571,4 @@ class UpSampling(nn.Module):
             return self.conv(batch)
 
         return torch.cat(tensors=[self.conv(batch), self.up_sample(batch)], dim=1)
-
 

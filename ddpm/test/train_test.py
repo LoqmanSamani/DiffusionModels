@@ -4,9 +4,9 @@ from torchvision.datasets import MNIST
 from torch.utils.data import DataLoader, Subset
 import torch.nn as nn
 import torch.optim as optim
-
+from config import Config
 from unet import UNet
-from train import TrainConfig, Train
+from train import Train
 
 
 
@@ -42,12 +42,12 @@ def test_training():
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
     loss_fn = nn.MSELoss()
 
-    config = TrainConfig(
+    config = Config(
         model=model,
         train_loader=train_loader,
         optimizer=optimizer,
         loss=loss_fn,
-        save_path="./test_model.pth",
+        model_path="./test_model.pth",
         num_epochs=2,
         num_diffusion_steps=1000,
         num_time_steps=1000,

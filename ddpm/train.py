@@ -6,42 +6,6 @@ from forward_ddpm import ForwardDDPM
 
 
 
-class TrainConfig:
-    """configuration class for training"""
-
-    def __init__(
-            self,
-            model, # initialized u-net model
-            train_loader, # initialized train loader
-            optimizer, # initialized train optimizer
-            loss, # initialized loss metric
-            save_path, # path to store trained model/s
-            num_epochs=100,
-            in_channels=3, # for RGB images
-            learning_rate=0.1e-4,
-            num_diffusion_steps=1000,
-            num_time_steps=1000,
-            beta_start=1e-4,
-            beta_end=0.02,
-            device=None
-    ):
-        self.model = model
-        self.train_loader = train_loader
-        self.optimizer = optimizer
-        self.loss = loss
-        self.save_path = save_path
-        self.num_epochs = num_epochs
-        self.in_channels = in_channels
-        self.learning_rate = learning_rate
-        self.num_diffusion_steps = num_diffusion_steps
-        self.num_time_steps = num_time_steps
-        self.beta_start = beta_start
-        self.beta_end = beta_end
-        self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-
-
-
 class Train:
 
     def __init__(self, config):
@@ -50,7 +14,7 @@ class Train:
         self.model = config.model
         self.optimizer = config.optimizer
         self.loss = config.loss
-        self.save_path = config.save_path
+        self.save_path = config.model_path
         self.train_loader = config.train_loader
         self.num_epochs = config.num_epochs
         self.in_channels = config.in_channels
@@ -110,3 +74,7 @@ class Train:
                 torch.save(self.model, self.save_path)
 
         print(f'Training Process is Finished!')
+
+
+
+

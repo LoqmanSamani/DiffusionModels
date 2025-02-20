@@ -2,6 +2,8 @@ import torch
 from unet import UNet
 
 
+
+
 def test_UNet():
 
     batch_size = 2
@@ -23,7 +25,6 @@ def test_UNet():
         num_mid_blocks=2,
         num_up_blocks=2
     )
-
     output = model(x, t)
 
 
