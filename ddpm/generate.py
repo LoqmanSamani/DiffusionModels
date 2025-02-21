@@ -5,8 +5,6 @@ from reverse_ddpm import ReverseDDPM
 
 
 
-
-
 class Generate(nn.Module):
     """image generation using trained ddpm model"""
     def __init__(self, config):
@@ -47,10 +45,4 @@ class Generate(nn.Module):
         generated_img = (generated_img + 1) / 2
 
         return generated_img
-
-
-
-
-
-
     
