@@ -9,7 +9,7 @@ from forward_ddpm import ForwardDDPM
 class Train:
 
     def __init__(self, config):
-        super().__init__()
+
         self.config = config
         self.model = config.model
         self.optimizer = config.optimizer
@@ -66,14 +66,17 @@ class Train:
                 self.optimizer.step()
 
             mean_epoch_loss = np.mean(losses)
-            print()
-            print(f"Epoch: {epoch+1} | Loss: {mean_epoch_loss: .4f}")
+            # print()
+            print(f"\nEpoch: {epoch+1} | Loss: {mean_epoch_loss: .4f}")
 
             if mean_epoch_loss < best_loss:
                 best_loss = mean_epoch_loss
+                # torch.save(self.model.state_dict(), self.save_path)  # save only weights
                 torch.save(self.model, self.save_path)
 
         print(f'Training Process is Finished!')
+
+
 
 
 

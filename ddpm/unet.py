@@ -571,4 +571,3 @@ class UpSampling(nn.Module):
             return self.conv(batch)
 
         return torch.cat(tensors=[self.conv(batch), self.up_sample(batch)], dim=1)
-
