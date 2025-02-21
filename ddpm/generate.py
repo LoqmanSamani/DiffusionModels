@@ -45,4 +45,3 @@ class Generate(nn.Module):
         generated_img = (generated_img + 1) / 2
 
         return generated_img
-    
