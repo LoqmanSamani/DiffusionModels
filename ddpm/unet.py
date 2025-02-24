@@ -428,17 +428,19 @@ class UpBlock(nn.Module):
 #------------------------------------------------------------------------
 class Conv3(nn.Module):
     """conv 3 block"""
-    def __init__(self, in_channels, out_channels, num_groups=8, kernel_size=3, norm=True, activation=True):
+    def __init__(self, in_channels, out_channels, num_groups=8, kernel_size=3, norm=True, activation=True, dropout_rate=0.1):
         super().__init__()
 
         self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=in_channels) if norm else nn.Identity()
         self.activation = nn.SiLU() if activation else nn.Identity()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, padding=(kernel_size - 1) // 2)
+        self.dropout = nn.Dropout(p=dropout_rate)
 
     def forward(self, batch):
 
         batch = self.group_norm(batch)
         batch = self.activation(batch)
+        batch = self.dropout(batch)
         batch = self.conv(batch)
 
         return batch
@@ -479,10 +481,11 @@ class GetEmbeddedTime(nn.Module):
 #----------------------------------------------------------------
 class Attention(nn.Module):
     """group norm and multi-head attention"""
-    def __init__(self, num_channels, num_groups=8, num_heads=4, norm=True):
+    def __init__(self, num_channels, num_groups=8, num_heads=4, norm=True, dropout_rate=0.1):
         super().__init__()
         self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels) if norm else nn.Identity()
         self.attention = nn.MultiheadAttention(embed_dim=num_channels, num_heads=num_heads, batch_first=True)
+        self.dropout = nn.Dropout(p=dropout_rate)
 
     def forward(self, batch):
 
@@ -491,6 +494,7 @@ class Attention(nn.Module):
         batch = self.group_norm(batch)
         batch = batch.transpose(1, 2)
         batch, _ = self.attention(batch, batch, batch)
+        batch = self.dropout(batch)
         batch = batch.transpose(1, 2).reshape(batch_size, channels, h, w)
 
         return batch

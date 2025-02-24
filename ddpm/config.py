@@ -38,6 +38,3 @@ class Config:
         self.beta_end = beta_end
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.image_shape = image_shape
-
-
-

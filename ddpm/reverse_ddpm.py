@@ -6,7 +6,7 @@ class ReverseDDPM:
     """
     reverse diffusion process of the "Denoising Diffusion Probabilistic Model (DDPM)".
     the class removes noise from an image that has undergone a diffusion process.
-    it reconstructs the original image (`x0`) and predicts the denoised image at the previous time step (`xt-1`).
+    it predicts the denoised image at the previous time step (`xt-1`).
     """
 
     def __init__(self, num_steps=1000, beta_start=1e-4, beta_end=0.02):
@@ -35,18 +35,19 @@ class ReverseDDPM:
         performs one step of the reverse diffusion process to estimate the original image
         and also predict the previous time step image.
         """
-        # estimate the original clean image x0 using the DDPM formula
-        batch0 = (batch_t - (torch.sqrt(1 - self.alpha_bars.to(batch_t.device)[time_step])) * predicted_noise) / \
-                 (torch.sqrt(self.alpha_bars.to(batch_t.device)[time_step]))
-        batch0 = torch.clamp(batch0, min=-1.0, max=1.0)  # clamp values to [-1,1]
-        # computes x0
-        predicted0 = (batch_t - ((1 - self.alphas.to(batch_t.device)[time_step]) * predicted_noise) /
+        # estimate the original clean image x0 using the DDPM formula (it is skipped in the original paper!!!)
+        # batch0 = (batch_t - (torch.sqrt(1 - self.alpha_bars.to(batch_t.device)[time_step])) * predicted_noise) / \
+        #          (torch.sqrt(self.alpha_bars.to(batch_t.device)[time_step]))
+        # batch0 = torch.clamp(batch0, min=-1.0, max=1.0)  # clamp values to [-1,1]
+
+        # used to calculate x_t-1
+        pred = (batch_t - ((1 - self.alphas.to(batch_t.device)[time_step]) * predicted_noise) /
                      (torch.sqrt(1 - self.alpha_bars.to(batch_t.device)[time_step]))) / \
                      (torch.sqrt(self.alphas.to(batch_t.device)[time_step]))
 
         # if t=0, return x0 since we don’t predict earlier steps
         if time_step == 0:
-            return predicted0, batch0
+            return pred #, batch0
 
         # compute the variance term for adding noise
         var = (1 - self.alpha_bars.to(batch_t.device)[time_step - 1]) / (1 - self.alpha_bars.to(batch_t.device)[time_step])
@@ -57,17 +58,6 @@ class ReverseDDPM:
         z = torch.randn(batch_t.shape).to(batch_t.device)
 
         # predict the next image x_{t-1}
-        predicted = predicted0 + std * z
+        predicted = pred + std * z
 
-        return predicted, batch0
-
-
-
-
-
-
-
-
-
-
-
+        return predicted #, batch0

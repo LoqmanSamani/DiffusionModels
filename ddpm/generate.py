@@ -34,8 +34,8 @@ class Generate(nn.Module):
         with torch.no_grad():
             for t in reversed(range(self.num_time_steps)):
                 predicted_noise = model(batch=noisy_sample, t=torch.as_tensor(t).unsqueeze(0).to(self.device))
-                # predicted_t is the generated image in time step t, predicted_0 is the predicted image in time step 0
-                predicted_t, predicted_0 = reverse.remove_noise(
+                # denoised image at the previous time step (`xt-1`)
+                predicted_t = reverse.remove_noise(
                     batch_t=noisy_sample,
                     predicted_noise=predicted_noise,
                     time_step=torch.as_tensor(t).to(self.device)

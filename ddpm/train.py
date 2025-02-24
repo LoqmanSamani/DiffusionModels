@@ -75,9 +75,3 @@ class Train:
                 torch.save(self.model, self.save_path)
 
         print(f'Training Process is Finished!')
-
-
-
-
-
-

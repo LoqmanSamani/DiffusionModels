@@ -47,9 +47,3 @@ class ForwardDDPM:
         out = (alpha_bar_sqrt_t * batch) + (com_alpha_bar_sqrt_t * noise)
 
         return out
-
-
-
-
-
-
