@@ -10,7 +10,6 @@ def test_UNet():
     in_channels = 3
     img_size = 64
 
-
     x = torch.randn(batch_size, in_channels, img_size, img_size)
     t = torch.randint(0, 1000, (batch_size,))
 
@@ -23,10 +22,10 @@ def test_UNet():
         time_embed_dim=128,
         num_down_blocks=2,
         num_mid_blocks=2,
-        num_up_blocks=2
+        num_up_blocks=2,
+        dropout_rate=0.2
     )
     output = model(x, t)
-
 
     assert output.shape == x.shape, f"Expected output shape {x.shape}, but got {output.shape}"
 

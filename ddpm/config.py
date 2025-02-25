@@ -23,11 +23,12 @@ class Config:
             beta_end=0.02,
             device=None
     ):
+        self.model_path = model_path
+        self.image_shape = image_shape
         self.model = model
         self.train_loader = train_loader
         self.optimizer = optimizer
         self.loss = loss
-        self.model_path = model_path
         self.num_epochs = num_epochs
         self.in_channels = in_channels
         self.learning_rate = learning_rate
@@ -37,4 +38,3 @@ class Config:
         self.beta_start = beta_start
         self.beta_end = beta_end
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.image_shape = image_shape

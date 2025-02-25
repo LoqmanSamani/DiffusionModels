@@ -18,7 +18,8 @@ class UNet(nn.Module):
             time_embed_dim,
             num_down_blocks,
             num_mid_blocks,
-            num_up_blocks
+            num_up_blocks,
+            dropout_rate
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -30,6 +31,7 @@ class UNet(nn.Module):
         self.num_down_blocks = num_down_blocks
         self.num_mid_blocks = num_mid_blocks
         self.num_up_blocks = num_up_blocks
+        self.dropout_rate = dropout_rate
 
         self.up_sampling = list(reversed(self.down_sampling))
         # initial convolution layer (input: (batch, in_channels, H, W), output:(batch, out_channels, H, W))
@@ -52,7 +54,8 @@ class UNet(nn.Module):
                 out_channels=self.down_channels[i+1],
                 time_embed_dim=self.time_embed_dim,
                 num_layers=self.num_down_blocks,
-                down_sample=self.down_sampling[i]
+                down_sample=self.down_sampling[i],
+                dropout_rate=self.dropout_rate
             ) for i in range(len(self.down_channels)-1)
         ])
         # middle blocks
@@ -61,7 +64,8 @@ class UNet(nn.Module):
                 in_channels=self.mid_channels[i],
                 out_channels=self.mid_channels[i+1],
                 time_embed_dim=self.time_embed_dim,
-                num_layers=self.num_mid_blocks
+                num_layers=self.num_mid_blocks,
+                dropout_rate=self.dropout_rate
             ) for i in range(len(self.mid_channels)-1)
         ])
         # up blocks
@@ -71,12 +75,14 @@ class UNet(nn.Module):
                 out_channels=self.up_channels[i+1],
                 time_embed_dim=self.time_embed_dim,
                 num_layers=self.num_up_blocks,
-                up_sampling=self.up_sampling[i]
+                up_sampling=self.up_sampling[i],
+                dropout_rate=self.dropout_rate
             ) for i in range(len(self.up_channels)-1)
         ])
         # final convolution layer
         self.conv2 = nn.Sequential(
             nn.GroupNorm(num_groups=8, num_channels=self.up_channels[-1]),
+            nn.Dropout(p=self.dropout_rate),
             nn.Conv2d(in_channels=self.up_channels[-1], out_channels=self.in_channels, kernel_size=3, padding=1)
         )
 
@@ -134,7 +140,7 @@ class DownBlock(nn.Module):
         6. down-sampling (if enabled)
 
     """
-    def __init__(self, in_channels, out_channels, time_embed_dim, num_layers, down_sample=True):
+    def __init__(self, in_channels, out_channels, time_embed_dim, num_layers, down_sample=True, dropout_rate=0.2):
         super().__init__()
         self.num_layers = num_layers
         self.conv1 = nn.ModuleList([
@@ -144,7 +150,8 @@ class DownBlock(nn.Module):
                 num_groups=8,
                 kernel_size=3,
                 norm=True,
-                activation=True
+                activation=True,
+                dropout_rate=dropout_rate
             ) for i in range(self.num_layers)
         ])
         self.conv2 = nn.ModuleList([
@@ -154,7 +161,8 @@ class DownBlock(nn.Module):
                 num_groups=8,
                 kernel_size=3,
                 norm=True,
-                activation=True
+                activation=True,
+                dropout_rate=dropout_rate
             ) for _ in range(self.num_layers)
         ])
         self.time_embedding = nn.ModuleList([
@@ -168,7 +176,8 @@ class DownBlock(nn.Module):
                 num_channels=out_channels,
                 num_groups=8,
                 num_heads=4,
-                norm=True
+                norm=True,
+                dropout_rate=dropout_rate
             ) for _ in range(self.num_layers)
         ])
         self.down_sampling = DownSampling(
@@ -225,7 +234,7 @@ class MiddleBlock(nn.Module):
         1. resnet with time embedding
         2. n  self-attention + resnet with time embedding
     """
-    def __init__(self, in_channels, out_channels, time_embed_dim, num_layers):
+    def __init__(self, in_channels, out_channels, time_embed_dim, num_layers, dropout_rate):
         super().__init__()
         self.num_layers = num_layers
         self.conv1 = nn.ModuleList([
@@ -235,7 +244,8 @@ class MiddleBlock(nn.Module):
                 num_groups=8,
                 kernel_size=3,
                 norm=True,
-                activation=True
+                activation=True,
+                dropout_rate=dropout_rate
             ) for i in range(self.num_layers+1)
         ])
         self.conv2 = nn.ModuleList([
@@ -245,7 +255,8 @@ class MiddleBlock(nn.Module):
                 num_groups=8,
                 kernel_size=3,
                 norm=True,
-                activation=True
+                activation=True,
+                dropout_rate=dropout_rate
             ) for _ in range(self.num_layers+1)
         ])
         self.time_embedding = nn.ModuleList([
@@ -259,7 +270,8 @@ class MiddleBlock(nn.Module):
                 num_channels=out_channels,
                 num_groups=8,
                 num_heads=4,
-                norm=True
+                norm=True,
+                dropout_rate=dropout_rate
             ) for _ in range(self.num_layers)
         ])
         self.resnet = nn.ModuleList([
@@ -331,7 +343,7 @@ class UpBlock(nn.Module):
         6. skip-connection from 3.
 
     """
-    def __init__(self, in_channels, out_channels, time_embed_dim, num_layers, up_sampling=True):
+    def __init__(self, in_channels, out_channels, time_embed_dim, num_layers, up_sampling=True, dropout_rate=0.2):
         super().__init__()
         self.num_layers = num_layers
         self.conv1 = nn.ModuleList([
@@ -341,7 +353,8 @@ class UpBlock(nn.Module):
                 num_groups=8,
                 kernel_size=3,
                 norm=True,
-                activation=True
+                activation=True,
+                dropout_rate=dropout_rate
             ) for i in range(self.num_layers)
         ])
         self.conv2 = nn.ModuleList([
@@ -351,7 +364,8 @@ class UpBlock(nn.Module):
                 num_groups=8,
                 kernel_size=3,
                 norm=True,
-                activation=True
+                activation=True,
+                dropout_rate=dropout_rate
             ) for _ in range(self.num_layers)
         ])
         self.time_embedding = nn.ModuleList([
@@ -365,7 +379,8 @@ class UpBlock(nn.Module):
                 num_channels=out_channels,
                 num_groups=8,
                 num_heads=4,
-                norm=True
+                norm=True,
+                dropout_rate=dropout_rate
             ) for _ in range(self.num_layers)
         ])
         self.up_sampling = UpSampling(
@@ -428,7 +443,7 @@ class UpBlock(nn.Module):
 #------------------------------------------------------------------------
 class Conv3(nn.Module):
     """conv 3 block"""
-    def __init__(self, in_channels, out_channels, num_groups=8, kernel_size=3, norm=True, activation=True, dropout_rate=0.1):
+    def __init__(self, in_channels, out_channels, num_groups=8, kernel_size=3, norm=True, activation=True, dropout_rate=0.2):
         super().__init__()
 
         self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=in_channels) if norm else nn.Identity()
@@ -481,7 +496,7 @@ class GetEmbeddedTime(nn.Module):
 #----------------------------------------------------------------
 class Attention(nn.Module):
     """group norm and multi-head attention"""
-    def __init__(self, num_channels, num_groups=8, num_heads=4, norm=True, dropout_rate=0.1):
+    def __init__(self, num_channels, num_groups=8, num_heads=4, norm=True, dropout_rate=0.2):
         super().__init__()
         self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels) if norm else nn.Identity()
         self.attention = nn.MultiheadAttention(embed_dim=num_channels, num_heads=num_heads, batch_first=True)
