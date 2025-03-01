@@ -1,5 +1,5 @@
 import torch
-from unet import TimeEmbedding
+from network import TimeEmbedding
 
 
 

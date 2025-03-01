@@ -1,5 +1,5 @@
 import torch
-from reverse_ddpm import ReverseDDPM
+from reverse_diffusion import ReverseDDPM
 
 
 def test_reverse_ddpm():

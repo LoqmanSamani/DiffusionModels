@@ -1,5 +1,5 @@
 import torch
-from unet import DownSampling
+from network import DownSampling
 
 def test_DownSampling():
 

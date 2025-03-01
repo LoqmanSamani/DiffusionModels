@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, Subset
 import torch.nn as nn
 import torch.optim as optim
 from config import Config
-from unet import UNet
+from network import UNet
 from train import Train
 
 

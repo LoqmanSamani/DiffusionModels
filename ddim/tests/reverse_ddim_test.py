@@ -1,5 +1,5 @@
 import torch
-from reverse_ddim import ReverseDDIM
+from reverse_diffudion import ReverseDDIM
 
 
 

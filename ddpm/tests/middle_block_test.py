@@ -1,5 +1,5 @@
 import torch
-from unet import MiddleBlock
+from network import MiddleBlock
 
 
 

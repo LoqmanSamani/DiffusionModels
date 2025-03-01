@@ -1,5 +1,5 @@
 import torch
-from unet import Conv3
+from network import Conv3
 
 def test_Conv3():
 

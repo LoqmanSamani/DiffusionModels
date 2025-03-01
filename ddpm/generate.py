@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from reverse_ddpm import ReverseDDPM
+from reverse_diffusion import ReverseDDPM
 
 
 

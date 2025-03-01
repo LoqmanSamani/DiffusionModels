@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from reverse_ddim import ReverseDDIM
+from reverse_diffusion import ReverseDDIM
 
 
 

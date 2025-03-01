@@ -4,7 +4,7 @@ from torchvision.transforms import ToTensor
 import torch.nn as nn
 import torch.optim as optim
 from train import Train
-from unet import UNet
+from network import UNet
 from config import Config
 
 

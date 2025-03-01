@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 import numpy as np
-from forward_ddpm import ForwardDDPM
+from forward_diffusion import ForwardDDPM
 
 
 

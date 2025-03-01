@@ -1,5 +1,5 @@
 import torch
-from conv3 import Attention
+from netwoek import Attention
 
 
 def test_Attention():

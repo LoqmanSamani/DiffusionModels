@@ -1,5 +1,5 @@
 import torch
-from unet import UpBlock
+from network import UpBlock
 
 
 def test_upblock():

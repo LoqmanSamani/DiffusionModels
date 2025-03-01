@@ -1,5 +1,5 @@
 import torch
-from forward_ddim import ForwardDDIM
+from forward_diffusion import ForwardDDIM
 
 def test_forward_ddim():
 

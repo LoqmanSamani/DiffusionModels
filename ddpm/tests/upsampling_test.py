@@ -1,5 +1,5 @@
 import torch
-from unet import UpSampling
+from network import UpSampling
 
 
 def test_UpSampling():

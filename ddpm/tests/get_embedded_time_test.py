@@ -1,5 +1,5 @@
 import torch
-from unet import GetEmbeddedTime
+from network import GetEmbeddedTime
 
 
 

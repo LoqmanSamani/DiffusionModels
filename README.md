@@ -69,7 +69,7 @@ Each model follows a structured format:
 
 ### Clone the Repository
 ```commandline
-git clone https://github.com/your-username/diffusion-models.git
+clone https://github.com/LoqmanSamani/diffusion-models.git
 cd diffusion-models
 ```
 ### Install Dependencies
@@ -77,15 +77,18 @@ cd diffusion-models
 pip install -r requirements.txt
 ```
 
-### Train a Model (Modify `config.py` Before Running)
-```commandline
-python ddpm/train.py
-```
+### Training a Model
 
-### Run an Existing Model (e.g., DDIM)
-```commandline
-python ddim/generate.py
-```
+Before running any training or generation script, ensure that you properly configure the `config.py` file. This file contains all the essential hyperparameters, dataset paths, model architecture details, and other configuration settings.
+
+Once the configuration file is ready, you can start training the model (`train.py`).
+
+### Running a Pre-Trained Model (e.g., DDIM)
+
+To generate images using a pre-trained model, first, make sure the model  is saved at the correct path as defined in your `config.py` file.
+
+Then, you can run the model to generate new samples (`generate.py`).
+
 
 ## 🎯 Why This Project?
 

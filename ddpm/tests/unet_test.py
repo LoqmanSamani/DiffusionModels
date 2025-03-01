@@ -1,5 +1,5 @@
 import torch
-from unet import UNet
+from network import UNet
 
 
 

@@ -1,5 +1,5 @@
 import torch
-from forward_ddpm import ForwardDDPM
+from forward_diffusion import ForwardDDPM
 
 
 def test_forward_ddpm():
