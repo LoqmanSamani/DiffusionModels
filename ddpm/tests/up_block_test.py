@@ -30,7 +30,7 @@ def test_upblock():
     assert output.shape == expected_shape, \
         f"Expected output shape {expected_shape}, but got {output.shape}"
 
-    print("UpBlock test passed!")
+    print("UpBlock tests passed!")
 
 
 test_upblock()

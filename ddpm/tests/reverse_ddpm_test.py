@@ -20,7 +20,7 @@ def test_reverse_ddpm():
     # assert batch0.shape == batch_t.shape, "Estimated x_0 shape mismatch!"
     # assert torch.all(batch0 >= -1.0) and torch.all(batch0 <= 1.0), "x_0 values out of range [-1,1]!"
 
-    print("ReverseDDPM test passed successfully!")
+    print("ReverseDDPM tests passed successfully!")
 
 
 test_reverse_ddpm()

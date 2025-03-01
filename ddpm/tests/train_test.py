@@ -14,7 +14,7 @@ from train import Train
 
 
 def test_training():
-    """test function to train the model on a small MNIST subset"""
+    """tests function to train the model on a small MNIST subset"""
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -36,7 +36,8 @@ def test_training():
         time_embed_dim=128,
         num_down_blocks=2,
         num_mid_blocks=2,
-        num_up_blocks=2
+        num_up_blocks=2,
+        dropout_rate=0.2
     ).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=1e-4)

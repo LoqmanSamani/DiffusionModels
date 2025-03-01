@@ -28,6 +28,6 @@ def test_middleblock():
     assert output.shape == (batch_size, out_channels, height, width), \
         f"Expected output shape {(batch_size, out_channels, height, width)}, but got {output.shape}"
 
-    print("MiddleBlock test passed!")
+    print("MiddleBlock tests passed!")
 
 test_middleblock()

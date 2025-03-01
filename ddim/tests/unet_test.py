@@ -29,6 +29,6 @@ def test_UNet():
 
     assert output.shape == x.shape, f"Expected output shape {x.shape}, but got {output.shape}"
 
-    print("UNet test passed! Output shape:", output.shape)
+    print("UNet tests passed! Output shape:", output.shape)
 
 test_UNet()

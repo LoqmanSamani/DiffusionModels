@@ -1,4 +1,3 @@
-import torch
 from generate import Generate
 from config import Config
 import matplotlib.pyplot as plt
