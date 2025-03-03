@@ -4,6 +4,7 @@ import torch.nn as nn
 
 
 
+
 class ReverseDDIM(nn.Module):
     """
     implements one step of the reverse process in Denoising Diffusion Implicit Models (DDIM).
@@ -35,7 +36,7 @@ class ReverseDDIM(nn.Module):
         at_sqrt = self.config.alpha_tau_sqrt.to(x.device)[t]
         at_prev_sqrt = self.config.alpha_tau_sqrt.to(x.device)[prev_t]
 
-        x0 = x - p_noise * torch.sqrt(1 - at_sqrt) / at_sqrt
+        x0 = x - p_noise * (1 - at_sqrt) / at_sqrt
         c1 = eta * ((1 - at_sqrt / at_prev_sqrt) * (1 - at_prev_sqrt) / torch.clamp((1 - at_sqrt), min=1e-8))
         c2 = torch.clamp((1 - at_prev_sqrt) - c1 ** 2, min=1e-8)
         xt_prev = at_prev_sqrt * x0 + c1 * torch.randn_like(x) + c2 * p_noise

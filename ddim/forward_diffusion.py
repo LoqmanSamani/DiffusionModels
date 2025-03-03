@@ -28,7 +28,7 @@ class ForwardDDIM(nn.Module):
 
         # extract the square root of alpha values at timestep t (controls signal strength)
         at_sqrt = self.config.alpha_sqrt.to(x.device)[t]  # signal rate
-        com_at_sqrt = 1 - at_sqrt  # complementary noise rate
+        com_at_sqrt = 1 - at_sqrt
         # reshape for broadcasting across image dimensions
         at_sqrt = at_sqrt[:, None, None, None]
         com_at_sqrt = com_at_sqrt[:, None, None, None]
