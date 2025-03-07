@@ -20,6 +20,6 @@ def test_config():
     # ensure sigmas follow a geometric progression
     assert np.all(np.diff(config.sigmas.numpy()) > 0), "Sigmas should be increasing"
 
-    print("✅ Config test passed.")
+    print("Config test passed.")
 
 test_config()
