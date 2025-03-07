@@ -4,7 +4,6 @@ import torch.nn as nn
 
 
 
-
 class ReverseDDIM(nn.Module):
     """
     implements one step of the reverse process in Denoising Diffusion Implicit Models (DDIM).
