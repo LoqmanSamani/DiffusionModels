@@ -18,7 +18,7 @@ def test_generate():
 
     generator = Generate(config)
     # generate an image
-    generated_img = generator.forward()
+    generated_img = generator.forward(),,,
     generated_img = generated_img.squeeze(0).squeeze(0).numpy()  # remove batch & channel dim
 
     # visualize the generated image

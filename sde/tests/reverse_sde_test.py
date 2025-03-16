@@ -22,7 +22,7 @@ def test_reverse_sde():
 
     for method in ["smld", "ddim", "subvp"]:
         config.method = method
-        x_denoised = reverse_sde.forward(x_noisy.clone(), t)
+        x_denoised = reverse_sde.forward(x_noisy.clone())
 
         assert x_denoised.shape == x_noisy.shape, f"Reverse {method}: Shape mismatch"
         assert not torch.equal(x_noisy, x_denoised), f"Reverse {method}: x should change after denoising"
