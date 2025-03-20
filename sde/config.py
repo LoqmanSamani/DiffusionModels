@@ -2,6 +2,8 @@ import torch
 
 
 
+
+
 class Config:
     def __init__(
             self,
@@ -25,14 +27,21 @@ class Config:
             kernel_size=None,  # kernel size of convolution layers
             norm=None,  # boolean indicating if group normalization should be applied
             activation=None,  # boolean indicating if silu (swish) activation should be applied
-            method=None,  # training method, options: "smld", "ddim", or "subvp"
+            method=None,  # training method, options: "ve", "vp", or "sub-vp"
             start=None,  # start time for scheduling
             end=None,  # end time for scheduling
             max_steps=None,  # total number of steps in the diffusion process
             sigma_min=None,  # minimum noise level for variance-exploding SDE
             sigma_max=None,  # maximum noise level for variance-exploding SDE
             beta_range=None,  # range of beta values used in variance-preserving diffusion models
-            beta_schedule_method=None  # method for scheduling beta values ("linear", "sigmoid", etc.)
+            beta_schedule_method=None,  # method for scheduling beta values ("linear", "sigmoid", etc.)
+            max_epoch=None,  # maximum number of epochs for training
+            device=None,  # computing device (e.g., "cuda" or "cpu")
+            optimizer=None,  # optimizer used for training
+            objective=None,  # loss function used for training
+            save_path=None,  # file path to save the trained model
+            checkpoint=None,  # frequency (in epochs) to save the model checkpoint
+            image_shape=None # shape of image to be generated in generation phase
     ):
         self.in_channels = in_channels
         self.down_channels = down_channels
@@ -54,7 +63,7 @@ class Config:
         self.kernel_size = kernel_size or 3
         self.norm = norm or True
         self.activation = activation or True
-        self.method = method or "smld"  # default training method is "smld"
+        self.method = method or "ve"  # default training method is "ve"
         self.start = start or 0
         self.end = end or 1
         self.max_steps = max_steps or 1000
@@ -63,6 +72,14 @@ class Config:
         self.sigma_max = sigma_max or 1.0
         self.beta_range = beta_range or (1e-4, 0.02)
         self.beta_schedule_method = beta_schedule_method or "linear"
+        self.max_epoch = max_epoch or int(1e4)
+        self.device = device or "cuda"
+        self.optimizer = optimizer
+        self.objective = objective or torch.nn.MSELoss()
+        self.save_path = save_path or "default_model.pth"
+        self.checkpoint = checkpoint or 100
+        self.image_shape = image_shape or (3, 32, 32)
+
 
         # compute hyperparameters (sigmas for VE SDE, betas for VP/sub-VP SDEs, and time steps)
         self.sigmas, self.betas, self.cum_betas, self.t = self.compute_params()

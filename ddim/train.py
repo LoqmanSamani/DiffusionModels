@@ -70,8 +70,8 @@ class Train:
                 t = torch.randint(0, self.num_steps, (x.shape[0],)).to(self.device)
                 # add noise to the images using forward process
                 noisy_x = self.forward_diffusion(x, noise, t)
-                print(noisy_x.shape)
-                print(t.shape)
+                # print(noisy_x.shape)
+                # print(t.shape)
                 # predict noise
                 p_noise = self.model(noisy_x, t)
                 # calculate loss

@@ -18,25 +18,30 @@ The project is designed for **learning and experimentation**, providing a well-d
 
 ### ✅ Implemented Models
 
-1. **[Denoising Diffusion Probabilistic Models (DDPM)](https://arxiv.org/abs/2006.11239)** – [Code](./ddpm)  
-   - The foundational diffusion model, introducing probabilistic image generation through iterative denoising.  
+1. **[Denoising Diffusion Probabilistic Models (DDPM)](https://arxiv.org/abs/2006.11239)** – [Source](./ddpm)  
+   - The original diffusion model that generates images by gradually removing noise through multiple steps. It’s slow but produces high-quality results.  
 
-2. **[Denoising Diffusion Implicit Models (DDIM)](https://arxiv.org/abs/2010.02502)** – [Code](./ddim)  
-   - An optimized extension of DDPM that speeds up sampling using a deterministic reverse process, reducing the number of diffusion steps while maintaining high-quality results.
-
+2. **[Denoising Diffusion Implicit Models (DDIM)](https://arxiv.org/abs/2010.02502)** – [Source](./ddim)  
+   - A faster version of DDPM that reduces the number of denoising steps while keeping the image quality high. Instead of fully random noise, it follows a more direct path to generate images.  
+   
+3. **[Score-Based Generative Modeling through Stochastic Differential Equations (SDE)](https://arxiv.org/abs/2011.13456)** - [Source](./sde)  
+   - A more flexible version of diffusion models that uses Stochastic Differential Equations (SDEs) to control how noise is added and removed. This lets us tweak the process for better results and use different ways to solve it, like stochastic sampling or ODE-based methods for more control.  
+   - There are three types of SDE models:
+     - **Variance Exploding (VE) SDE**: Starts with a tiny bit of noise and keeps adding more, making it great for high-resolution images.
+     - **Variance Preserving (VP) SDE**: Works like DDPM, keeping noise levels steady while gradually refining the image.
+     - **Sub-Variance Preserving (Sub-VP) SDE**: A mix between VE and VP that balances speed and quality, often needing fewer steps to get a good image.  
+   - All three models use the same neural network, a modified U-Net (like DDPM) with extra attention layers and time embeddings to handle the noise removal process.
 ---
 
 ### 🔄 In Progress
 
-3. **[Score-Based Generative Models (SDE)](https://arxiv.org/abs/2011.13456)**  
-   - Uses stochastic differential equations (SDEs) instead of deterministic noise prediction. Offers a fundamentally different approach by learning gradients of the data distribution.
+4. **[Latent Diffusion Models (LDM)](https://arxiv.org/abs/2112.10752)**  
+   - Runs diffusion in a compressed latent space instead of pixel space, significantly improving efficiency while maintaining high-resolution synthesis.
 
 ---
 
 ### 🔜 Planned Models
 
-4. **[Latent Diffusion Models (LDM)](https://arxiv.org/abs/2112.10752)**  
-   - Runs diffusion in a compressed latent space instead of pixel space, significantly improving efficiency while maintaining high-resolution synthesis.
 
 5. **[Cascade Diffusion Models (CDM)](https://arxiv.org/abs/2111.13431)**  
    - Uses a multi-stage approach to progressively refine images, generating high-quality outputs with improved resolution.
