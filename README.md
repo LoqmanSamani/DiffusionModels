@@ -19,11 +19,13 @@ The project is designed for **learning and experimentation**, providing a well-d
 ### ✅ Implemented Models
 
 1. **[Denoising Diffusion Probabilistic Models (DDPM)](https://arxiv.org/abs/2006.11239)** – [Source](./ddpm)  
-   - The original diffusion model that generates images by gradually removing noise through multiple steps. It’s slow but produces high-quality results.  
+   - The original diffusion model that generates images by gradually removing noise over multiple steps. It produces high-quality results but is relatively slow.  
+   - The model uses a [U-Net](https://github.com/LoqmanSamani/DiffusionModels/blob/systembiology/ddpm/network.py) architecture with time embeddings and self-attention layers to predict noise.  
 
 2. **[Denoising Diffusion Implicit Models (DDIM)](https://arxiv.org/abs/2010.02502)** – [Source](./ddim)  
-   - A faster version of DDPM that reduces the number of denoising steps while keeping the image quality high. Instead of fully random noise, it follows a more direct path to generate images.  
-   
+   - A faster version of DDPM that requires fewer denoising steps while maintaining high image quality. Instead of following a completely random process, it takes a more direct path to generate images.  
+   - DDIM uses the same neural network as DDPM for noise prediction. The key difference is during inference: the number of steps from a fully noisy image to the final output is much lower than in training, controlled by the parameter **τ (Tau)**.  
+
 3. **[Score-Based Generative Modeling through Stochastic Differential Equations (SDE)](https://arxiv.org/abs/2011.13456)** - [Source](./sde)  
    - A more flexible version of diffusion models that uses Stochastic Differential Equations (SDEs) to control how noise is added and removed. This lets us tweak the process for better results and use different ways to solve it, like stochastic sampling or ODE-based methods for more control.  
    - There are three types of SDE models:
