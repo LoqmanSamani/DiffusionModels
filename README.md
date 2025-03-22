@@ -20,7 +20,7 @@ The project is designed for **learning and experimentation**, providing a well-d
 
 1. **[Denoising Diffusion Probabilistic Models (DDPM)](https://arxiv.org/abs/2006.11239)** – [Source](./ddpm)  
    - The original diffusion model that generates images by gradually removing noise over multiple steps. It produces high-quality results but is relatively slow.  
-   - The model uses a [U-Net](https://github.com/LoqmanSamani/DiffusionModels/blob/systembiology/ddpm/network.py) architecture with time embeddings and self-attention layers to predict noise.  
+   - The model uses a U-Net architecture ([code](https://github.com/LoqmanSamani/DiffusionModels/blob/systembiology/ddpm/network.py), [structure](https://github.com/LoqmanSamani/DiffusionModels/blob/systembiology/ddpm/unet_structure.md)) architecture with time embeddings and self-attention layers to predict noise.  
 
 2. **[Denoising Diffusion Implicit Models (DDIM)](https://arxiv.org/abs/2010.02502)** – [Source](./ddim)  
    - A faster version of DDPM that requires fewer denoising steps while maintaining high image quality. Instead of following a completely random process, it takes a more direct path to generate images.  
