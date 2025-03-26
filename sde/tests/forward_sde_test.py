@@ -14,7 +14,7 @@ def test_forward_sde():
 
     for method in ["smld", "ddim", "subvp"]:
         config.method = method
-        x_noisy = forward_sde.forward(x.clone())
+        x_noisy = forward_sde.forward()
 
         assert x_noisy.shape == x.shape, f"Forward {method}: Shape mismatch"
         assert not torch.equal(x, x_noisy), f"Forward {method}: x should change after diffusion"
