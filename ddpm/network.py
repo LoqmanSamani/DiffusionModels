@@ -319,7 +319,7 @@ class MiddleBlock(nn.Module):
             output = self.conv2[i + 1](output)
             # shapes.append((f"conv3 {i}:", output.shape))
 
-            output = output + self.resnet[i + 1](resnet_input)
+            output = output + self.resnet[i+1](resnet_input)
             # shapes.append((f"output + resnet{i} form (output + attention) {i}:", output.shape))
 
         # print("Middle Blocks")
