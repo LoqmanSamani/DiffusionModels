@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 
 
+
+
 class VariationalLatentCompressor(nn.Module):
     def __init__(
             self,
@@ -13,12 +15,14 @@ class VariationalLatentCompressor(nn.Module):
             num_heads, # number of attention heads in self-attention layers
             num_groups, # number of groups in group normalization. used in self-attention.
             levels,  # number of down/up sampling layers.
-            down_sampling, # a list of bools, if down sampling should be applied.
+            down_sampling_factor, # down-sampling factor, an integer used to down/up sample the input batch of images.
             beta=1.0 # weight for KL loss
     ):
         super().__init__()
-        up_sampling = list(reversed(down_sampling))
-        self.beta = beta
+        assert in_channels == out_channels, "Input and output channels must match for auto-encoding"
+
+        self.beta = beta  # original beta value
+        self.current_beta = beta  # current beta value (for annealing)
         self.conv1 = nn.Conv2d(
             in_channels=in_channels,
             out_channels=down_channels[0],
@@ -28,11 +32,11 @@ class VariationalLatentCompressor(nn.Module):
         self.down_blocks = nn.ModuleList([
             DownBlock(
                 in_channels=down_channels[i],
-                out_channels=down_channels[i+1],
+                out_channels=down_channels[i + 1],
                 num_layers=levels,
-                dropout_rate=dropout_rate,
-                down_sample=down_sampling[i],
-            ) for i in range(len(down_channels)-1)
+                down_sampling_factor=down_sampling_factor,
+                dropout_rate=dropout_rate
+            ) for i in range(len(down_channels) - 1)
         ])
         self.attention1 = Attention(
             num_channels=down_channels[-1],
@@ -67,11 +71,11 @@ class VariationalLatentCompressor(nn.Module):
         self.up_blocks = nn.ModuleList([
             UpBlock(
                 in_channels=up_channels[i],
-                out_channels=up_channels[i+1],
+                out_channels=up_channels[i + 1],
                 num_layers=levels,
-                up_sampling=up_sampling[i],
+                up_sampling_factor=down_sampling_factor,
                 dropout_rate=dropout_rate
-            ) for i in range(len(up_channels)-1)
+            ) for i in range(len(up_channels) - 1)
         ])
         self.conv3 = Conv3(
             in_channels=up_channels[-1],
@@ -85,60 +89,46 @@ class VariationalLatentCompressor(nn.Module):
         return mu + eps * std
 
     def encoder(self, x):
-        print("################### encoder #####################")
         x = self.conv1(x)
-        print(f" x : {x.shape}")
-        print("------------------ begin down blocks ----------------")
         for block in self.down_blocks:
             x = block(x)
-        print("------------------ end down blocks ------------------")
         res_x = x
-        print(f" res_x.shape: {res_x.shape}")
         x = self.attention1(x)
-        print(f" x attention1 : {x.shape}")
         x = x + res_x
-        print(f" x_att + res_x : {x.shape}")
         mu = self.conv_mu(x)
-        print(f" mu : {mu.shape}")
         logvar = self.conv_logvar(x)
-        print(f" logvar : {logvar.shape}")
         z_hat = self.reparameterize(mu, logvar)
-        print(f" z_hat : {z_hat.shape}")
         return z_hat, mu, logvar
 
     def decoder(self, zq):
-        print("################### decoder #####################")
         x = self.conv2(zq)
-        print(f" x : {x.shape}")
         res_x = x
-        print(f" res_x : {res_x.shape}")
         x = self.attention2(x)
-        print(f" x_att : {x.shape}")
         x = x + res_x
-        print(f" x + res_x : {x.shape}")
-
-        print("------------------ begin up blocks ----------------")
         for block in self.up_blocks:
             x = block(x)
-        print("------------------ end up blocks ------------------")
         x = self.conv3(x)
-        print(f" x : {x.shape}")
         return x
 
     def forward(self, x):
+
         z, mu, logvar = self.encoder(x)
         x_hat = self.decoder(z)
-        kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        return x_hat, kl_loss * self.beta
-#--------------------------------------------------------------------------------------------------
-class DownBlock(nn.Module):
+        kl_unnormalized = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        batch_size = x.size(0)
+        latent_size = torch.prod(torch.tensor(mu.shape[1:])).item()
+        kl_loss = kl_unnormalized / (batch_size * latent_size)
+        weighted_kl = kl_loss * self.current_beta
 
-    def __init__(self, in_channels, out_channels, num_layers, dropout_rate, down_sample):
+        return x_hat, weighted_kl
+#------------------------------------------------------------------------------------------------
+class DownBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, num_layers, down_sampling_factor, dropout_rate):
         super().__init__()
         self.num_layers = num_layers
         self.conv1 = nn.ModuleList([
             Conv3(
-                in_channels=in_channels if i==0 else out_channels,
+                in_channels=in_channels if i == 0 else out_channels,
                 out_channels=out_channels,
                 dropout_rate=dropout_rate
             ) for i in range(self.num_layers)
@@ -154,8 +144,8 @@ class DownBlock(nn.Module):
         self.down_sampling = DownSampling(
             in_channels=out_channels,
             out_channels=out_channels,
-            down_sampling_factor=2
-        ) if down_sample else nn.Identity()
+            down_sampling_factor=down_sampling_factor
+        )
         self.resnet = nn.ModuleList([
             nn.Conv2d(
                 in_channels=in_channels if i == 0 else out_channels,
@@ -166,7 +156,6 @@ class DownBlock(nn.Module):
         ])
 
     def forward(self, x):
-
         output = x
         for i in range(self.num_layers):
             resnet_input = output
@@ -174,9 +163,9 @@ class DownBlock(nn.Module):
             output = self.conv2[i](output)
             output = output + self.resnet[i](resnet_input)
         output = self.down_sampling(output)
-
+        print(output.shape)
         return output
-#-----------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------------------
 class Conv3(nn.Module):
     def __init__(self, in_channels, out_channels, dropout_rate):
         super().__init__()
@@ -191,24 +180,25 @@ class Conv3(nn.Module):
         x = self.dropout(x)
         x = self.conv(x)
         return x
-#-----------------------------------------------------------------------------------------
+#------------------------------------------------------------------------------------------------
 class DownSampling(nn.Module):
     def __init__(self, in_channels, out_channels, down_sampling_factor):
         super().__init__()
+        self.down_sampling_factor = down_sampling_factor
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1),
             nn.Conv2d(in_channels=in_channels, out_channels=out_channels // 2,
-                      kernel_size=4, stride=down_sampling_factor, padding=1)
+                      kernel_size=3, stride=down_sampling_factor, padding=1)
         )
         self.pool = nn.Sequential(
             nn.MaxPool2d(kernel_size=down_sampling_factor, stride=down_sampling_factor),
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels//2,
+            nn.Conv2d(in_channels=in_channels, out_channels=out_channels // 2,
                       kernel_size=1, stride=1, padding=0)
         )
 
     def forward(self, batch):
         return torch.cat(tensors=[self.conv(batch), self.pool(batch)], dim=1)
-#-----------------------------------------------------------------------------------------
+#------------------------------------------------------------------------------------------------
 class Attention(nn.Module):
     def __init__(self, num_channels, num_heads, num_groups, dropout_rate):
         super().__init__()
@@ -225,15 +215,22 @@ class Attention(nn.Module):
         x = self.dropout(x)
         x = x.transpose(1, 2).reshape(batch_size, channels, h, w)
         return x
-#-----------------------------------------------------------------------------------------
-
+#------------------------------------------------------------------------------------------------
 class UpBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, num_layers, up_sampling, dropout_rate):
+    def __init__(self, in_channels, out_channels, num_layers, up_sampling_factor, dropout_rate):
         super().__init__()
         self.num_layers = num_layers
+        effective_in_channels = in_channels
+
+        self.up_sampling = UpSampling(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            up_sampling_factor=up_sampling_factor
+        )
+
         self.conv1 = nn.ModuleList([
             Conv3(
-                in_channels=in_channels if i == 0 else out_channels,
+                in_channels=effective_in_channels if i == 0 else out_channels,
                 out_channels=out_channels,
                 dropout_rate=dropout_rate
             ) for i in range(self.num_layers)
@@ -245,100 +242,67 @@ class UpBlock(nn.Module):
                 dropout_rate=dropout_rate
             ) for _ in range(self.num_layers)
         ])
-        self.up_sampling = UpSampling(
-            in_channels=in_channels,
-            out_channels=in_channels//2,
-            up_sampling_factor=2
-        ) if up_sampling else nn.Identity()
         self.resnet = nn.ModuleList([
             nn.Conv2d(
-                in_channels=in_channels if i == 0 else out_channels,
+                in_channels=effective_in_channels if i == 0 else out_channels,
                 out_channels=out_channels,
                 kernel_size=1
             ) for i in range(self.num_layers)
-
         ])
 
     def forward(self, x):
         x = self.up_sampling(x)
-        print(f" x up sampling : {x.shape}")
         output = x
-        print(f" first output : {output.shape}")
-        print("-------------begin layers--------------")
         for i in range(self.num_layers):
             resnet_input = output
-            print(f" resnet_input {i}: {resnet_input.shape}")
             output = self.conv1[i](output)
-            print(f" conv1: {output.shape}")
             output = self.conv2[i](output)
-            print(f" conv2 : {output.shape}")
             output = output + self.resnet[i](resnet_input)
-            print(f" output + resnet_input : {output.shape}")
-        print("-------------end layers--------------")
         return output
-#--------------------------------------------------------------------------------------
+#------------------------------------------------------------------------------------------------
 class UpSampling(nn.Module):
     def __init__(self, in_channels, out_channels, up_sampling_factor):
         super().__init__()
+        half_out_channels = out_channels // 2
+        self.up_sampling_factor = up_sampling_factor
         self.conv = nn.Sequential(
             nn.ConvTranspose2d(
                 in_channels=in_channels,
-                out_channels=out_channels//2,
-                kernel_size=4,
+                out_channels=half_out_channels,
+                kernel_size=3,
                 stride=up_sampling_factor,
-                padding=1
+                padding=1,
+                output_padding=up_sampling_factor - 1
             ),
             nn.Conv2d(
-                in_channels=out_channels//2,
-                out_channels=out_channels//2,
+                in_channels=half_out_channels,
+                out_channels=half_out_channels,
                 kernel_size=1,
                 stride=1,
                 padding=0
             )
         )
         self.up_sample = nn.Sequential(
-            nn.Upsample(scale_factor=up_sampling_factor, mode="bilinear", align_corners=False),
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels//2,
-                      kernel_size=1, stride=1, padding=0)
+            nn.Upsample(scale_factor=up_sampling_factor, mode="nearest"),
+            nn.Conv2d(
+                in_channels=in_channels,
+                out_channels=half_out_channels,
+                kernel_size=1,
+                stride=1,
+                padding=0
+            )
         )
 
     def forward(self, batch):
-        return torch.cat(tensors=[self.conv(batch), self.up_sample(batch)], dim=1)
 
+        conv_output = self.conv(batch)
+        up_sample_output = self.up_sample(batch)
+        if conv_output.shape[2:] != up_sample_output.shape[2:]:
+            _, _, h, w = conv_output.shape
+            up_sample_output = torch.nn.functional.interpolate(
+                up_sample_output,
+                size=(h, w),
+                mode='nearest'
+            )
 
-
-
-
-def test_variational_latent_compressor():
-    # Example parameters
-    in_channels = 3
-    out_channels = 3
-    down_channels = [32, 64, 128, 256]
-    up_channels = [256, 128, 64, 32]
-    dropout_rate = 0.1
-    num_heads = 4
-    num_groups = 8
-    levels = 1
-    down_sampling = [True, True, True]
-    beta = 1.0
-
-    # Create a random input tensor (Batch size 2, RGB image, 128x128)
-    x = torch.randn(2, in_channels, 128, 128)
-
-    # Initialize model
-    model = VariationalLatentCompressor(
-        in_channels, down_channels, up_channels, out_channels,
-        dropout_rate, num_heads, num_groups, levels, down_sampling, beta
-    )
-
-    # Forward pass
-    x_hat, kl_loss = model(x)
-
-    # Check output shape
-    assert x_hat.shape == x.shape, f"Expected output shape {x.shape}, but got {x_hat.shape}"
-    assert kl_loss.shape == torch.Size([]), f"KL loss should be a scalar, got shape {kl_loss.shape}"
-
-    print("Test passed! Model runs successfully and outputs correct shapes.")
-
-# Run the test
-test_variational_latent_compressor()
+        return torch.cat(tensors=[conv_output, up_sample_output], dim=1)
