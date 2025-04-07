@@ -16,8 +16,10 @@ class NoisePredictor(nn.Module):
             num_down_blocks,
             num_mid_blocks,
             num_up_blocks,
-            dropout_rate,
-            down_sampling_factor=2
+            dropout_rate=0.1,
+            down_sampling_factor=2,
+            where_y=True,
+            y_to_all=False
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -31,6 +33,7 @@ class NoisePredictor(nn.Module):
         self.num_mid_blocks = num_mid_blocks
         self.num_up_blocks = num_up_blocks
         self.dropout_rate = dropout_rate
+        self.where_y = where_y
         self.up_sampling = list(reversed(self.down_sampling))
         self.conv1 = nn.Conv2d(
             in_channels=self.in_channels,
@@ -54,7 +57,8 @@ class NoisePredictor(nn.Module):
                 num_layers=self.num_down_blocks,
                 down_sampling_factor=down_sampling_factor,
                 down_sample=self.down_sampling[i],
-                dropout_rate=self.dropout_rate
+                dropout_rate=self.dropout_rate,
+                y_to_all=y_to_all
             ) for i in range(len(self.down_channels)-1)
         ])
         # middle blocks
@@ -65,7 +69,8 @@ class NoisePredictor(nn.Module):
                 time_embed_dim=self.time_embed_dim,
                 y_embed_dim=y_embed_dim,
                 num_layers=self.num_mid_blocks,
-                dropout_rate=self.dropout_rate
+                dropout_rate=self.dropout_rate,
+                y_to_all=y_to_all
             ) for i in range(len(self.mid_channels)-1)
         ])
         # up blocks
@@ -80,7 +85,8 @@ class NoisePredictor(nn.Module):
                 num_layers=self.num_up_blocks,
                 up_sampling_factor=down_sampling_factor,
                 up_sampling=self.up_sampling[i],
-                dropout_rate=self.dropout_rate
+                dropout_rate=self.dropout_rate,
+                y_to_all=y_to_all
             ) for i in range(len(self.up_channels)-1)
         ])
         # final convolution layer
@@ -90,17 +96,15 @@ class NoisePredictor(nn.Module):
             nn.Conv2d(in_channels=self.up_channels[-1], out_channels=self.in_channels, kernel_size=3, padding=1)
         )
 
-    def forward(self, x, t, y=None, where_y=False):
+    def forward(self, x, t, y=None):
 
-        if y is not None and not where_y:
+        if not self.where_y:
             x = torch.cat(tensors=[x, y], dim=1)
-
         output = self.conv1(x)
         time_embed = GetEmbeddedTime(embed_dim=self.time_embed_dim)(time_steps=t)
         time_embed = self.time_projection(time_embed)
         skip_connections = []
-
-        if y is not None and where_y:
+        if self.where_y:
             for i, down in enumerate(self.down_blocks):
                 skip_connections.append(output)
                 output = down(x=output, embed_time=time_embed, y=y)
@@ -109,23 +113,14 @@ class NoisePredictor(nn.Module):
             for i, up in enumerate(self.up_blocks):
                 skip_connection = skip_connections.pop()
                 output = up(x=output, skip_connection=skip_connection, embed_time=time_embed, y=y)
-        else:
-            for i, down in enumerate(self.down_blocks):
-                skip_connections.append(output)
-                output = down(x=output, embed_time=time_embed)
-            for i, mid in enumerate(self.mid_blocks):
-                output = mid(x=output, embed_time=time_embed)
-            for i, up in enumerate(self.up_blocks):
-                skip_connection = skip_connections.pop()
-                output = up(x=output, skip_connection=skip_connection, embed_time=time_embed)
-
         output = self.conv2(output)
         return output
 #-----------------------------------------------------------------------------
 class DownBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, time_embed_dim, y_embed_dim,num_layers, down_sampling_factor,  down_sample=True, dropout_rate=0.2):
+    def __init__(self, in_channels, out_channels, time_embed_dim, y_embed_dim,num_layers, down_sampling_factor,  down_sample, dropout_rate, y_to_all):
         super().__init__()
         self.num_layers = num_layers
+        self.y_to_all = y_to_all
         self.conv1 = nn.ModuleList([
             Conv3(
                 in_channels=in_channels if i==0 else out_channels,
@@ -179,7 +174,7 @@ class DownBlock(nn.Module):
 
         ])
 
-    def forward(self, x, embed_time, y=None):
+    def forward(self, x, embed_time, y):
 
         output = x
         for i in range(self.num_layers):
@@ -188,10 +183,16 @@ class DownBlock(nn.Module):
             output = output + self.time_embedding[i](embed_time)[:, :, None, None]
             output = self.conv2[i](output)
             output = output + self.resnet[i](resnet_input)
-            if y is not None and i == 0:
+            if y is not None and not self.y_to_all and i == 0:
                 out_attn = self.attention[i](output, y)
                 output = output + out_attn
-            elif y is None and i == 0:
+            elif y is not None and self.y_to_all:
+                out_attn = self.attention[i](output, y)
+                output = output + out_attn
+            elif y is None and self.y_to_all:
+                out_attn = self.attention[i](output)
+                output = output + out_attn
+            elif y is None and not self.y_to_all and i == 0:
                 out_attn = self.attention[i](output)
                 output = output + out_attn
 
@@ -199,9 +200,10 @@ class DownBlock(nn.Module):
         return output
 #------------------------------------------------------------------------------
 class MiddleBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, time_embed_dim,  y_embed_dim, num_layers, dropout_rate):
+    def __init__(self, in_channels, out_channels, time_embed_dim,  y_embed_dim, num_layers, dropout_rate, y_to_all=False):
         super().__init__()
         self.num_layers = num_layers
+        self.y_to_all = y_to_all
         self.conv1 = nn.ModuleList([
             Conv3(
                 in_channels=in_channels if i == 0 else out_channels,
@@ -257,10 +259,16 @@ class MiddleBlock(nn.Module):
         output = self.conv2[0](output)
         output = output + self.resnet[0](resnet_input)
         for i in range(self.num_layers):
-            if y is not None and i == 0:
+            if y is not None and not self.y_to_all and i == 0:
                 out_attn = self.attention[i](output, y)
                 output = output + out_attn
-            elif y is None and i == 0:
+            elif y is not None and self.y_to_all:
+                out_attn = self.attention[i](output, y)
+                output = output + out_attn
+            elif y is None and self.y_to_all:
+                out_attn = self.attention[i](output)
+                output = output + out_attn
+            elif y is None and not self.y_to_all and i == 0:
                 out_attn = self.attention[i](output)
                 output = output + out_attn
             resnet_input = output
@@ -272,9 +280,10 @@ class MiddleBlock(nn.Module):
         return output
 #------------------------------------------------------------------------------
 class UpBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, skip_channels, time_embed_dim,  y_embed_dim, num_layers, up_sampling_factor, up_sampling=True, dropout_rate=0.2):
+    def __init__(self, in_channels, out_channels, skip_channels, time_embed_dim,  y_embed_dim, num_layers, up_sampling_factor, up_sampling=True, dropout_rate=0.2, y_to_all=False):
         super().__init__()
         self.num_layers = num_layers
+        self.y_to_all = y_to_all
         effective_in_channels = in_channels//2 + skip_channels
         self.conv1 = nn.ModuleList([
             Conv3(
@@ -340,13 +349,18 @@ class UpBlock(nn.Module):
             output = output + self.time_embedding[i](embed_time)[:, :, None, None]
             output = self.conv2[i](output)
             output = output + self.resnet[i](resnet_input)
-            if y is not None and i == 0:
+            if y is not None and not self.y_to_all and i == 0:
                 out_attn = self.attention[i](output, y)
                 output = output + out_attn
-            elif y is None and i == 0:
+            elif y is not None and self.y_to_all:
+                out_attn = self.attention[i](output, y)
+                output = output + out_attn
+            elif y is None and self.y_to_all:
                 out_attn = self.attention[i](output)
                 output = output + out_attn
-
+            elif y is None and not self.y_to_all and i == 0:
+                out_attn = self.attention[i](output)
+                output = output + out_attn
         return output
 #------------------------------------------------------------------------
 class Conv3(nn.Module):

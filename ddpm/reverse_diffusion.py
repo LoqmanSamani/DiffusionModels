@@ -1,63 +1,71 @@
 import torch
+import torch.nn as nn
 
 
 
-class ReverseDDPM:
+
+class ReverseDDPM(nn.Module):
     """
-    reverse diffusion process of the "Denoising Diffusion Probabilistic Model (DDPM)".
-    the class removes noise from an image that has undergone a diffusion process.
-    it predicts the denoised image at the previous time step (`xt-1`).
+    Reverse diffusion process of Denoising Diffusion Probabilistic Models (DDPM).
+    Removes noise from images step-by-step to estimate the previous timestep.
     """
-
     def __init__(self, num_steps=1000, beta_start=1e-4, beta_end=0.02):
-
-        params = self.compute_params(num_steps, beta_start, beta_end)
-        self.betas = params[0]  # noise variances
-        self.alphas = params[1]  # (1 - betas)
-        self.alpha_bars = params[2]  # cumulative product of alphas
+        super().__init__()
         self.num_steps = num_steps
         self.beta_start = beta_start
         self.beta_end = beta_end
 
-    @staticmethod
-    def compute_params(num_steps, beta_start, beta_end):
-        """
-        computes the noise schedule parameters used in the diffusion process.
-        """
-        betas = torch.linspace(start=beta_start, end=beta_end, steps=num_steps)  # Linear noise schedule
-        alphas = 1 - betas  # Noise reduction factors
-        alpha_bars = torch.cumprod(alphas, dim=0)  # Cumulative product of alphas
+        # precompute noise schedule parameters
+        betas, alphas, alpha_bars = self._compute_schedule(num_steps, beta_start, beta_end)
+        self.register_buffer('betas', betas)  # β_t
+        self.register_buffer('alphas', alphas)  # α_t = 1 - β_t
+        self.register_buffer('alpha_bars', alpha_bars)  # ᾱ_t = ∏ α_s
 
+    @staticmethod
+    def _compute_schedule(num_steps, beta_start, beta_end):
+        """computes the noise schedule parameters (shared with ForwardDiffusion)."""
+        betas = torch.linspace(beta_start, beta_end, num_steps)
+        alphas = 1 - betas
+        alpha_bars = torch.cumprod(alphas, dim=0)
         return betas, alphas, alpha_bars
 
-    def remove_noise(self, batch_t, predicted_noise, time_step):
+    def forward(self, xt, predicted_noise, time_steps):
         """
-        performs one step of the reverse diffusion process to estimate the original image
-        and also predict the previous time step image.
+        Performs one step of the reverse diffusion process.
+        Args:
+            xt: Noisy images at timestep t, shape [batch_size, channels, height, width]
+            predicted_noise: Noise predicted by a model, same shape as xt
+            time_steps: Tensor of timesteps, shape [batch_size]
+        Returns:
+            xt_minus_1: Estimated images at timestep t-1, same shape as xt
         """
-        # estimate the original clean image x0 using the DDPM formula (it is skipped in the original paper!!!)
-        # batch0 = (batch_t - (torch.sqrt(1 - self.alpha_bars.to(batch_t.device)[time_step])) * predicted_noise) / \
-        #          (torch.sqrt(self.alpha_bars.to(batch_t.device)[time_step]))
-        # batch0 = torch.clamp(batch0, min=-1.0, max=1.0)  # clamp values to [-1,1]
+        if not torch.all((time_steps >= 0) & (time_steps < self.num_steps)):
+            raise ValueError(f"time_steps must be between 0 and {self.num_steps - 1}")
 
-        # used to calculate x_t-1
-        pred = (batch_t - ((1 - self.alphas.to(batch_t.device)[time_step]) * predicted_noise) /
-                     (torch.sqrt(1 - self.alpha_bars.to(batch_t.device)[time_step]))) / \
-                     (torch.sqrt(self.alphas.to(batch_t.device)[time_step]))
+        # extract noise schedule parameters
+        alphas_t = self.alphas[time_steps].to(xt.device)  # [batch_size]
+        alpha_bars_t = self.alpha_bars[time_steps].to(xt.device)  # [batch_size]
+        betas_t = self.betas[time_steps].to(xt.device)  # [batch_size]
 
-        # if t=0, return x0 since we don’t predict earlier steps
-        if time_step == 0:
-            return pred #, batch0
+        # reshape for broadcasting
+        sqrt_alphas_t = torch.sqrt(alphas_t).view(-1, 1, 1, 1)  # [batch_size, 1, 1, 1]
+        sqrt_one_minus_alpha_bars_t = torch.sqrt(1 - alpha_bars_t).view(-1, 1, 1, 1)  # [batch_size, 1, 1, 1]
+        betas_t = betas_t.view(-1, 1, 1, 1)  # [batch_size, 1, 1, 1]
 
-        # compute the variance term for adding noise
-        var = (1 - self.alpha_bars.to(batch_t.device)[time_step - 1]) / (1 - self.alpha_bars.to(batch_t.device)[time_step])
-        var = var * self.betas.to(batch_t.device)[time_step]
-        std = var ** 0.5  # Standard deviation
+        # compute mean: μ_θ = (1 / sqrt(α_t)) * (x_t - (β_t / sqrt(1 - ᾱ_t)) * ε_θ)
+        mu = (xt - (betas_t / sqrt_one_minus_alpha_bars_t) * predicted_noise) / sqrt_alphas_t
 
-        # sample Gaussian noise
-        z = torch.randn(batch_t.shape).to(batch_t.device)
+        # if all time_steps are 0, return mean without noise
+        mask = (time_steps == 0)  # [batch_size]
+        if mask.all():
+            return mu
 
-        # predict the next image x_{t-1}
-        predicted = pred + std * z
+        # compute variance: σ_t^2 = (1 - ᾱ_{t-1}) / (1 - ᾱ_t) * β_t
+        alpha_bars_t_minus_1 = self.alpha_bars[time_steps - 1].to(xt.device)  # [batch_size]
+        variance = (1 - alpha_bars_t_minus_1) / (1 - alpha_bars_t) * betas_t.squeeze()  # Squeeze to [batch_size]
+        std = torch.sqrt(variance).view(-1, 1, 1, 1)  # [batch_size, 1, 1, 1]
 
-        return predicted #, batch0
+        # add noise for t > 0
+        z = torch.randn_like(xt).to(xt.device)
+        xt_minus_1 = mu + (~mask).float().view(-1, 1, 1, 1) * std * z
+        return xt_minus_1
