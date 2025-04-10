@@ -1,9 +1,9 @@
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from unet import NoisePredictor
 from text_encoder import TextEncoder
-import time
+from noise_predictor import NoisePredictor
+
 
 
 
@@ -44,9 +44,9 @@ def test_unet_and_encoder():
 
     unet = NoisePredictor(
         in_channels=latent_channels,
-        down_channels=[64, 128, 256, 512],  # Match embed_dim
-        mid_channels=[512, 512, 512],             # Match embed_dim
-        up_channels=[512, 256, 128, 64],   # Match embed_dim
+        down_channels=[64, 128, 256, 512],
+        mid_channels=[512, 512, 512],
+        up_channels=[512, 256, 128, 64],
         down_sampling=[True, True, True],
         time_embed_dim=128,
         y_embed_dim=embed_dim,
@@ -79,17 +79,17 @@ def test_unet_and_encoder():
     print("Testing UNet and Encoder for 1 epoch...")
 
     for images, texts in data_loader:
-        images = images.to(device)  # Shape: (32, 3, 64, 64)
-        texts = texts.to(device)    # Shape: (32, 20)
+        images = images.to(device)
+        texts = texts.to(device)
 
         t = torch.randint(1, 1000, (batch_size,), device=device)
 
-        text_embeddings = encoder(texts)  # Shape: (32, 20, 512)
+        text_embeddings = encoder(texts)
         print(f"Text embeddings shape: {text_embeddings.shape}")
 
-        noise_pred = unet(images, t, y=text_embeddings, where_y=True)
-        print(f"Input shape: {images.shape}")  # Expected: (32, 3, 64, 64)
-        print(f"Output (noise_pred) shape: {noise_pred.shape}")  # Expected: (32, 3, 64, 64)
+        noise_pred = unet(images, t, y=text_embeddings)
+        print(f"Input shape: {images.shape}")
+        print(f"Output (noise_pred) shape: {noise_pred.shape}")
 
         assert noise_pred.shape == images.shape, f"Expected output shape {images.shape}, got {noise_pred.shape}"
 

@@ -1,39 +1,31 @@
 import torch
 import numpy as np
 from tqdm import tqdm
-from forward_diffusion import ForwardDDPM  # Assuming this is the updated class
+from forward_ddpm import ForwardDDPM  # Assuming this is the updated class
 
 
 class DDPMTrain:
     """Trainer for Denoising Diffusion Probabilistic Models (DDPM)."""
-    def __init__(self, config):
-        self.config = config
-        self.model = config.model
-        self.save_path = config.model_path
-        self.train_loader = config.train_loader
-        self.num_epochs = config.num_epochs
-        self.in_channels = config.in_channels
-        self.learning_rate = config.learning_rate
-        self.device = config.device
-        self.num_steps = config.num_diffusion_steps  # Renamed for consistency
+    def __init__(self, noise_predictor, hyper_params_model, train_loader, optimizer, objective, val_loader=None, in_channels=3, num_steps=1000, max_epochs=1000, device=None, conditional_model=None, store_path=None):
 
-        # Initialize optimizer if not provided
-        self.optimizer = config.optimizer if hasattr(config, 'optimizer') else torch.optim.Adam(
-            self.model.parameters(), lr=self.learning_rate
-        )
-        # Initialize loss function if not provided (default to MSE)
-        self.loss = config.loss if hasattr(config, 'loss') else torch.nn.MSELoss()
+        self.noise_predictor = noise_predictor
+        self.hyper_params_model = hyper_params_model
+        self.conditional_model = conditional_model
+        self.optimizer = optimizer
+        self.objective = objective
+        self.store_path = store_path or ""
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.max_epochs = max_epochs
+        self.in_channels = in_channels
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.num_steps = num_steps
 
         # Forward diffusion process
         self.forward_diffusion = ForwardDDPM(
-            num_steps=self.num_steps,
-            beta_start=config.beta_start,
-            beta_end=config.beta_end
+            hyper_params=self.hyper_params_model
         ).to(self.device)
 
-        # Validate timestep consistency
-        if hasattr(config, 'num_time_steps') and config.num_time_steps != self.num_steps:
-            raise ValueError(f"num_time_steps ({config.num_time_steps}) must equal num_diffusion_steps ({self.num_steps})")
 
     def fit(self):
         """Trains the DDPM model to predict noise added by the forward diffusion process."""

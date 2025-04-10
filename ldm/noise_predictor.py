@@ -65,13 +65,13 @@ class NoisePredictor(nn.Module):
         self.mid_blocks = nn.ModuleList([
             MiddleBlock(
                 in_channels=self.mid_channels[i],
-                out_channels=self.mid_channels[i+1],
+                out_channels=self.mid_channels[i + 1],
                 time_embed_dim=self.time_embed_dim,
                 y_embed_dim=y_embed_dim,
                 num_layers=self.num_mid_blocks,
                 dropout_rate=self.dropout_rate,
                 y_to_all=y_to_all
-            ) for i in range(len(self.mid_channels)-1)
+            ) for i in range(len(self.mid_channels) - 1)
         ])
         # up blocks
         skip_channels = list(reversed(self.down_channels))
@@ -96,23 +96,32 @@ class NoisePredictor(nn.Module):
             nn.Conv2d(in_channels=self.up_channels[-1], out_channels=self.in_channels, kernel_size=3, padding=1)
         )
 
+    def initialize_weights(self):
+        """Initialize model weights for better training stability"""
+        for module in self.modules():
+            if isinstance(module, (nn.Conv2d, nn.Linear, nn.ConvTranspose2d)):
+                nn.init.kaiming_normal_(module.weight, a=0.2, nonlinearity='leaky_relu')
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
     def forward(self, x, t, y=None):
 
-        if not self.where_y:
+        if not self.where_y and y is not None:
             x = torch.cat(tensors=[x, y], dim=1)
         output = self.conv1(x)
         time_embed = GetEmbeddedTime(embed_dim=self.time_embed_dim)(time_steps=t)
         time_embed = self.time_projection(time_embed)
         skip_connections = []
-        if self.where_y:
-            for i, down in enumerate(self.down_blocks):
-                skip_connections.append(output)
-                output = down(x=output, embed_time=time_embed, y=y)
-            for i, mid in enumerate(self.mid_blocks):
-                output = mid(x=output, embed_time=time_embed, y=y)
-            for i, up in enumerate(self.up_blocks):
-                skip_connection = skip_connections.pop()
-                output = up(x=output, skip_connection=skip_connection, embed_time=time_embed, y=y)
+
+        for i, down in enumerate(self.down_blocks):
+            skip_connections.append(output)
+            output = down(x=output, embed_time=time_embed, y=y)
+        for i, mid in enumerate(self.mid_blocks):
+            output = mid(x=output, embed_time=time_embed, y=y)
+        for i, up in enumerate(self.up_blocks):
+            skip_connection = skip_connections.pop()
+            output = up(x=output, skip_connection=skip_connection, embed_time=time_embed, y=y)
+
         output = self.conv2(output)
         return output
 #-----------------------------------------------------------------------------
@@ -175,7 +184,7 @@ class DownBlock(nn.Module):
         ])
 
     def forward(self, x, embed_time, y):
-
+        #print("down-block input shape:", x.size())
         output = x
         for i in range(self.num_layers):
             resnet_input = output
@@ -197,6 +206,7 @@ class DownBlock(nn.Module):
                 output = output + out_attn
 
         output = self.down_sampling(output)
+        #print("down-block output shape:", output.size())
         return output
 #------------------------------------------------------------------------------
 class MiddleBlock(nn.Module):
@@ -239,7 +249,7 @@ class MiddleBlock(nn.Module):
                 num_groups=8,
                 num_heads=4,
                 dropout_rate=dropout_rate
-            ) for _ in range(self.num_layers)
+            ) for _ in range(self.num_layers + 1)
         ])
         self.resnet = nn.ModuleList([
             nn.Conv2d(
@@ -247,11 +257,10 @@ class MiddleBlock(nn.Module):
                 out_channels=out_channels,
                 kernel_size=1
             ) for i in range(num_layers+1)
-
         ])
 
     def forward(self, x, embed_time, y=None):
-
+        #print("mid-input shape:", x.size())
         output = x
         resnet_input = output
         output = self.conv1[0](output)
@@ -276,6 +285,7 @@ class MiddleBlock(nn.Module):
             output = output + self.time_embedding[i + 1](embed_time)[:, :, None, None]
             output = self.conv2[i + 1](output)
             output = output + self.resnet[i+1](resnet_input)
+        #print("mid-block output shape:", output.size())
 
         return output
 #------------------------------------------------------------------------------
@@ -339,7 +349,7 @@ class UpBlock(nn.Module):
         ])
 
     def forward(self, x, skip_connection, embed_time, y=None):
-
+        #print("up-block input shape:", x.size())
         x = self.up_sampling(x)
         x = torch.cat(tensors=[x, skip_connection], dim=1)
         output = x
@@ -361,21 +371,22 @@ class UpBlock(nn.Module):
             elif y is None and not self.y_to_all and i == 0:
                 out_attn = self.attention[i](output)
                 output = output + out_attn
+        #print("up-block output shape:", output.size())
         return output
 #------------------------------------------------------------------------
 class Conv3(nn.Module):
     def __init__(self, in_channels, out_channels, num_groups=8, kernel_size=3, norm=True, activation=True, dropout_rate=0.2):
         super().__init__()
-        self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=in_channels) if norm else nn.Identity()
-        self.activation = nn.SiLU() if activation else nn.Identity()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, padding=(kernel_size - 1) // 2)
+        self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels) if norm else nn.Identity()
+        self.activation = nn.SiLU() if activation else nn.Identity()
         self.dropout = nn.Dropout(p=dropout_rate)
 
     def forward(self, batch):
+        batch = self.conv(batch)
         batch = self.group_norm(batch)
         batch = self.activation(batch)
         batch = self.dropout(batch)
-        batch = self.conv(batch)
         return batch
 #----------------------------------------------------------------
 class TimeEmbedding(nn.Module):
@@ -416,10 +427,20 @@ class Attention(nn.Module):
     def forward(self, x, y=None):
         batch_size, channels, h, w = x.shape
         assert channels == self.in_channels, f"Expected {self.in_channels} channels, got {channels}"
-        x_reshaped = x.view(batch_size, channels, h * w)
-        x_reshaped = x_reshaped.permute(0, 2, 1)
+        x_reshaped = x.view(batch_size, channels, h * w).permute(0, 2, 1)
         if y is not None:
             y = self.y_projection(y)
+            if y.dim() != 3:
+                if y.dim() == 2:
+                    y = y.unsqueeze(1)
+                else:
+                    raise ValueError(
+                        f"Expected y to be 2D or 3D after projection, got {y.dim()}D with shape {y.shape}"
+                    )
+            if y.shape[-1] != self.in_channels:
+                raise ValueError(
+                    f"Expected y's embedding dim to match in_channels ({self.in_channels}), got {y.shape[-1]}"
+                )
             out, _ = self.attention(x_reshaped, y, y)
         else:
             out, _ = self.attention(x_reshaped, x_reshaped, x_reshaped)

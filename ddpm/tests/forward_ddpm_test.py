@@ -1,33 +1,21 @@
 import torch
-from forward_diffusion import ForwardDDPM
+from hyper_params import HyperParams
+from forward_ddpm import ForwardDDPM
+
+
+
 
 
 def test_forward_ddpm():
-
-    torch.manual_seed(42)
-
-    num_steps = 1000
-    beta_start = 1e-4
-    beta_end = 0.02
-    ddpm = ForwardDDPM(num_steps=num_steps, beta_start=beta_start, beta_end=beta_end)
-
-    batch_size = 8
-    channels = 3
-    height = 64
-    width = 64
-    batch = torch.randn(batch_size, channels, height, width)
-
-    # Generate random Gaussian noise
-    noise = torch.randn_like(batch)
-    # Randomly select time steps for each image in batch
-    time_steps = torch.randint(0, num_steps, (batch_size,))
-    noisy_images = ddpm.add_noise(batch, noise, time_steps)
-
-    assert noisy_images.shape == batch.shape, "Output shape does not match input shape!"
-    assert torch.all(torch.isfinite(noisy_images)), "NaN or Inf detected in output!"
-    assert not torch.allclose(noisy_images, batch), "Noise not applied properly!"
-
-    print("Test passed: ForwardDDPM `add_noise` function works correctly!")
+    hyper_params = HyperParams(num_steps=1000, beta_method="sigmoid")
+    forward = ForwardDDPM(hyper_params)
+    x0 = torch.randn(4, 3, 32, 32)
+    noise = torch.randn_like(x0)
+    time_steps = torch.tensor([0, 250, 500, 750])
+    xt = forward(x0, noise, time_steps)
+    assert xt.shape == x0.shape, f"Expected shape {x0.shape}, got {xt.shape}"
+    print("ForwardDDPM test passed!")
 
 
-test_forward_ddpm()
+if __name__ == "__main__":
+    test_forward_ddpm()

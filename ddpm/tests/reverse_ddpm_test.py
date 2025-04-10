@@ -1,26 +1,20 @@
 import torch
-from reverse_diffusion import ReverseDDPM
+from hyper_params import HyperParams
+from reverse_ddpm import ReverseDDPM
+
+
 
 
 def test_reverse_ddpm():
-
-    torch.manual_seed(42)
-
-    ddpm = ReverseDDPM(num_steps=1000, beta_start=1e-4, beta_end=0.02)
-
-    batch_size = 1
-    img_channels = 3
-    img_size = 32
-    batch_t = torch.randn((batch_size, img_channels, img_size, img_size))
-    predicted_noise = torch.randn_like(batch_t)
-    time_step = torch.randint(0, ddpm.num_steps, (batch_size,))
-    predicted  = ddpm.remove_noise(batch_t, predicted_noise, time_step)
-
-    assert predicted.shape == batch_t.shape, "Predicted x_{t-1} shape mismatch!"
-    # assert batch0.shape == batch_t.shape, "Estimated x_0 shape mismatch!"
-    # assert torch.all(batch0 >= -1.0) and torch.all(batch0 <= 1.0), "x_0 values out of range [-1,1]!"
-
-    print("ReverseDDPM tests passed successfully!")
+    hyper_params = HyperParams(num_steps=1000, beta_method="quadratic")
+    reverse = ReverseDDPM(hyper_params)
+    xt = torch.randn(4, 3, 32, 32)
+    predicted_noise = torch.randn_like(xt)
+    time_steps = torch.tensor([0, 250, 500, 750])
+    xt_minus_1 = reverse(xt, predicted_noise, time_steps)
+    assert xt_minus_1.shape == xt.shape, f"Expected shape {xt.shape}, got {xt_minus_1.shape}"
+    print("ReverseDDPM test passed!")
 
 
-test_reverse_ddpm()
+if __name__ == "__main__":
+    test_reverse_ddpm()
