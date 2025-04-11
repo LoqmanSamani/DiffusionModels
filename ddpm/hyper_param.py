@@ -5,7 +5,7 @@ import torch.nn as nn
 
 
 
-class HyperParams(nn.Module):
+class HyperParamsDDPM(nn.Module):
     """hyperparameters for DDPM noise schedule with flexible beta computation."""
     def __init__(self, num_steps=1000, beta_start=1e-4, beta_end=0.02, trainable_beta=False, beta_method="linear"):
         super().__init__()

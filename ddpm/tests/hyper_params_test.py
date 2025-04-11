@@ -1,5 +1,5 @@
 import torch
-from hyper_params import HyperParams
+from hyper_params import HyperParamsDDPM
 
 
 
@@ -10,7 +10,7 @@ def test_hyper_params():
     beta_start, beta_end = 1e-4, 0.02
 
     for method in methods:
-        hyper_params = HyperParams(num_steps=num_steps, beta_start=beta_start, beta_end=beta_end, beta_method=method)
+        hyper_params = HyperParamsDDPM(num_steps=num_steps, beta_start=beta_start, beta_end=beta_end, beta_method=method)
         betas = hyper_params.betas
         assert betas.shape == (num_steps,), f"Expected shape ({num_steps},), got {betas.shape}"
         assert torch.all(betas >= beta_start) and torch.all(betas <= beta_end + 1e-6), \

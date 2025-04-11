@@ -63,4 +63,3 @@ class GenerateDDPM(nn.Module):
 
         return generated_imgs
 
-

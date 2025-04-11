@@ -184,7 +184,7 @@ class DownBlock(nn.Module):
         ])
 
     def forward(self, x, embed_time, y):
-        print("down-block input shape:", x.size())
+        #print("down-block input shape:", x.size())
         output = x
         for i in range(self.num_layers):
             resnet_input = output
@@ -206,7 +206,7 @@ class DownBlock(nn.Module):
                 output = output + out_attn
 
         output = self.down_sampling(output)
-        print("down-block output shape:", output.size())
+        #print("down-block output shape:", output.size())
         return output
 #------------------------------------------------------------------------------
 class MiddleBlock(nn.Module):
@@ -260,7 +260,7 @@ class MiddleBlock(nn.Module):
         ])
 
     def forward(self, x, embed_time, y=None):
-        print("mid-input shape:", x.size())
+        #print("mid-input shape:", x.size())
         output = x
         resnet_input = output
         output = self.conv1[0](output)
@@ -285,7 +285,7 @@ class MiddleBlock(nn.Module):
             output = output + self.time_embedding[i + 1](embed_time)[:, :, None, None]
             output = self.conv2[i + 1](output)
             output = output + self.resnet[i+1](resnet_input)
-        print("mid-block output shape:", output.size())
+        #print("mid-block output shape:", output.size())
 
         return output
 #------------------------------------------------------------------------------
@@ -349,7 +349,7 @@ class UpBlock(nn.Module):
         ])
 
     def forward(self, x, skip_connection, embed_time, y=None):
-        print("up-block input shape:", x.size())
+        #print("up-block input shape:", x.size())
         x = self.up_sampling(x)
         x = torch.cat(tensors=[x, skip_connection], dim=1)
         output = x
@@ -371,7 +371,7 @@ class UpBlock(nn.Module):
             elif y is None and not self.y_to_all and i == 0:
                 out_attn = self.attention[i](output)
                 output = output + out_attn
-        print("up-block output shape:", output.size())
+        #print("up-block output shape:", output.size())
         return output
 #------------------------------------------------------------------------
 class Conv3(nn.Module):
