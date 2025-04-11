@@ -26,7 +26,7 @@ def test_generate():
     for method in ["ve", "vp", "sub-vp"]:
         config.method = method
         generator = Generate(config, model, device="cpu")
-        output = generator.forward(,,,,
+        output = generator.forward(,,,,,,,,,,
 
         assert isinstance(output, torch.Tensor), "Output should be a torch Tensor"
         assert output.shape == (config.max_steps, *config.image_shape), "Output shape mismatch"

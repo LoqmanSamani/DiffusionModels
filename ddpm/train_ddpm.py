@@ -3,7 +3,6 @@ from torch.cuda.amp import GradScaler, autocast
 import torch.nn as nn
 from tqdm import tqdm
 from torch.amp import GradScaler, autocast
-#import wandb
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 from forward_ddpm import ForwardDDPM

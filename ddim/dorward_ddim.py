@@ -36,3 +36,5 @@ class ForwardDDIM(nn.Module):
         noisy_x = at_sqrt * x + com_at_sqrt * noise
 
         return noisy_x
+
+

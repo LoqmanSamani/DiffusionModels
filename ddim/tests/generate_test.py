@@ -20,7 +20,7 @@ def test_generate():
     )
 
     generate = Generate(config)
-    output = generate.forward(,,,,
+    output = generate.forward(,,,,,,,,,,
     expected_shape = (config.num_tau_steps, config.in_channels, config.image_shape, config.image_shape)
     assert output.shape == expected_shape, \
         f"unexpected output shape: {output.shape}, expected: {expected_shape}"
