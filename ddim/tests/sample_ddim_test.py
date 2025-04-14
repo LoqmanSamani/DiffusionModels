@@ -1,18 +1,17 @@
 import torch
-from text_encoder import TextEncoder
-from reverse_ddpm import ReverseDDPM
-from noise_predictor import NoisePredictor
 from transformers import BertTokenizer
-from hyper_param import HyperParams
-from generate_ddpm import GenerateDDPM
+from hyper_param import HyperParamsDDIM
+from reverse_ddim import ReverseDDIM
+from noise_predictor import NoisePredictor
+from text_encoder import TextEncoder
+from sample_ddim import SampleDDIM
 
 
 
+def test_generate_ddim_unconditional():
+    """tests GenerateDDIM in unconditional mode."""
 
-def test_generate_ddpm_unconditional():
-    """Tests GenerateDDPM in unconditional mode."""
-
-    hyper_params = HyperParams(num_steps=10)
+    hyper_params = HyperParamsDDIM(num_steps=100, tau_num_steps=10)
     noise_predictor = NoisePredictor(
         in_channels=3,
         down_channels=[64, 128],
@@ -25,7 +24,7 @@ def test_generate_ddpm_unconditional():
         num_mid_blocks=2,
         num_up_blocks=2
     )
-    generator = GenerateDDPM(
+    generator = SampleDDIM(
         noise_predictor=noise_predictor,
         hyper_params_model=hyper_params,
         image_shape=(64, 64),
@@ -40,9 +39,9 @@ def test_generate_ddpm_unconditional():
 
 
 
-def test_generate_ddpm_conditional():
-    """Tests GenerateDDPM in conditional mode with TextEncoder."""
-    hyper_params = HyperParams(num_steps=10)
+def test_generate_ddim_conditional():
+    """tests GenerateDDIM in conditional mode with TextEncoder."""
+    hyper_params = HyperParamsDDIM(num_steps=100, tau_num_steps=10)
 
     noise_predictor = NoisePredictor(
         in_channels=3,
@@ -62,7 +61,7 @@ def test_generate_ddpm_conditional():
     texts = ["A sunny beach", "A snowy mountain"]
     conditions = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=77)["input_ids"]
 
-    generator = GenerateDDPM(
+    generator = SampleDDIM(
         noise_predictor=noise_predictor,
         hyper_params_model=hyper_params,
         image_shape=(64, 64),
@@ -79,5 +78,5 @@ def test_generate_ddpm_conditional():
     print("Conditional GenerateDDPM test passed!")
 
 if __name__ == "__main__":
-    test_generate_ddpm_unconditional()
-    test_generate_ddpm_conditional()
+    test_generate_ddim_unconditional()
+    test_generate_ddim_conditional()

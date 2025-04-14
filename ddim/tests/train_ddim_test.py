@@ -5,12 +5,11 @@ import numpy as np
 import os
 from noise_predictor import NoisePredictor
 from text_encoder import TextEncoder
-from hyper_param import HyperParamsDDPM
-from train_ddpm import TrainDDPM
+from hyper_param import HyperParamsDDIM
+from train_ddim import TrainDDIM
 
 
-# allowlist HyperParams for safe checkpoint loading!
-torch.serialization.add_safe_globals([HyperParamsDDPM])
+torch.serialization.add_safe_globals([HyperParamsDDIM])
 
 
 class MockDataset(Dataset):
@@ -32,7 +31,7 @@ def test_ddpm_training():
     """Test function for DDPMTrain class."""
     torch.manual_seed(42)
     np.random.seed(42)
-    device = torch.device("cuda")
+    device = torch.device("cpu")
     noise_model = NoisePredictor(
         in_channels=3,
         down_channels=[32, 64, 128],
@@ -63,7 +62,7 @@ def test_ddpm_training():
         scaling_value=4,
         epsilon=1e-5
     )
-    hyper_params = HyperParamsDDPM(num_steps=500, beta_start=1e-4, beta_end=0.02, beta_method="linear")
+    hyper_params = HyperParamsDDIM(num_steps=500, tau_num_steps=100, beta_start=1e-4, beta_end=0.02, beta_method="linear")
     train_dataset = MockDataset(num_samples=10)
     val_dataset = MockDataset(num_samples=5)
     train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
@@ -74,14 +73,13 @@ def test_ddpm_training():
     )
     objective = nn.MSELoss()
 
-    trainer1 = TrainDDPM(
+    trainer1 = TrainDDIM(
         noise_predictor=noise_model,
         hyper_params_model=hyper_params,
         data_loader=train_loader,
         optimizer=optimizer,
         objective=objective,
         val_loader=val_loader,
-        num_steps=100,
         max_epoch=5,
         device=device,
         conditional_model=conditional_model,
@@ -90,14 +88,13 @@ def test_ddpm_training():
         warmup_epochs=1
     )
 
-    trainer2 = TrainDDPM(
+    trainer2 = TrainDDIM(
         noise_predictor=noise_model,
         hyper_params_model=hyper_params,
         data_loader=train_loader,
         optimizer=optimizer,
         objective=objective,
         val_loader=val_loader,
-        num_steps=100,
         max_epoch=5,
         device=device,
         conditional_model=None,

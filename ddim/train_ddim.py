@@ -5,14 +5,14 @@ from tqdm import tqdm
 from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
-from forward_ddpm import ForwardDDPM
 import warnings
+from forward_ddim import ForwardDDIM
 
 
 
-class TrainDDPM(nn.Module):
-    """Trainer for Denoising Diffusion Probabilistic Models (DDPM)."""
 
+class TrainDDIM(nn.Module):
+    """Trainer for Denoising Diffusion Implicit Models (DDIM)."""
     def __init__(self, noise_predictor, hyper_params_model, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, tokenizer=None, max_length=77,
                  store_path=None, patience=10, warmup_epochs=100):
@@ -22,7 +22,7 @@ class TrainDDPM(nn.Module):
         self.conditional_model = conditional_model
         self.optimizer = optimizer
         self.objective = objective
-        self.store_path = store_path or "ddpm_model.pth"
+        self.store_path = store_path or "ddim_model.pth"
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epoch = max_epoch
@@ -31,7 +31,7 @@ class TrainDDPM(nn.Module):
         self.max_length = max_length
         self.patience = patience
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=self.patience, factor=0.5)
-        self.forward_diffusion = ForwardDDPM(hyper_params=self.hyper_params_model).to(self.device)
+        self.forward_diffusion = ForwardDDIM(hyper_params=self.hyper_params_model).to(self.device)
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
 
     def load_checkpoint(self, checkpoint_path):
@@ -81,7 +81,7 @@ class TrainDDPM(nn.Module):
         return LambdaLR(optimizer, lr_lambda)
 
     def forward(self):
-        """Trains the DDPM model to predict noise added by the forward diffusion process."""
+        """Trains the DDIM model to predict noise added by the forward diffusion process."""
         self.noise_predictor.train()
         self.noise_predictor.to(self.device)
         if self.conditional_model is not None:
@@ -150,7 +150,7 @@ class TrainDDPM(nn.Module):
                 wait = 0
                 try:
                     torch.save({
-                        'epoch': epoch+1,
+                        'epoch': epoch + 1,
                         'model_state_dict_noise_predictor': self.noise_predictor.state_dict(),
                         'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                         'optimizer_state_dict': self.optimizer.state_dict(),
@@ -167,7 +167,7 @@ class TrainDDPM(nn.Module):
                     print("Early stopping triggered")
                     try:
                         torch.save({
-                            'epoch': epoch+1,
+                            'epoch': epoch + 1,
                             'model_state_dict_noise_predictor': self.noise_predictor.state_dict(),
                             'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                             'optimizer_state_dict': self.optimizer.state_dict(),
