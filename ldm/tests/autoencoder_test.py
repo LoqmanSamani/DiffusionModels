@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
-from autoencoder import LDMAutoencoder
+from autoencoder import AutoencoderLDM
 
 
 
@@ -20,7 +20,7 @@ def test_ldm_autoencoder():
     small_subset = Subset(dataset, range(5))
     data_loader = DataLoader(small_subset, batch_size=2, shuffle=False)
 
-    model = LDMAutoencoder(
+    model = AutoencoderLDM(
         in_channels=3,
         down_channels=[32, 64],
         up_channels=[64, 32],

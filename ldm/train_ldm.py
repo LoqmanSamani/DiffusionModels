@@ -1,36 +1,35 @@
 import torch
-from torch.cuda.amp import GradScaler, autocast
-import torch.nn as nn
 from tqdm import tqdm
+import torch.nn as nn
+from torch.cuda.amp import GradScaler, autocast
 from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 import warnings
-from forward_ddim import ForwardDDIM
 
 
 
 
-class TrainDDIM(nn.Module):
-    """Trainer for Denoising Diffusion Implicit Models (DDIM)."""
-    def __init__(self, noise_predictor, hyper_params_model, data_loader, optimizer, objective, val_loader=None,
-                 max_epoch=1000, device=None, conditional_model=None, tokenizer=None, max_length=77,
-                 store_path=None, patience=10, warmup_epochs=100, val_frequency=10):
-        super().__init__()
+class TrainLDM(nn.Module):
+    def __init__(self, forward_model, hyper_params_model, noise_predictor, compressor_model, optimizer, objective, data_loader,
+                 conditional_model=None, val_loader=None, max_epoch=1000, device=None, store_path=None,
+                 patience=10, warmup_epochs=100, tokenizer=None, max_length=77, val_frequency=10):
+        super( ).__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.forward_diffusion = forward_model.to(device)
+        self.hyper_params_model = hyper_params_model.to(device)
         self.noise_predictor = noise_predictor
-        self.hyper_params_model = hyper_params_model.to(self.device)
+        self.compressor_model = compressor_model
         self.conditional_model = conditional_model
         self.optimizer = optimizer
         self.objective = objective
-        self.store_path = store_path or "ddim_model.pth"
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epoch = max_epoch
+        self.store_path = store_path or "ldm_model.pth"
         self.max_length = max_length
         self.patience = patience
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=self.patience, factor=0.5)
-        self.forward_diffusion = ForwardDDIM(hyper_params=self.hyper_params_model).to(self.device)
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
         if tokenizer is None:
@@ -86,12 +85,15 @@ class TrainDDIM(nn.Module):
         return LambdaLR(optimizer, lr_lambda)
 
     def forward(self):
-        """Trains the DDIM model to predict noise added by the forward diffusion process."""
+
         self.noise_predictor.train()
         self.noise_predictor.to(self.device)
         if self.conditional_model is not None:
             self.conditional_model.train()
             self.conditional_model.to(self.device)
+        if self.compressor_model is not None:
+            self.compressor_model.eval() # the model is already trained
+            self.compressor_model.to(self.device)
 
         scaler = GradScaler()
         train_losses = []
@@ -101,7 +103,8 @@ class TrainDDIM(nn.Module):
             train_losses_ = []
             for x, y in tqdm(self.data_loader):
                 x = x.to(self.device)
-
+                with torch.no_grad():
+                    x, _ = self.compressor_model.encode(x) # using compressor model bring x to latent space
                 if self.conditional_model is not None:
                     y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
                     y_list = [str(item) for item in y_list]
@@ -128,6 +131,7 @@ class TrainDDIM(nn.Module):
                     p_noise = self.noise_predictor(noisy_x, t, y_encoded)
                     loss = self.objective(p_noise, noise)
                 scaler.scale(loss).backward()
+
                 nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), max_norm=1.0)
                 if self.conditional_model is not None:
                     nn.utils.clip_grad_norm_(self.conditional_model.parameters(), max_norm=1.0)
@@ -196,6 +200,8 @@ class TrainDDIM(nn.Module):
         with torch.no_grad():
             for x, y in self.val_loader:
                 x = x.to(self.device)
+                with torch.no_grad():
+                    x, _ = self.compressor_model.encode(x)
 
                 if self.conditional_model is not None:
                     y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y

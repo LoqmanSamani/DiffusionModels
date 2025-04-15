@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 
 
-class LDMAutoencoder(nn.Module):
+class AutoencoderLDM(nn.Module):
     def __init__(
             self,
             in_channels,  # number of channels of the original image. e.g., 3 for RBG.
@@ -72,7 +72,7 @@ class LDMAutoencoder(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def encoder(self, x):
+    def encode(self, x):
         x = self.conv1(x)
         for block in self.down_blocks:
             x = block(x)
@@ -94,7 +94,7 @@ class LDMAutoencoder(nn.Module):
             kl_loss = kl_unnormalized / (batch_size * latent_size) * self.current_beta
             return z, kl_loss
 
-    def decoder(self, z):
+    def decode(self, z):
         x = self.conv2(z)
         res_x = x
         x = self.attention2(x)
@@ -105,8 +105,8 @@ class LDMAutoencoder(nn.Module):
         return x
 
     def forward(self, x):
-        z, reg_loss = self.encoder(x)
-        x_hat = self.decoder(z)
+        z, reg_loss = self.encode(x)
+        x_hat = self.decode(z)
         recon_loss = F.mse_loss(x_hat, x)
         total_loss = recon_loss + reg_loss
         return x_hat, total_loss, reg_loss, z  # return z for DM

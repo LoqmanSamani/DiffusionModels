@@ -15,10 +15,11 @@ class TrainDDPM(nn.Module):
 
     def __init__(self, noise_predictor, hyper_params_model, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, tokenizer=None, max_length=77,
-                 store_path=None, patience=10, warmup_epochs=100):
+                 store_path=None, patience=10, warmup_epochs=100, val_frequency=10):
         super().__init__()
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.noise_predictor = noise_predictor
-        self.hyper_params_model = hyper_params_model
+        self.hyper_params_model = hyper_params_model.to(self.device)
         self.conditional_model = conditional_model
         self.optimizer = optimizer
         self.objective = objective
@@ -26,13 +27,17 @@ class TrainDDPM(nn.Module):
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epoch = max_epoch
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.tokenizer = tokenizer or BertTokenizer.from_pretrained("bert-base-uncased")
         self.max_length = max_length
         self.patience = patience
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=self.patience, factor=0.5)
         self.forward_diffusion = ForwardDDPM(hyper_params=self.hyper_params_model).to(self.device)
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
+        self.val_frequency = val_frequency
+        if tokenizer is None:
+            try:
+                self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+            except Exception as e:
+                raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
 
     def load_checkpoint(self, checkpoint_path):
         try:
@@ -135,7 +140,7 @@ class TrainDDPM(nn.Module):
             train_losses.append(mean_train_loss)
             print(f"\nEpoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
 
-            if self.val_loader is not None:
+            if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
                 val_loss = self.validate()
                 print(f" | Val Loss: {val_loss:.4f}")
                 current_best = val_loss
