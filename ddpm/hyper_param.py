@@ -35,7 +35,7 @@ class HyperParamsDDPM(nn.Module):
             self.register_buffer('sqrt_alpha_bars', torch.sqrt(self.alpha_bars))
             self.register_buffer('sqrt_one_minus_alpha_bars', torch.sqrt(1 - self.alpha_bars))
 
-    def compute_beta_schedule(self, beta_range, num_steps, method="linear"):
+    def compute_beta_schedule(self, beta_range, num_steps, method):
         """
         Computes the beta schedule based on the selected method.
         Args:
@@ -63,6 +63,7 @@ class HyperParamsDDPM(nn.Module):
         else:
             raise ValueError(f"Unknown beta_method: {method}. Supported: linear, sigmoid, quadratic, constant, inverse_time")
 
+        beta = torch.clamp(beta, min=beta_min, max=beta_max)
         return beta
 
     @staticmethod

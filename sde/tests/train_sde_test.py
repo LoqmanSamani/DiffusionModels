@@ -5,16 +5,13 @@ import numpy as np
 import os
 from noise_predictor import NoisePredictor
 from text_encoder import TextEncoder
-from hyper_param import HyperParamsDDPM
-from train_ddpm import TrainDDPM
+from hyper_param import HyperParamsSDE
+from train_sde import TrainSDE
 
-
-# allowlist HyperParams for safe checkpoint loading!
-torch.serialization.add_safe_globals([HyperParamsDDPM])
+torch.serialization.add_safe_globals([HyperParamsSDE])
 
 
 class MockDataset(Dataset):
-    """Mock dataset for testing."""
 
     def __init__(self, num_samples=100):
         self.num_samples = num_samples
@@ -29,18 +26,17 @@ class MockDataset(Dataset):
 
 
 def test_ddpm_training():
-    """Test function for DDPMTrain class."""
     torch.manual_seed(42)
     np.random.seed(42)
     device = torch.device("cuda")
     noise_model = NoisePredictor(
         in_channels=3,
-        down_channels=[32, 64, 128],
-        mid_channels=[128, 128, 128],
-        up_channels=[128, 64, 32],
-        down_sampling=[True, True, True],
-        time_embed_dim=128,
-        y_embed_dim=128,
+        down_channels=[32, 64],
+        mid_channels=[64, 64],
+        up_channels=[64, 32],
+        down_sampling=[True, True],
+        time_embed_dim=64,
+        y_embed_dim=64,
         num_down_blocks=2,
         num_mid_blocks=2,
         num_up_blocks=2,
@@ -53,17 +49,19 @@ def test_ddpm_training():
         use_pretrained_model=True,
         model_name="bert-base-uncased",
         vocabulary_size=30522,
-        num_layers=4,
-        input_dimension=128,
-        output_dimension=128,
-        num_heads=4,
+        num_layers=2,
+        input_dimension=64,
+        output_dimension=64,
+        num_heads=1,
         context_length=77,
         dropout_rate=0.1,
         qkv_bias=False,
         scaling_value=4,
         epsilon=1e-5
     )
-    hyper_params = HyperParamsDDPM(num_steps=500, beta_start=1e-4, beta_end=0.02, beta_method="linear")
+
+    hyper_params = HyperParamsSDE(num_steps=100, beta_start=1e-4, beta_end=0.02, beta_method="linear",
+                                  sigma_start=1e-3, sigma_end=1.0, start=0.0, end=1.0)
     train_dataset = MockDataset(num_samples=10)
     val_dataset = MockDataset(num_samples=5)
     train_loader = DataLoader(train_dataset, batch_size=2, shuffle=True)
@@ -74,14 +72,15 @@ def test_ddpm_training():
     )
     objective = nn.MSELoss()
 
-    trainer1 = TrainDDPM(
+    trainer1 = TrainSDE(
+        method="ode",  # ve, vp, sub-vp, ode
         noise_predictor=noise_model,
         hyper_params_model=hyper_params,
         data_loader=train_loader,
         optimizer=optimizer,
         objective=objective,
         val_loader=val_loader,
-        max_epoch=5,
+        max_epoch=3,
         device=device,
         conditional_model=conditional_model,
         store_path="test_ddpm.pth",
@@ -89,14 +88,15 @@ def test_ddpm_training():
         warmup_epochs=1
     )
 
-    trainer2 = TrainDDPM(
+    trainer2 = TrainSDE(
+        method="ode",  # ve, vp, sub-vp, ode
         noise_predictor=noise_model,
         hyper_params_model=hyper_params,
         data_loader=train_loader,
         optimizer=optimizer,
         objective=objective,
         val_loader=val_loader,
-        max_epoch=5,
+        max_epoch=3,
         device=device,
         conditional_model=None,
         store_path="test_ddpm.pth",
@@ -105,7 +105,6 @@ def test_ddpm_training():
     )
 
     print("Starting training...")
-
     try:
         train_losses1, best_val_loss1 = trainer1()
         print(f"Training completed. Final train losses: {train_losses1}")

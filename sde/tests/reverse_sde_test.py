@@ -1,70 +1,56 @@
 import torch
-from config import Config
-from reverse_diffusion import ReverseSDE
-
-
-
+from hyper_param import HyperParamsSDE
+from reverse_sde import ReverseSDE
 
 
 
 def test_reverse_sde():
-    """test the ReverseSDE class to ensure correct denoising behavior."""
+    print("Testing ReverseSDE...")
+    num_steps = 1000
+    batch_size = 4
+    channels = 3
+    height = 32
+    width = 32
+    hp = HyperParamsSDE(num_steps=num_steps, sigma_end=10.0)
 
-    class DummyModel:
-        """a simple model that predicts zero noise for testing purposes."""
+    def mock_score(x, t):
+        return -x
 
-        def __call__(self, x, t):
-            return torch.zeros_like(x)
+    x_T = torch.randn(batch_size, channels, height, width)
+    x_T = torch.clamp(x_T, -1, 1)
 
-    config = Config(
-        in_channels=3,
-        down_channels=[32, 64, 128, 256],
-        mid_channels=[256, 256, 128],
-        up_channels=[256, 128, 64, 16],
-        down_sampling=[True, True, False],
-        num_groups=8,
-        embed_dim=128,
-        num_down_blocks=2,
-        num_mid_blocks=2,
-        num_up_blocks=2,
-        dropout_rate=0.3,
-        num_attention_heads=2,
-        down_sampling_factor=2,
-        upsampling_factor=2,
-        apply_down_conv=True,
-        apply_down_pool=True,
-        apply_up_conv=True,
-        kernel_size=3,
-        norm=True,
-        activation=True,
-        method="vp",
-        start=None,
-        end=None,
-        max_steps=400,
-        sigma_min=None,
-        sigma_max=None,
-        beta_range=None,
-        beta_schedule_method="linear",
-        max_epoch=5,
-        device=None,
-        optimizer=None,
-        objective=None,
-        save_path=None,
-        checkpoint=None
-    )
-    reverse_sde = ReverseSDE(config, model=DummyModel())
+    for method in ["ve", "vp", "sub-vp", "ode"]:
+        print(f"  SDE method: {method}")
+        sde = ReverseSDE(hp, method)
 
-    x_noisy = torch.randn(5, 3, 100, 100)
-    t = torch.randint(1, config.max_steps, (x_noisy.shape[0],))
+        x_t = x_T.clone()
+        for t in range(num_steps - 1, -1, -1):
+            noise = torch.randn_like(x_t) if method != "ode" else None
+            time_steps = torch.tensor([t], dtype=torch.long)
+            predicted_noise = mock_score(x_t, time_steps)
+            x_t = sde(x_t, noise, predicted_noise, time_steps)
 
-    for method in ["ve", "vp", "sub-vp"]:
-        config.method = method
-        x_denoised = reverse_sde.forward(t,,,,,,,,
+        assert x_t.shape == x_T.shape, f"Shape mismatch: got {x_t.shape}, expected {x_T.shape}"
+        assert torch.all(x_t.isfinite()), f"Output contains NaN/Inf for {method}"
+        assert x_t.abs().max() < 1e5, f"Output values too large for {method}: max {x_t.abs().max().item()}"
 
-        assert x_denoised.shape == x_noisy.shape, f"Reverse {method}: Shape mismatch"
-        assert not torch.equal(x_noisy, x_denoised), f"Reverse {method}: x should change after denoising"
+        if method == "ode":
+            x_t_1 = x_T.clone()
+            x_t_2 = x_T.clone()
+            for t in range(num_steps - 1, -1, -1):
+                time_steps = torch.tensor([t], dtype=torch.long)
+                predicted_noise_1 = mock_score(x_t_1, time_steps)
+                predicted_noise_2 = mock_score(x_t_2, time_steps)
+                x_t_1 = sde(x_t_1, None, predicted_noise_1, time_steps)
+                x_t_2 = sde(x_t_2, None, predicted_noise_2, time_steps)
+            assert torch.allclose(x_t_1, x_t_2, atol=1e-4), f"ODE not deterministic for {method}"
 
-    print("ReverseSDE tests passed.")
+        print(f"    Final mean: {x_t.mean().item():.4f}, Final variance: {x_t.var().item():.4f}")
+
+    print("ReverseSDE tests passed!")
 
 
-test_reverse_sde()
+
+if __name__ == "__main__":
+    torch.manual_seed(42)
+    test_reverse_sde()

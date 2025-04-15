@@ -36,7 +36,8 @@ class HyperParamsDDIM(nn.Module):
 
         self.register_buffer('tau_indices', torch.linspace(0, num_steps - 1, tau_num_steps, dtype=torch.long))
 
-    def compute_beta_schedule(self, beta_range, num_steps, method="linear"):
+    def compute_beta_schedule(self, beta_range, num_steps, method):
+
         beta_min, beta_max = beta_range
         if method == "sigmoid":
             x = torch.linspace(-6, 6, num_steps)
@@ -48,13 +49,16 @@ class HyperParamsDDIM(nn.Module):
             beta = torch.full((num_steps,), beta_max)
         elif method == "inverse_time":
             beta = 1.0 / torch.linspace(num_steps, 1, num_steps)
+            # scale to beta_range
             beta = beta_min + (beta_max - beta_min) * (beta - beta.min()) / (beta.max() - beta.min())
         elif method == "linear":
             beta = torch.linspace(beta_min, beta_max, num_steps)
         else:
-            raise ValueError(f"Unknown beta_method: {method}")
+            raise ValueError(
+                f"Unknown beta_method: {method}. Supported: linear, sigmoid, quadratic, constant, inverse_time")
 
-        return beta.clamp(min=beta_min, max=beta_max)
+        beta = torch.clamp(beta, min=beta_min, max=beta_max)
+        return beta
 
     def get_tau_schedule(self):
         if self.trainable_beta:
