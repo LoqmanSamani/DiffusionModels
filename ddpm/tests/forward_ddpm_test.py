@@ -1,5 +1,5 @@
 import torch
-from hyper_params import HyperParams
+from hyper_param import HyperParamsDDPM
 from forward_ddpm import ForwardDDPM
 
 
@@ -7,7 +7,7 @@ from forward_ddpm import ForwardDDPM
 
 
 def test_forward_ddpm():
-    hyper_params = HyperParams(num_steps=1000, beta_method="sigmoid")
+    hyper_params = HyperParamsDDPM(num_steps=1000, beta_method="sigmoid")
     forward = ForwardDDPM(hyper_params)
     x0 = torch.randn(4, 3, 32, 32)
     noise = torch.randn_like(x0)

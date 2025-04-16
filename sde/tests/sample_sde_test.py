@@ -4,14 +4,13 @@ from hyper_param import HyperParamsSDE
 from text_encoder import TextEncoder
 from noise_predictor import NoisePredictor
 from sample_sde import SampleSDE
-from transformers import BertTokenizer
 
 
 
 
 
 
-def test_generate_ddpm_unconditional():
+def test_sample_sde_unconditional():
     device = torch.device("cuda")
 
     hyper_params = HyperParamsSDE(num_steps=100, beta_start=1e-4, beta_end=0.02, beta_method="linear",
@@ -29,10 +28,10 @@ def test_generate_ddpm_unconditional():
         num_up_blocks=2,
         dropout_rate=0.1
     )
+    reverse = ReverseSDE(hyper_params, "ode")  # ve, vp, sub-vp, ode
     generator = SampleSDE(
-        method="sub-vp",  # ve, vp, sub-vp, ode
+        reverse_diffusion=reverse,
         noise_predictor=noise_predictor,
-        hyper_params_model=hyper_params,
         image_shape=(32, 32),
         batch_size=2,
         in_channels=3,
@@ -41,11 +40,11 @@ def test_generate_ddpm_unconditional():
     generated_imgs = generator()
     assert generated_imgs.shape == (2, 3, 32, 32), f"Expected shape (2, 3, 32, 32), got {generated_imgs.shape}"
     assert torch.all(generated_imgs >= 0) and torch.all(generated_imgs <= 1), "Images out of [0, 1] range"
-    print("Unconditional GenerateDDPM test passed!")
+    print("Unconditional SampleSDE test passed!")
 
 
 
-def test_generate_ddpm_conditional():
+def  test_sample_sde_conditional():
     device = torch.device("cuda")
 
     hyper_params = HyperParamsSDE(num_steps=100, beta_start=1e-4, beta_end=0.02, beta_method="linear",
@@ -63,28 +62,24 @@ def test_generate_ddpm_conditional():
         num_up_blocks=2,
         dropout_rate=0.1
     )
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    prompts = ["a cat sitting on a chair", "a dog running in the park"]
     text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased", output_dimension=64)
-    texts = ["A sunny beach", "A snowy mountain"]
-    conditions = tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=77)["input_ids"]
-
+    reverse = ReverseSDE(hyper_params, "ode")  # ve, vp, sub-vp, ode
     generator = SampleSDE(
-        method="sub-vp",  # ve, vp, sub-vp, ode
+        reverse_diffusion=reverse,
         noise_predictor=noise_predictor,
-        hyper_params_model=hyper_params,
-        image_shape=(32, 32),
-        conditions=conditions,
         conditional_model=text_encoder,
+        image_shape=(32, 32),
         batch_size=2,
         in_channels=3,
         device=device
     )
 
-    generated_imgs = generator()
+    generated_imgs = generator(conditions=prompts)
     assert generated_imgs.shape == (2, 3, 32, 32), f"Expected shape (2, 3, 32, 32), got {generated_imgs.shape}"
     assert torch.all(generated_imgs >= 0) and torch.all(generated_imgs <= 1), "Images out of [0, 1] range"
-    print("Conditional GenerateDDPM test passed!")
+    print("Conditional SampleSDE test passed!")
 
 if __name__ == "__main__":
-    test_generate_ddpm_unconditional()
-    test_generate_ddpm_conditional()
+    test_sample_sde_unconditional()
+    test_sample_sde_conditional()

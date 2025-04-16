@@ -1,3 +1,10 @@
+"""Training module for Denoising Diffusion Implicit Models (DDIM).
+
+This module implements the training process for DDIM, as described in Song et al. (2021,
+"Denoising Diffusion Implicit Models"). It supports both unconditional and conditional
+training with text prompts, using mixed precision and learning rate scheduling.
+"""
+
 import torch
 from torch.cuda.amp import GradScaler, autocast
 import torch.nn as nn
@@ -12,7 +19,88 @@ from forward_ddim import ForwardDDIM
 
 
 class TrainDDIM(nn.Module):
-    """Trainer for Denoising Diffusion Implicit Models (DDIM)."""
+    """Trainer for Denoising Diffusion Implicit Models (DDIM).
+
+    Manages the training process for DDIM, optimizing a noise predictor model to learn
+    the noise added by the forward diffusion process. Supports conditional training with
+    text prompts, mixed precision training, learning rate scheduling, early stopping, and
+    checkpointing, as inspired by Song et al. (2021).
+
+    Parameters
+    ----------
+    noise_predictor : nn.Module
+        Model to predict noise added during the forward diffusion process.
+    hyper_params_model : nn.Module
+        Hyperparameter module (e.g., HyperParamsDDIM) defining the noise schedule.
+    data_loader : torch.utils.data.DataLoader
+        DataLoader for training data.
+    optimizer : torch.optim.Optimizer
+        Optimizer for training the noise predictor and conditional model (if applicable).
+    objective : callable
+        Loss function to compute the difference between predicted and actual noise.
+    val_loader : torch.utils.data.DataLoader, optional
+        DataLoader for validation data, default None.
+    max_epoch : int, optional
+        Maximum number of training epochs (default: 1000).
+    device : torch.device, optional
+        Device for computation (default: CUDA if available, else CPU).
+    conditional_model : nn.Module, optional
+        Model for conditional generation (e.g., text embeddings), default None.
+    tokenizer : BertTokenizer, optional
+        Tokenizer for processing text prompts, default None (loads "bert-base-uncased").
+    max_length : int, optional
+        Maximum length for tokenized prompts (default: 77).
+    store_path : str, optional
+        Path to save model checkpoints (default: "ddim_model.pth").
+    patience : int, optional
+        Number of epochs to wait for improvement before early stopping (default: 10).
+    warmup_epochs : int, optional
+        Number of epochs for learning rate warmup (default: 100).
+    val_frequency : int, optional
+        Frequency (in epochs) for validation (default: 10).
+
+    Attributes
+    ----------
+    device : torch.device
+        Device used for computation.
+    noise_predictor : nn.Module
+        Noise prediction model.
+    hyper_params_model : nn.Module
+        Hyperparameter module for the noise schedule.
+    conditional_model : nn.Module or None
+        Conditional model for text-based training, if provided.
+    optimizer : torch.optim.Optimizer
+        Optimizer for training.
+    objective : callable
+        Loss function for training.
+    store_path : str
+        Path for saving checkpoints.
+    data_loader : torch.utils.data.DataLoader
+        Training data loader.
+    val_loader : torch.utils.data.DataLoader or None
+        Validation data loader, if provided.
+    max_epoch : int
+        Maximum training epochs.
+    max_length : int
+        Maximum length for tokenized prompts.
+    patience : int
+        Patience for early stopping.
+    scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
+        Learning rate scheduler based on validation or training loss.
+    forward_diffusion : ForwardDDIM
+        Forward diffusion module for DDIM.
+    warmup_lr_scheduler : torch.optim.lr_scheduler.LambdaLR
+        Learning rate scheduler for warmup.
+    val_frequency : int
+        Frequency for validation.
+    tokenizer : BertTokenizer
+        Tokenizer for text prompts.
+
+    Raises
+    ------
+    ValueError
+        If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
+    """
     def __init__(self, noise_predictor, hyper_params_model, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, tokenizer=None, max_length=77,
                  store_path=None, patience=10, warmup_epochs=100, val_frequency=10):
@@ -40,6 +128,38 @@ class TrainDDIM(nn.Module):
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
 
     def load_checkpoint(self, checkpoint_path):
+        """Loads a training checkpoint to resume training.
+
+        Restores the state of the noise predictor, conditional model (if applicable),
+        and optimizer from a saved checkpoint.
+
+        Parameters
+        ----------
+        checkpoint_path : str
+            Path to the checkpoint file.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - epoch: The epoch at which the checkpoint was saved (int).
+            - loss: The loss at the checkpoint (float).
+
+        Raises
+        ------
+        FileNotFoundError
+            If the checkpoint file is not found.
+        KeyError
+            If the checkpoint is missing required keys ('model_state_dict_noise_predictor'
+            or 'optimizer_state_dict').
+
+        Warns
+        -----
+        warnings.warn
+            If the optimizer state cannot be loaded, if the checkpoint contains a
+            conditional model state but none is defined, or if no conditional model
+            state is provided when expected.
+        """
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
@@ -78,6 +198,23 @@ class TrainDDIM(nn.Module):
 
     @staticmethod
     def warmup_scheduler(optimizer, warmup_epochs=10):
+        """Creates a learning rate scheduler for warmup.
+
+        Generates a scheduler that linearly increases the learning rate from 0 to the
+        optimizer's initial value over the specified warmup epochs, then maintains it.
+
+        Parameters
+        ----------
+        optimizer : torch.optim.Optimizer
+            Optimizer to apply the scheduler to.
+        warmup_epochs : int, optional
+            Number of epochs for the warmup phase (default: 10).
+
+        Returns
+        -------
+        torch.optim.lr_scheduler.LambdaLR
+            Learning rate scheduler for warmup.
+        """
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
                 return epoch / warmup_epochs
@@ -86,7 +223,25 @@ class TrainDDIM(nn.Module):
         return LambdaLR(optimizer, lr_lambda)
 
     def forward(self):
-        """Trains the DDIM model to predict noise added by the forward diffusion process."""
+        """Trains the DDIM model to predict noise added by the forward diffusion process.
+
+        Executes the training loop, optimizing the noise predictor and conditional model
+        (if applicable) using mixed precision, gradient clipping, and learning rate
+        scheduling. Supports validation, early stopping, and checkpointing.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - train_losses: List of mean training losses per epoch (list of float).
+            - best_val_loss: Best validation or training loss achieved (float).
+
+        Notes
+        -----
+        - Training uses mixed precision via `torch.cuda.amp` or `torch.amp` for efficiency.
+        - Checkpoints are saved when the validation (or training) loss improves, and on early stopping.
+        - Early stopping is triggered if no improvement occurs for `patience` epochs.
+        """
         self.noise_predictor.train()
         self.noise_predictor.to(self.device)
         if self.conditional_model is not None:
@@ -188,6 +343,16 @@ class TrainDDIM(nn.Module):
         return train_losses, best_val_loss
 
     def validate(self):
+        """Validates the DDIM model on the validation dataset.
+
+        Computes the validation loss using the noise predictor and forward diffusion
+        process, with optional conditional inputs.
+
+        Returns
+        -------
+        float
+            Mean validation loss across the validation dataset.
+        """
         self.noise_predictor.eval()
         if self.conditional_model is not None:
             self.conditional_model.eval()
