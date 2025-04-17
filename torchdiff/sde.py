@@ -17,34 +17,35 @@ Components:
 - TrainSDE: Training loop with mixed precision and scheduling.
 - SampleSDE: Image generation from trained SDE models.
 
-Notes
------
-- This module uses `torch.cuda.amp` for mixed precision training on CUDA devices.
-  Ensure compatibility with your hardware configuration.
-- The `SampleSDE.to` method references a non-existent `compressor` attribute, which
-  should be removed or implemented if intended for latent diffusion.
-- The `ForwardSDE` and `ReverseSDE` classes contain a potential code issue in the "ode"
-  method, where a nested `if` for "ve" should be corrected to align with intended logic.
-
 References:
 - Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., & Poole, B. (2021).
   Score-Based Generative Modeling through Stochastic Differential Equations.
 
 Examples
 --------
+>>> from torchdiff.sde import HyperParamsSDE, ForwardSDE, ReverseSDE, TrainSDE, SampleSDE
+>>> from torchdiff.nets import TextEncoder, NoisePredictor
+...
 >>> hyper_params = HyperParamsSDE(num_steps=1000, beta_start=1e-4, beta_end=0.02)
 >>> forward_sde = ForwardSDE(hyper_params, method="vp")
 >>> reverse_sde = ReverseSDE(hyper_params, method="vp")
->>> noise_predictor = MyNoisePredictor()  # User-defined model
+>>> noise_predictor = NoisePredictor(in_channels=3, down_channels=[32, 64, 128], mid_channels=[128, 128, 128],
+...                                  up_channels=[128, 64, 32], down_sampling=[True, True, True], time_embed_dim=128,
+...                                  y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2, dropout_rate=0.1,
+...                                  down_sampling_factor=2, where_y=True, y_to_all=False)
+>>> text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased", vocabulary_size=30522,
+...                            num_layers=2, input_dimension=128, output_dimension=128, num_heads=4, context_length=77,
+...                            dropout_rate=0.1, qkv_bias=False, scaling_value=4, epsilon=1e-5)
 >>> train_sde = TrainSDE(method="vp", noise_predictor=noise_predictor, hyper_params_model=hyper_params,
-...                      data_loader=data_loader, optimizer=optimizer, objective=nn.MSELoss())
+...                      data_loader=data_loader, optimizer=optimizer, objective=nn.MSELoss(),
+...                      conditional_model=text_encoder, tokenizer=tokenizer)
 >>> train_losses, best_val_loss = train_sde()
 >>> sampler = SampleSDE(reverse_sde, noise_predictor, image_shape=(64, 64))
 >>> images = sampler(conditions="A cat", normalize_output=True)
 
 License
 -------
-MIT License (or specify your license).
+MIT License.
 
 Version
 -------
@@ -74,7 +75,7 @@ class ForwardSDE(nn.Module):
     Parameters
     ----------
     hyper_params : object
-        Hyperparameter object containing SDE-specific parameters. Expected to have
+        Hyperparameter object (HyperParamsSDE) containing SDE-specific parameters. Expected to have
         attributes:
         - `dt`: Time step size for SDE integration (float).
         - `sigmas`: Sigma values for VE method (torch.Tensor, optional).
@@ -147,12 +148,12 @@ class ForwardSDE(nn.Module):
             x0 = x0 + drift + diffusion
 
         elif self.method == "ode":
-            if self.method == "ve":
-                x0 = x0
-            else:
-                betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
-                drift = -0.5 * betas * x0 * dt
-                x0 = x0 + drift
+            #if self.method == "ve":
+            #    x0 = x0
+            #else:
+            betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
+            drift = -0.5 * betas * x0 * dt
+            x0 = x0 + drift
         else:
             raise ValueError(f"Unknown method: {self.method}")
         return x0
@@ -171,7 +172,7 @@ class ReverseSDE(nn.Module):
     Parameters
     ----------
     hyper_params : object
-        Hyperparameter object containing SDE-specific parameters. Expected to have
+        Hyperparameter object (HyperParamsSDE) containing SDE-specific parameters. Expected to have
         attributes:
         - `dt`: Time step size for SDE integration (float).
         - `sigmas`: Sigma values for VE method (torch.Tensor, optional).
@@ -257,12 +258,12 @@ class ReverseSDE(nn.Module):
             xt = xt + drift + diffusion
 
         elif self.method == "ode":
-            if self.method == "ve":
-                sigma_t = self.hyper_params.sigmas[time_steps]
-                sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
-                drift = -0.5 * (sigma_t ** 2 - sigma_t_prev ** 2).view(-1, 1, 1, 1) * predicted_noise * dt
-            else:
-                drift = -0.5 * betas * xt * dt - 0.5 * betas * predicted_noise * dt
+            #if self.method == "ve":
+            #    sigma_t = self.hyper_params.sigmas[time_steps]
+            #    sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
+            #    drift = -0.5 * (sigma_t ** 2 - sigma_t_prev ** 2).view(-1, 1, 1, 1) * predicted_noise * dt
+            #else:
+            drift = -0.5 * betas * xt * dt - 0.5 * betas * predicted_noise * dt
             xt = xt + drift
             xt = torch.clamp(xt, -1e5, 1e5)
         else:
@@ -482,7 +483,7 @@ class TrainSDE(nn.Module):
         SDE method to use for forward diffusion. Supported methods: "ve", "vp", "sub-vp", "ode".
     noise_predictor : nn.Module
         Model to predict noise added during the forward SDE process.
-    hyper_params_model : nn.Module
+    hyper_params : nn.Module
         Hyperparameter module (e.g., HyperParamsSDE) defining the noise schedule and SDE parameters.
     data_loader : torch.utils.data.DataLoader
         DataLoader for training data.
@@ -519,7 +520,7 @@ class TrainSDE(nn.Module):
         Selected SDE method.
     noise_predictor : nn.Module
         Noise prediction model.
-    hyper_params_model : nn.Module
+    hyper_params : nn.Module
         Hyperparameter module for the noise schedule and SDE parameters.
     conditional_model : nn.Module or None
         Conditional model for text-based training, if provided.
@@ -556,14 +557,14 @@ class TrainSDE(nn.Module):
         If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
     """
 
-    def __init__(self, method, noise_predictor, hyper_params_model, data_loader, optimizer, objective, val_loader=None,
+    def __init__(self, method, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, tokenizer=None, max_length=77,
                  store_path=None, patience=10, warmup_epochs=100, val_frequency=10):
         super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.method = method
         self.noise_predictor = noise_predictor
-        self.hyper_params_model = hyper_params_model.to(self.device)
+        self.hyper_params = hyper_params.to(self.device)
         self.conditional_model = conditional_model
         self.optimizer = optimizer
         self.objective = objective
@@ -574,7 +575,7 @@ class TrainSDE(nn.Module):
         self.max_length = max_length
         self.patience = patience
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=self.patience, factor=0.5)
-        self.forward_diffusion = ForwardSDE(hyper_params=self.hyper_params_model, method=self.method).to(self.device)
+        self.forward_diffusion = ForwardSDE(hyper_params=self.hyper_params, method=self.method).to(self.device)
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
         if tokenizer is None:
@@ -734,7 +735,7 @@ class TrainSDE(nn.Module):
                 self.optimizer.zero_grad()
                 with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
                     noise = torch.randn_like(x).to(self.device)
-                    t = torch.randint(0, self.hyper_params_model.num_steps, (x.shape[0],)).to(self.device)
+                    t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
                     assert x.device == noise.device == t.device, "Device mismatch detected"
                     assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
                     noisy_x = self.forward_diffusion(x, noise, t)
@@ -748,6 +749,9 @@ class TrainSDE(nn.Module):
                 scaler.update()
                 self.warmup_lr_scheduler.step()
                 train_losses_.append(loss.item())
+
+            if self.hyper_params.trainable_beta:
+                self.hyper_params.constrain_betas() # constrains trainable betas
 
             mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
             train_losses.append(mean_train_loss)
@@ -773,7 +777,7 @@ class TrainSDE(nn.Module):
                         'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                         'optimizer_state_dict': self.optimizer.state_dict(),
                         'loss': best_val_loss,
-                        'hyper_params_model': self.hyper_params_model,
+                        'hyper_params_model': self.hyper_params,
                         'max_epoch': self.max_epoch,
                     }, self.store_path)
                     print(f"Model saved at epoch {epoch + 1}")
@@ -790,7 +794,7 @@ class TrainSDE(nn.Module):
                             'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                             'optimizer_state_dict': self.optimizer.state_dict(),
                             'loss': best_val_loss,
-                            'hyper_params_model': self.hyper_params_model,
+                            'hyper_params_model': self.hyper_params,
                             'max_epoch': self.max_epoch,
                         }, self.store_path + "_early_stop.pth")
                         print(f"Final model saved at {self.store_path}_early_stop.pth")
@@ -843,7 +847,7 @@ class TrainSDE(nn.Module):
                     y_encoded = None
 
                 noise = torch.randn_like(x).to(self.device)
-                t = torch.randint(0, self.hyper_params_model.num_steps, (x.shape[0],)).to(self.device)
+                t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
                 assert x.device == noise.device == t.device, "Device mismatch detected"
                 assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
                 noisy_x = self.forward_diffusion(x, noise, t)
@@ -875,7 +879,7 @@ class SampleSDE(nn.Module):
     image_shape : tuple
         Shape of generated images as (height, width).
     conditional_model : nn.Module, optional
-        Model for conditional generation (e.g., text embeddings), default None.
+        Model for conditional generation (e.g., TextEncoder), default None.
     tokenizer : str or BertTokenizer, optional
         Tokenizer for processing text prompts, default "bert-base-uncased".
     max_length : int, optional
@@ -1058,13 +1062,10 @@ class SampleSDE(nn.Module):
         -----
         - Moves `noise_predictor`, `reverse`, and `conditional_model` (if applicable) to
           the specified device.
-        - The `compressor` attribute is not defined in this implementation and should be
-          removed or implemented if intended.
         """
         self.device = device
         self.noise_predictor.to(device)
         self.reverse.to(device)
-        self.compressor.to(device)
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)

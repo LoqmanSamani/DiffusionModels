@@ -29,7 +29,10 @@ References:
 
 Examples
 --------
->>> from ddpm import HyperParamsDDPM, ForwardDDPM, ReverseDDPM  # Example using DDPM
+>>> from torchdiff.ddpm import HyperParamsDDPM, ForwardDDPM, ReverseDDPM  # example using DDPM
+>>> from torchdiff.ldm import TrainLDM, SampleLDM
+>>> from torch.diff.nets import TextEncoder, AutoencoderLDM
+...
 >>> hyper_params = HyperParamsDDPM(num_steps=1000, beta_start=1e-4, beta_end=0.02, beta_method="linear")
 >>> forward_ddpm = ForwardDDPM(hyper_params)
 >>> reverse_ddpm = ReverseDDPM(hyper_params)
@@ -37,10 +40,13 @@ Examples
 ...                                  up_channels=[128, 64, 32], down_sampling=[True, True, True], time_embed_dim=128,
 ...                                  y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2, dropout_rate=0.1,
 ...                                  down_sampling_factor=2, where_y=True, y_to_all=False)
+>>> text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased", vocabulary_size=30522,
+...                            num_layers=2, input_dimension=128, output_dimension=128, num_heads=4, context_length=77,
+...                            dropout_rate=0.1, qkv_bias=False, scaling_value=4, epsilon=1e-5)
 >>> compressor = AutoencoderLDM(in_channels=3, down_channels=[16, 32], up_channels=[32, 16], out_channels=3,
 ...                             latent_channels=3, dropout_rate=0.1, num_heads=4, num_groups=8, num_layers_per_block=2,
 ...                             total_down_sampling_factor=2, use_vq=False, num_embeddings=32, beta=1e-4)  # Pre-trained autoencoder with encode/decode methods
->>> train_ldm = TrainLDM(forward_model=forward_ddpm, hyper_params_model=hyper_params,
+>>> train_ldm = TrainLDM(forward_model=forward_ddpm, hyper_params=hyper_params,
 ...                      noise_predictor=noise_predictor, compressor_model=compressor,
 ...                      optimizer=optimizer, objective=nn.MSELoss(), data_loader=data_loader,
 ...                      conditional_model=text_encoder, tokenizer=tokenizer)
@@ -358,6 +364,9 @@ class TrainLDM(nn.Module):
                 scaler.update()
                 self.warmup_lr_scheduler.step()
                 train_losses_.append(loss.item())
+
+            if self.hyper_params.trainable_beta:
+                self.hyper_params.constrain_betas() # constrains trainable betas
 
             mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
             train_losses.append(mean_train_loss)

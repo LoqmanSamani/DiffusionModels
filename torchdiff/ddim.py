@@ -25,6 +25,9 @@ References:
 
 Examples
 --------
+>>> from torchdiff.ddim import HyperParamsDDIM, ForwardDDIM, ReverseDDIM, TrainDDIM, SampleDDIM
+>>> from torchdiff.nets import TextEncoder, NoisePredictor
+...
 >>> hyper_params = HyperParamsDDIM(num_steps=1000, tau_num_steps=100)
 >>> forward_ddim = ForwardDDIM(hyper_params)
 >>> reverse_ddim = ReverseDDIM(hyper_params)
@@ -32,8 +35,11 @@ Examples
 ...                                  up_channels=[128, 64, 32], down_sampling=[True, True, True], time_embed_dim=128,
 ...                                  y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2, dropout_rate=0.1,
 ...                                  down_sampling_factor=2, where_y=True, y_to_all=False)
->>> train_ddim = TrainDDIM(noise_predictor=noise_predictor, hyper_params_model=hyper_params,
-...                        data_loader=data_loader, optimizer=optimizer, objective=nn.MSELoss())
+>>> text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased", vocabulary_size=30522,
+...                            num_layers=2, input_dimension=128, output_dimension=128, num_heads=4, context_length=77,
+...                            dropout_rate=0.1, qkv_bias=False, scaling_value=4, epsilon=1e-5)
+>>> train_ddim = TrainDDIM(noise_predictor=noise_predictor, hyper_params=hyper_params, data_loader=data_loader,
+...                        optimizer=optimizer, objective=nn.MSELoss(), conditional_model=text_encoder)
 >>> train_losses, best_val_loss = train_ddim()
 >>> sampler = SampleDDIM(reverse_ddim, noise_predictor, image_shape=(64, 64))
 >>> images = sampler(conditions="A cat", normalize_output=True)
@@ -445,7 +451,7 @@ class TrainDDIM(nn.Module):
     ----------
     noise_predictor : nn.Module
         Model to predict noise added during the forward diffusion process.
-    hyper_params_model : nn.Module
+    hyper_params : nn.Module
         Hyperparameter module (e.g., HyperParamsDDIM) defining the noise schedule.
     data_loader : torch.utils.data.DataLoader
         DataLoader for training data.
@@ -468,7 +474,7 @@ class TrainDDIM(nn.Module):
     store_path : str, optional
         Path to save model checkpoints (default: "ddim_model.pth").
     patience : int, optional
-        Number of epochs to wait for improvement before early stopping (default: 10).
+        Number of epochs to wait for improvement before early stopping (default: 100).
     warmup_epochs : int, optional
         Number of epochs for learning rate warmup (default: 100).
     val_frequency : int, optional
@@ -480,7 +486,7 @@ class TrainDDIM(nn.Module):
         Device used for computation.
     noise_predictor : nn.Module
         Noise prediction model.
-    hyper_params_model : nn.Module
+    hyper_params : nn.Module
         Hyperparameter module for the noise schedule.
     conditional_model : nn.Module or None
         Conditional model for text-based training, if provided.
@@ -516,13 +522,13 @@ class TrainDDIM(nn.Module):
     ValueError
         If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
     """
-    def __init__(self, noise_predictor, hyper_params_model, data_loader, optimizer, objective, val_loader=None,
+    def __init__(self, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, tokenizer=None, max_length=77,
-                 store_path=None, patience=10, warmup_epochs=100, val_frequency=10):
+                 store_path=None, patience=100, warmup_epochs=100, val_frequency=10):
         super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.noise_predictor = noise_predictor
-        self.hyper_params_model = hyper_params_model.to(self.device)
+        self.hyper_params = hyper_params.to(self.device)
         self.conditional_model = conditional_model
         self.optimizer = optimizer
         self.objective = objective
@@ -533,7 +539,7 @@ class TrainDDIM(nn.Module):
         self.max_length = max_length
         self.patience = patience
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=self.patience, factor=0.5)
-        self.forward_diffusion = ForwardDDIM(hyper_params=self.hyper_params_model).to(self.device)
+        self.forward_diffusion = ForwardDDIM(hyper_params=self.hyper_params).to(self.device)
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
         if tokenizer is None:
@@ -612,7 +618,7 @@ class TrainDDIM(nn.Module):
         return epoch, loss
 
     @staticmethod
-    def warmup_scheduler(optimizer, warmup_epochs=10):
+    def warmup_scheduler(optimizer, warmup_epochs):
         """Creates a learning rate scheduler for warmup.
 
         Generates a scheduler that linearly increases the learning rate from 0 to the
@@ -623,7 +629,7 @@ class TrainDDIM(nn.Module):
         optimizer : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
         warmup_epochs : int, optional
-            Number of epochs for the warmup phase (default: 10).
+            Number of epochs for the warmup phase.
 
         Returns
         -------
@@ -653,7 +659,6 @@ class TrainDDIM(nn.Module):
 
         Notes
         -----
-        - Training uses mixed precision via `torch.cuda.amp` or `torch.amp` for efficiency.
         - Checkpoints are saved when the validation (or training) loss improves, and on early stopping.
         - Early stopping is triggered if no improvement occurs for `patience` epochs.
         """
@@ -691,7 +696,7 @@ class TrainDDIM(nn.Module):
                 self.optimizer.zero_grad()
                 with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
                     noise = torch.randn_like(x).to(self.device)
-                    t = torch.randint(0, self.hyper_params_model.num_steps, (x.shape[0],)).to(self.device)
+                    t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
                     assert x.device == noise.device == t.device, "Device mismatch detected"
                     assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
                     noisy_x = self.forward_diffusion(x, noise, t)
@@ -705,6 +710,9 @@ class TrainDDIM(nn.Module):
                 scaler.update()
                 self.warmup_lr_scheduler.step()
                 train_losses_.append(loss.item())
+
+            if self.hyper_params.trainable_beta:
+                self.hyper_params.constrain_betas() # constrains trainable betas
 
             mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
             train_losses.append(mean_train_loss)
@@ -730,7 +738,7 @@ class TrainDDIM(nn.Module):
                         'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                         'optimizer_state_dict': self.optimizer.state_dict(),
                         'loss': best_val_loss,
-                        'hyper_params_model': self.hyper_params_model,
+                        'hyper_params_model': self.hyper_params,
                         'max_epoch': self.max_epoch,
                     }, self.store_path)
                     print(f"Model saved at epoch {epoch + 1}")
@@ -747,7 +755,7 @@ class TrainDDIM(nn.Module):
                             'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                             'optimizer_state_dict': self.optimizer.state_dict(),
                             'loss': best_val_loss,
-                            'hyper_params_model': self.hyper_params_model,
+                            'hyper_params_model': self.hyper_params,
                             'max_epoch': self.max_epoch,
                         }, self.store_path + "_early_stop.pth")
                         print(f"Final model saved at {self.store_path}_early_stop.pth")
@@ -794,7 +802,7 @@ class TrainDDIM(nn.Module):
                     y_encoded = None
 
                 noise = torch.randn_like(x).to(self.device)
-                t = torch.randint(0, self.hyper_params_model.num_steps, (x.shape[0],)).to(self.device)
+                t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
                 assert x.device == noise.device == t.device, "Device mismatch detected"
                 assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
                 noisy_x = self.forward_diffusion(x, noise, t)
@@ -809,15 +817,6 @@ class TrainDDIM(nn.Module):
         return mean_val_loss
 
 ###==================================================================================================================###
-
-"""Image generation using a trained Denoising Diffusion Implicit Model (DDIM).
-
-This module implements the sampling process for generating images with a trained DDIM
-model, as described in Song et al. (2021, "Denoising Diffusion Implicit Models"). It
-supports both unconditional and conditional generation with text prompts, using a
-subsampled time step schedule for faster sampling.
-"""
-
 
 class SampleDDIM(nn.Module):
     """Image generation using a trained DDIM model.

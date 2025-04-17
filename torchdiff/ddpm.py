@@ -19,6 +19,9 @@ References:
 
 Examples
 --------
+>>> from torchdiff.ddpm import HyperParamsDDPM, ForwardDDPM, ReverseDDPM, TrainDDPM, SampleDDPM
+>>> from torchdiff.nets import TextEncoder, NoisePredictor
+...
 >>> hyper_params = HyperParamsDDPM(num_steps=1000, beta_start=1e-4, beta_end=0.02, beta_method="linear")
 >>> forward_ddpm = ForwardDDPM(hyper_params)
 >>> reverse_ddpm = ReverseDDPM(hyper_params)
@@ -26,8 +29,11 @@ Examples
 ...                                  up_channels=[128, 64, 32], down_sampling=[True, True, True], time_embed_dim=128,
 ...                                  y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2, dropout_rate=0.1,
 ...                                  down_sampling_factor=2, where_y=True, y_to_all=False)
->>> train_ddpm = TrainDDPM(noise_predictor=noise_predictor, hyper_params_model=hyper_params,
-...                        data_loader=data_loader, optimizer=optimizer, objective=nn.MSELoss())
+>>> text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased", vocabulary_size=30522,
+...                            num_layers=2, input_dimension=128, output_dimension=128, num_heads=4, context_length=77,
+...                            dropout_rate=0.1, qkv_bias=False, scaling_value=4, epsilon=1e-5)
+>>> train_ddpm = TrainDDPM(noise_predictor=noise_predictor, hyper_params=hyper_params, data_loader=data_loader, 
+...                        optimizer=optimizer, objective=nn.MSELoss(), conditional_model=text_encoder))
 >>> train_losses, best_val_loss = train_ddpm()
 >>> sampler = SampleDDPM(reverse_ddpm, noise_predictor, image_shape=(64, 64))
 >>> images = sampler(conditions="A cat", normalize_output=True)
@@ -660,6 +666,9 @@ class TrainDDPM(nn.Module):
                 scaler.update()
                 self.warmup_lr_scheduler.step()
                 train_losses_.append(loss.item())
+
+            if self.hyper_params.trainable_beta:
+                self.hyper_params.constrain_betas() # constrains trainable betas
 
             mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
             train_losses.append(mean_train_loss)
