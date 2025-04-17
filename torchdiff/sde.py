@@ -1,100 +1,117 @@
 __version__ = "1.0.0"
 
-"""Denoising Diffusion Probabilistic Models (DDPM) implementation.
+"""Score-Based Generative Modeling with Stochastic Differential Equations (SDE).
 
-This module provides a complete implementation of DDPM, as described in Ho et al.
-(2020, "Denoising Diffusion Probabilistic Models"). It includes components for forward
-and reverse diffusion processes, hyperparameter management, training, and image
-sampling. Supports both unconditional and conditional generation with text prompts.
+This module implements a complete framework for score-based generative models using SDEs,
+as described in Song et al. (2021, "Score-Based Generative Modeling through Stochastic
+Differential Equations"). It provides components for forward and reverse diffusion
+processes, hyperparameter management, training, and image sampling, supporting Variance
+Exploding (VE), Variance Preserving (VP), sub-Variance Preserving (sub-VP), and ODE
+methods for flexible noise schedules. Supports both unconditional and conditional
+generation with text prompts.
 
 Components:
-- ForwardDDPM: Forward diffusion process to add noise.
-- ReverseDDPM: Reverse diffusion process to denoise.
-- HyperParamsDDPM: Noise schedule management.
-- TrainDDPM: Training loop with mixed precision and scheduling.
-- SampleDDPM: Image generation from trained models.
+- ForwardSDE: Forward diffusion process to add noise using SDE methods.
+- ReverseSDE: Reverse diffusion process to denoise using SDE methods.
+- HyperParamsSDE: Noise schedule and SDE-specific parameter management.
+- TrainSDE: Training loop with mixed precision and scheduling.
+- SampleSDE: Image generation from trained SDE models.
+
+Notes
+-----
+- This module uses `torch.cuda.amp` for mixed precision training on CUDA devices.
+  Ensure compatibility with your hardware configuration.
+- The `SampleSDE.to` method references a non-existent `compressor` attribute, which
+  should be removed or implemented if intended for latent diffusion.
+- The `ForwardSDE` and `ReverseSDE` classes contain a potential code issue in the "ode"
+  method, where a nested `if` for "ve" should be corrected to align with intended logic.
 
 References:
-- Ho, J., Jain, A., & Abbeel, P. (2020). Denoising Diffusion Probabilistic Models.
+- Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., & Poole, B. (2021).
+  Score-Based Generative Modeling through Stochastic Differential Equations.
 
 Examples
 --------
->>> hyper_params = HyperParamsDDPM(num_steps=1000, beta_start=1e-4, beta_end=0.02, beta_method="linear")
->>> forward_ddpm = ForwardDDPM(hyper_params)
->>> reverse_ddpm = ReverseDDPM(hyper_params)
->>> noise_predictor = NoisePredictor(in_channels=3, down_channels=[32, 64, 128], mid_channels=[128, 128, 128],
-...                                  up_channels=[128, 64, 32], down_sampling=[True, True, True], time_embed_dim=128,
-...                                  y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2, dropout_rate=0.1,
-...                                  down_sampling_factor=2, where_y=True, y_to_all=False)
->>> train_ddpm = TrainDDPM(noise_predictor=noise_predictor, hyper_params_model=hyper_params,
-...                        data_loader=data_loader, optimizer=optimizer, objective=nn.MSELoss())
->>> train_losses, best_val_loss = train_ddpm()
->>> sampler = SampleDDPM(reverse_ddpm, noise_predictor, image_shape=(64, 64))
+>>> hyper_params = HyperParamsSDE(num_steps=1000, beta_start=1e-4, beta_end=0.02)
+>>> forward_sde = ForwardSDE(hyper_params, method="vp")
+>>> reverse_sde = ReverseSDE(hyper_params, method="vp")
+>>> noise_predictor = MyNoisePredictor()  # User-defined model
+>>> train_sde = TrainSDE(method="vp", noise_predictor=noise_predictor, hyper_params_model=hyper_params,
+...                      data_loader=data_loader, optimizer=optimizer, objective=nn.MSELoss())
+>>> train_losses, best_val_loss = train_sde()
+>>> sampler = SampleSDE(reverse_sde, noise_predictor, image_shape=(64, 64))
 >>> images = sampler(conditions="A cat", normalize_output=True)
 
 License
 -------
-MIT License.
+MIT License (or specify your license).
 
 Version
 -------
 1.0.0
 """
 
+
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 from torch.cuda.amp import GradScaler, autocast
 from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import LambdaLR
-from tqdm import tqdm
 from transformers import BertTokenizer
 import warnings
 
 ###==================================================================================================================###
 
-class ForwardDDPM(nn.Module):
-    """Forward diffusion process for Denoising Diffusion Probabilistic Models (DDPM).
+class ForwardSDE(nn.Module):
+    """Forward diffusion process for SDE-based generative models.
 
-    Implements the forward diffusion process for DDPM, which perturbs input data by
-    adding Gaussian noise over a series of time steps, as defined in Ho et al. (2020).
-    The noise schedule can be either fixed or trainable, depending on the provided
-    hyperparameters.
+    Implements the forward diffusion process for score-based generative models using
+    Stochastic Differential Equations (SDEs), supporting Variance Exploding (VE),
+    Variance Preserving (VP), sub-Variance Preserving (sub-VP), and ODE methods, as
+    described in Song et al. (2021).
 
     Parameters
     ----------
     hyper_params : object
-        Hyperparameter object (HyperParamsDDPM) containing the noise schedule parameters. Expected to have
+        Hyperparameter object containing SDE-specific parameters. Expected to have
         attributes:
-        - `num_steps`: Number of diffusion steps (int).
-        - `trainable_beta`: Whether the noise schedule is trainable (bool).
-        - `betas`: Noise schedule parameters (torch.Tensor, optional if trainable_beta is True).
-        - `sqrt_alpha_bars`: Precomputed cumulative product of alphas (torch.Tensor, optional if trainable_beta is False).
-        - `sqrt_one_minus_alpha_bars`: Precomputed square root of one minus cumulative alpha product (torch.Tensor, optional if trainable_beta is False).
-        - `compute_schedule`: Method to compute the noise schedule (callable, optional if trainable_beta is True).
+        - `dt`: Time step size for SDE integration (float).
+        - `sigmas`: Sigma values for VE method (torch.Tensor, optional).
+        - `betas`: Beta values for VP, sub-VP, or ODE methods (torch.Tensor).
+        - `cum_betas`: Cumulative beta values for sub-VP method (torch.Tensor, optional).
+    method : str
+        SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
 
     Attributes
     ----------
     hyper_params : object
-        Stores the provided hyperparameter object for use in the forward process.
+        Stores the provided hyperparameter object.
+    method : str
+        Selected SDE method.
+
+    Raises
+    ------
+    ValueError
+        If `method` is not one of the supported methods ("ve", "vp", "sub-vp", "ode").
     """
-    def __init__(self, hyper_params):
+    def __init__(self, hyper_params, method):
         super().__init__()
         self.hyper_params = hyper_params
+        self.method = method
 
     def forward(self, x0, noise, time_steps):
-        """Applies the forward diffusion process to the input data.
+        """Applies the forward SDE diffusion process to the input data.
 
-        Perturbs the input data `x0` by adding Gaussian noise according to the DDPM
-        forward process at specified time steps. The noise is scaled based on the
-        cumulative noise schedule parameters (`sqrt_alpha_bar_t` and
-        `sqrt_one_minus_alpha_bar_t`).
+        Perturbs the input data `x0` by adding noise according to the specified SDE
+        method at given time steps, incorporating drift and diffusion terms as applicable.
 
         Parameters
         ----------
         x0 : torch.Tensor
-            Input data tensor of shape (batch_size, channels, height, width).
+            Input data tensor, shape (batch_size, channels, height, width).
         noise : torch.Tensor
-            Gaussian noise tensor of the same shape as `x0`.
+            Gaussian noise tensor, same shape as `x0`.
         time_steps : torch.Tensor
             Tensor of time step indices (long), shape (batch_size,), where each value
             is in the range [0, hyper_params.num_steps - 1].
@@ -102,76 +119,100 @@ class ForwardDDPM(nn.Module):
         Returns
         -------
         torch.Tensor
-            Noisy data tensor `xt` at the specified time steps, with the same shape as `x0`.
+            Noisy data tensor at the specified time steps, same shape as `x0`.
 
         Raises
         ------
         ValueError
-            If any value in `time_steps` is outside the valid range
-            [0, hyper_params.num_steps - 1].
+            If `method` is not one of the supported methods ("ve", "vp", "sub-vp", "ode").
         """
-        if not torch.all((time_steps >= 0) & (time_steps < self.hyper_params.num_steps)):
-            raise ValueError(f"time_steps must be between 0 and {self.hyper_params.num_steps - 1}")
+        dt = self.hyper_params.dt
+        if self.method == "ve":
+            sigma_t = self.hyper_params.sigmas[time_steps]
+            sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
+            sigma_diff = torch.sqrt(torch.clamp(sigma_t ** 2 - sigma_t_prev ** 2, min=0))
+            x0 = x0 + noise * sigma_diff.view(-1, 1, 1, 1)
 
-        if self.hyper_params.trainable_beta:
-            _, _, _, sqrt_alpha_bar_t, sqrt_one_minus_alpha_bar_t = self.hyper_params.compute_schedule(
-                self.hyper_params.betas
-            )
-            sqrt_alpha_bar_t = sqrt_alpha_bar_t[time_steps].to(x0.device)
-            sqrt_one_minus_alpha_bar_t = sqrt_one_minus_alpha_bar_t[time_steps].to(x0.device)
+        elif self.method == "vp":
+            betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
+            drift = -0.5 * betas * x0 * dt
+            diffusion = torch.sqrt(betas * dt) * noise
+            x0 = x0 + drift + diffusion
+
+        elif self.method == "sub-vp":
+            betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
+            cum_betas = self.hyper_params.cum_betas[time_steps].view(-1, 1, 1, 1)
+            drift = -0.5 * betas * x0 * dt
+            diffusion = torch.sqrt(betas * (1 - torch.exp(-2 * cum_betas)) * dt) * noise
+            x0 = x0 + drift + diffusion
+
+        elif self.method == "ode":
+            if self.method == "ve":
+                x0 = x0
+            else:
+                betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
+                drift = -0.5 * betas * x0 * dt
+                x0 = x0 + drift
         else:
-            sqrt_alpha_bar_t = self.hyper_params.sqrt_alpha_bars[time_steps].to(x0.device)
-            sqrt_one_minus_alpha_bar_t = self.hyper_params.sqrt_one_minus_alpha_bars[time_steps].to(x0.device)
-
-        sqrt_alpha_bar_t = sqrt_alpha_bar_t.view(-1, 1, 1, 1)
-        sqrt_one_minus_alpha_bar_t = sqrt_one_minus_alpha_bar_t.view(-1, 1, 1, 1)
-        xt = sqrt_alpha_bar_t * x0 + sqrt_one_minus_alpha_bar_t * noise
-        return xt
+            raise ValueError(f"Unknown method: {self.method}")
+        return x0
 
 ###==================================================================================================================###
 
-class ReverseDDPM(nn.Module):
-    """Reverse diffusion process for Denoising Diffusion Probabilistic Models (DDPM).
+class ReverseSDE(nn.Module):
+    """Reverse diffusion process for SDE-based generative models.
 
-    Implements the reverse diffusion process for DDPM, which iteratively denoises a
-    noisy input `xt` using a predicted noise component, as defined in Ho et al. (2020).
-    The process relies on a noise schedule that can be either fixed or trainable,
-    specified through the provided hyperparameters.
+    Implements the reverse diffusion process for score-based generative models using
+    Stochastic Differential Equations (SDEs), supporting Variance Exploding (VE),
+    Variance Preserving (VP), sub-Variance Preserving (sub-VP), and ODE methods, as
+    described in Song et al. (2021). The reverse process denoises a noisy input using
+    predicted noise estimates.
 
     Parameters
     ----------
     hyper_params : object
-        Hyperparameter object (HyperParamsDDPM) containing the noise schedule parameters. Expected to have
+        Hyperparameter object containing SDE-specific parameters. Expected to have
         attributes:
-        - `num_steps`: Number of diffusion steps (int).
-        - `trainable_beta`: Whether the noise schedule is trainable (bool).
-        - `betas`: Noise schedule parameters (torch.Tensor, optional if trainable_beta is True).
-        - `alphas`: Precomputed alpha values (torch.Tensor, optional if trainable_beta is False).
-        - `alpha_bars`: Precomputed cumulative product of alphas (torch.Tensor, optional if trainable_beta is False).
-        - `compute_schedule`: Method to compute the noise schedule (callable, optional if trainable_beta is True).
+        - `dt`: Time step size for SDE integration (float).
+        - `sigmas`: Sigma values for VE method (torch.Tensor, optional).
+        - `betas`: Beta values for VP, sub-VP, or ODE methods (torch.Tensor).
+        - `cum_betas`: Cumulative beta values for sub-VP method (torch.Tensor, optional).
+    method : str
+        SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
 
     Attributes
     ----------
     hyper_params : object
-        Stores the provided hyperparameter object for use in the reverse process.
+        Stores the provided hyperparameter object.
+    method : str
+        Selected SDE method.
+
+    Raises
+    ------
+    ValueError
+        If `method` is not one of the supported methods ("ve", "vp", "sub-vp", "ode").
     """
-    def __init__(self, hyper_params):
+    def __init__(self, hyper_params, method):
         super().__init__()
-        self.hyper_params = hyper_params # hyperparameters class
+        self.hyper_params = hyper_params
+        self.method = method
 
-    def forward(self, xt, predicted_noise, time_steps):
-        """Applies the reverse diffusion process to the noisy input.
+    def forward(self, xt, noise, predicted_noise, time_steps):
+        """Applies the reverse SDE diffusion process to the noisy input.
 
-        Denoises the input `xt` by computing the mean of the reverse process
-        distribution using the predicted noise and optionally adding stochastic noise
-        for time steps greater than 0, as per the DDPM reverse process.
+        Denoises the input `xt` by applying the reverse SDE process, using predicted
+        noise estimates and optional stochastic noise, according to the specified SDE
+        method at given time steps. Incorporates drift and diffusion terms as applicable.
 
         Parameters
         ----------
         xt : torch.Tensor
-            Noisy input tensor at time step `t`, of shape (batch_size, channels, height, width).
+            Noisy input tensor at time step `t`, shape (batch_size, channels, height, width).
+        noise : torch.Tensor or None
+            Gaussian noise tensor, same shape as `xt`, used for stochasticity. If None,
+            no stochastic noise is added (e.g., for deterministic ODE).
         predicted_noise : torch.Tensor
-            Predicted noise tensor, of the same shape as `xt`, typically output by a neural network.
+            Predicted noise tensor, same shape as `xt`, typically output by a neural network.
         time_steps : torch.Tensor
             Tensor of time step indices (long), shape (batch_size,), where each value
             is in the range [0, hyper_params.num_steps - 1].
@@ -179,71 +220,86 @@ class ReverseDDPM(nn.Module):
         Returns
         -------
         torch.Tensor
-            Denoised tensor `xt_minus_1` at time step `t-1`, with the same shape as `xt`.
-            For time_steps == 0, returns the mean of the reverse process without added noise.
+            Denoised tensor at the previous time step, same shape as `xt`.
 
         Raises
         ------
         ValueError
-            If any value in `time_steps` is outside the valid range
-            [0, hyper_params.num_steps - 1].
+            If `method` is not one of the supported methods ("ve", "vp", "sub-vp", "ode").
+
+        Notes
+        -----
+        - For the "ve" and "ode" methods, the output is clamped to [-1e5, 1e5] to prevent
+          numerical instability.
+        - Stochastic noise (`noise`) is only added if provided and the method supports it
+          (not applicable for "ode" in non-VE cases).
         """
-        if not torch.all((time_steps >= 0) & (time_steps < self.hyper_params.num_steps)):
-            raise ValueError(f"time_steps must be between 0 and {self.hyper_params.num_steps - 1}")
+        dt = self.hyper_params.dt
+        betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
+        cum_betas = self.hyper_params.cum_betas[time_steps].view(-1, 1, 1, 1)
+        if self.method == "ve":
+            sigma_t = self.hyper_params.sigmas[time_steps]
+            sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
+            sigma_diff = torch.sqrt(torch.clamp(sigma_t ** 2 - sigma_t_prev ** 2, min=0))
+            drift = -(sigma_t ** 2 - sigma_t_prev ** 2).view(-1, 1, 1, 1) * predicted_noise * dt
+            diffusion = sigma_diff.view(-1, 1, 1, 1) * noise if noise is not None else 0
+            xt = xt + drift + diffusion
+            xt = torch.clamp(xt, -1e5, 1e5)
 
-        if self.hyper_params.trainable_beta:
-            betas_t, alphas_t, alpha_bars_t, _, _ = self.hyper_params.compute_schedule(self.hyper_params.betas)
-            betas_t = betas_t[time_steps].to(xt.device)
-            alphas_t = alphas_t[time_steps].to(xt.device)
-            alpha_bars_t = alpha_bars_t[time_steps].to(xt.device)
-            alpha_bars_t_minus_1 = alpha_bars_t[time_steps - 1].to(xt.device) if time_steps.any() else None
+        elif self.method == "vp":
+            drift = -0.5 * betas * xt * dt - betas * predicted_noise * dt
+            diffusion = torch.sqrt(betas * dt) * noise if noise is not None else 0
+            xt = xt + drift + diffusion
+
+        elif self.method == "sub-vp":
+            drift = -0.5 * betas * xt * dt - betas * (1 - torch.exp(-2 * cum_betas)) * predicted_noise * dt
+            diffusion = torch.sqrt(betas * (1 - torch.exp(-2 * cum_betas)) * dt) * noise if noise is not None else 0
+            xt = xt + drift + diffusion
+
+        elif self.method == "ode":
+            if self.method == "ve":
+                sigma_t = self.hyper_params.sigmas[time_steps]
+                sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
+                drift = -0.5 * (sigma_t ** 2 - sigma_t_prev ** 2).view(-1, 1, 1, 1) * predicted_noise * dt
+            else:
+                drift = -0.5 * betas * xt * dt - 0.5 * betas * predicted_noise * dt
+            xt = xt + drift
+            xt = torch.clamp(xt, -1e5, 1e5)
         else:
-            betas_t = self.hyper_params.betas[time_steps].to(xt.device)
-            alphas_t = self.hyper_params.alphas[time_steps].to(xt.device)
-            alpha_bars_t = self.hyper_params.alpha_bars[time_steps].to(xt.device)
-            alpha_bars_t_minus_1 = self.hyper_params.alpha_bars[time_steps - 1].to(xt.device) if time_steps.any() else None
-
-        sqrt_alphas_t = torch.sqrt(alphas_t).view(-1, 1, 1, 1)
-        sqrt_one_minus_alpha_bars_t = torch.sqrt(1 - alpha_bars_t).view(-1, 1, 1, 1)
-        betas_t = betas_t.view(-1, 1, 1, 1)
-
-        mu = (xt - (betas_t / sqrt_one_minus_alpha_bars_t) * predicted_noise) / sqrt_alphas_t
-
-        mask = (time_steps == 0)
-        if mask.all():
-            return mu
-
-        variance = (1 - alpha_bars_t_minus_1) / (1 - alpha_bars_t) * betas_t.squeeze()
-        std = torch.sqrt(variance).view(-1, 1, 1, 1)
-
-        z = torch.randn_like(xt).to(xt.device)
-        xt_minus_1 = mu + (~mask).float().view(-1, 1, 1, 1) * std * z
-        return xt_minus_1
+            raise ValueError(f"Unknown method: {self.method}")
+        return xt
 
 ###==================================================================================================================###
 
+class HyperParamsSDE(nn.Module):
+    """Hyperparameters for SDE-based generative models.
 
-class HyperParamsDDPM(nn.Module):
-    """Hyperparameters for Denoising Diffusion Probabilistic Models (DDPM) noise schedule.
-
-    Manages the noise schedule parameters for DDPM, including the computation of beta
-    values and derived quantities (alphas, alpha_bars, etc.), with support for
-    trainable or fixed schedules and various beta scheduling methods, as inspired by
-    Ho et al. (2020).
+    Manages the noise schedule and SDE-specific parameters for score-based generative
+    models, including beta and sigma schedules, time steps, and variance computations,
+    as described in Song et al. (2021). Supports trainable or fixed beta schedules and
+    multiple scheduling methods for flexible noise control.
 
     Parameters
     ----------
     num_steps : int, optional
         Number of diffusion steps (default: 1000).
     beta_start : float, optional
-        Starting value for beta (default: 1e-4).
+        Starting value for beta schedule (default: 1e-4).
     beta_end : float, optional
-        Ending value for beta (default: 0.02).
+        Ending value for beta schedule (default: 0.02).
     trainable_beta : bool, optional
         Whether the beta schedule is trainable (default: False).
     beta_method : str, optional
         Method for computing the beta schedule (default: "linear").
         Supported methods: "linear", "sigmoid", "quadratic", "constant", "inverse_time".
+    sigma_start : float, optional
+        Starting value for sigma schedule for VE method (default: 1e-3).
+    sigma_end : float, optional
+        Ending value for sigma schedule for VE method (default: 10.0).
+    start : float, optional
+        Start of the time interval for SDE integration (default: 0.0).
+    end : float, optional
+        End of the time interval for SDE integration (default: 1.0).
 
     Attributes
     ----------
@@ -257,54 +313,72 @@ class HyperParamsDDPM(nn.Module):
         Whether the beta schedule is trainable.
     beta_method : str
         Method used for beta schedule computation.
+    sigma_start : float
+        Minimum sigma value for VE method.
+    sigma_end : float
+        Maximum sigma value for VE method.
+    start : float
+        Start of the time interval.
+    end : float
+        End of the time interval.
     betas : torch.Tensor
         Beta schedule values, shape (num_steps,). Trainable if `trainable_beta` is True,
         otherwise a fixed buffer.
-    alphas : torch.Tensor, optional
-        Alpha values (1 - betas), shape (num_steps,). Available if `trainable_beta` is False.
-    alpha_bars : torch.Tensor, optional
-        Cumulative product of alphas, shape (num_steps,). Available if `trainable_beta` is False.
-    sqrt_alpha_bars : torch.Tensor, optional
-        Square root of alpha_bars, shape (num_steps,). Available if `trainable_beta` is False.
-    sqrt_one_minus_alpha_bars : torch.Tensor, optional
-        Square root of (1 - alpha_bars), shape (num_steps,). Available if `trainable_beta` is False.
+    cum_betas : torch.Tensor, optional
+        Cumulative sum of betas scaled by `dt`, shape (num_steps,). Available if
+        `trainable_beta` is False.
+    sigmas : torch.Tensor, optional
+        Sigma schedule for VE method, shape (num_steps,). Available if
+        `trainable_beta` is False.
+    time : torch.Tensor
+        Time points for SDE integration, shape (num_steps,).
+    dt : float
+        Time step size for SDE integration, computed as (end - start) / num_steps.
 
     Raises
     ------
     ValueError
-        If `beta_start` or `beta_end` do not satisfy 0 < beta_start < beta_end < 1,
-        or if `num_steps` is not positive.
+        If `beta_start` or `beta_end` do not satisfy 0 < beta_start < beta_end,
+        `sigma_start` or `sigma_end` do not satisfy 0 < sigma_start < sigma_end,
+        or `num_steps` is not positive.
     """
-    def __init__(self, num_steps=1000, beta_start=1e-4, beta_end=0.02, trainable_beta=False, beta_method="linear"):
+    def __init__(self, num_steps=1000, beta_start=1e-4, beta_end=0.02, trainable_beta=False, beta_method="linear",
+                 sigma_start=1e-3, sigma_end=10.0, start=0.0, end=1.0):
         super().__init__()
         self.num_steps = num_steps
         self.beta_start = beta_start
         self.beta_end = beta_end
         self.trainable_beta = trainable_beta
         self.beta_method = beta_method
+        self.sigma_start = sigma_start
+        self.sigma_end = sigma_end
+        self.start = start
+        self.end = end
 
-        if not (0 < beta_start < beta_end < 1):
-            raise ValueError(f"beta_start ({beta_start}) and beta_end ({beta_end}) must satisfy 0 < start < end < 1")
-        if num_steps <= 0:
-            raise ValueError(f"num_steps ({num_steps}) must be positive")
+        if not (0 < self.beta_start < self.beta_end):
+            raise ValueError(f"beta_start ({self.beta_start}) and beta_end ({self.beta_end}) must satisfy 0 < start < end")
+        if not (0 < self.sigma_start < self.sigma_end):
+            raise ValueError(f"sigma_start ({self.sigma_start}) and sigma_end ({self.sigma_end}) must satisfy 0 < start < end")
+        if self.num_steps <= 0:
+            raise ValueError(f"num_steps ({self.num_steps}) must be positive")
 
         beta_range = (beta_start, beta_end)
         betas_init = self.compute_beta_schedule(beta_range, num_steps, beta_method)
+        self.time = torch.linspace(self.start, self.end, self.num_steps, dtype=torch.float32)
+        self.dt = (self.end - self.start) / self.num_steps
 
         if trainable_beta:
             self.betas = nn.Parameter(betas_init)
         else:
             self.register_buffer('betas', betas_init)
-            self.register_buffer('alphas', 1 - self.betas)
-            self.register_buffer('alpha_bars', torch.cumprod(self.alphas, dim=0))
-            self.register_buffer('sqrt_alpha_bars', torch.sqrt(self.alpha_bars))
-            self.register_buffer('sqrt_one_minus_alpha_bars', torch.sqrt(1 - self.alpha_bars))
+            self.register_buffer('cum_betas', torch.cumsum(betas_init, dim=0) * self.dt)
+            self.register_buffer("sigmas", self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time)
 
     def compute_beta_schedule(self, beta_range, num_steps, method):
         """Computes the beta schedule based on the specified method.
 
-        Generates a sequence of beta values for the DDPM noise schedule using the
-        chosen method, ensuring values are clamped within the specified range.
+        Generates a sequence of beta values for the SDE noise schedule using the chosen
+        method, ensuring values are clamped within the specified range.
 
         Parameters
         ----------
@@ -331,8 +405,8 @@ class HyperParamsDDPM(nn.Module):
             x = torch.linspace(-6, 6, num_steps)
             beta = torch.sigmoid(x) * (beta_max - beta_min) + beta_min
         elif method == "quadratic":
-            x = torch.linspace(beta_min**0.5, beta_max**0.5, num_steps)
-            beta = x**2
+            x = torch.linspace(beta_min ** 0.5, beta_max ** 0.5, num_steps)
+            beta = x ** 2
         elif method == "constant":
             beta = torch.full((num_steps,), beta_max)
         elif method == "inverse_time":
@@ -342,35 +416,8 @@ class HyperParamsDDPM(nn.Module):
             beta = torch.linspace(beta_min, beta_max, num_steps)
         else:
             raise ValueError(f"Unknown beta_method: {method}. Supported: linear, sigmoid, quadratic, constant, inverse_time")
-
         beta = torch.clamp(beta, min=beta_min, max=beta_max)
         return beta
-
-    @staticmethod
-    def compute_schedule(betas):
-        """Computes noise schedule parameters dynamically from betas.
-
-        Calculates the derived noise schedule parameters (alphas, alpha_bars, etc.)
-        from the provided beta values, as used in the DDPM forward and reverse processes.
-
-        Parameters
-        ----------
-        betas : torch.Tensor
-            Tensor of beta values, shape (num_steps,).
-
-        Returns
-        -------
-        tuple
-            A tuple containing:
-            - betas: Input beta values, shape (num_steps,).
-            - alphas: 1 - betas, shape (num_steps,).
-            - alpha_bars: Cumulative product of alphas, shape (num_steps,).
-            - sqrt_alpha_bars: Square root of alpha_bars, shape (num_steps,).
-            - sqrt_one_minus_alpha_bars: Square root of (1 - alpha_bars), shape (num_steps,).
-        """
-        alphas = 1 - betas
-        alpha_bars = torch.cumprod(alphas, dim=0)
-        return betas, alphas, alpha_bars, torch.sqrt(alpha_bars), torch.sqrt(1 - alpha_bars)
 
     def constrain_betas(self):
         """Constrains trainable betas to a valid range during training.
@@ -386,23 +433,57 @@ class HyperParamsDDPM(nn.Module):
             with torch.no_grad():
                 self.betas.clamp_(min=self.beta_start, max=self.beta_end)
 
+    def get_variance(self, time_steps, method):
+        """Computes the variance for the specified SDE method at given time steps.
+
+        Calculates the variance used in SDE diffusion processes based on the method
+        (VE, VP, or sub-VP), leveraging the sigma or cumulative beta schedules.
+
+        Parameters
+        ----------
+        time_steps : torch.Tensor
+            Tensor of time step indices (long), shape (batch_size,), where each value
+            is in the range [0, num_steps - 1].
+        method : str
+            SDE method to compute variance for. Supported methods: "ve", "vp", "sub-vp".
+
+        Returns
+        -------
+        torch.Tensor
+            Variance values for the specified time steps, shape (batch_size,).
+
+        Raises
+        ------
+        ValueError
+            If `method` is not one of the supported methods ("ve", "vp", "sub-vp").
+        """
+        if method == "ve":
+            return self.sigmas[time_steps] ** 2
+        elif method == "vp":
+            return 1 - torch.exp(-self.cum_betas[time_steps])
+        elif method == "sub-vp":
+            return 1 - torch.exp(-2 * self.cum_betas[time_steps])
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
 ###==================================================================================================================###
 
+class TrainSDE(nn.Module):
+    """Trainer for score-based generative models using Stochastic Differential Equations.
 
-class TrainDDPM(nn.Module):
-    """Trainer for Denoising Diffusion Probabilistic Models (DDPM).
-
-    Manages the training process for DDPM, optimizing a noise predictor model to learn
-    the noise added by the forward diffusion process. Supports conditional training with
-    text prompts, mixed precision training, learning rate scheduling, early stopping, and
-    checkpointing, as inspired by Ho et al. (2020).
+    Manages the training process for SDE-based generative models, optimizing a noise
+    predictor to learn the noise added by the forward SDE process, as described in Song
+    et al. (2021). Supports conditional training with text prompts, mixed precision,
+    learning rate scheduling, early stopping, and checkpointing.
 
     Parameters
     ----------
+    method : str
+        SDE method to use for forward diffusion. Supported methods: "ve", "vp", "sub-vp", "ode".
     noise_predictor : nn.Module
-        Model to predict noise added during the forward diffusion process.
-    hyper_params : nn.Module
-        Hyperparameter module (e.g., HyperParamsDDPM) defining the noise schedule.
+        Model to predict noise added during the forward SDE process.
+    hyper_params_model : nn.Module
+        Hyperparameter module (e.g., HyperParamsSDE) defining the noise schedule and SDE parameters.
     data_loader : torch.utils.data.DataLoader
         DataLoader for training data.
     optimizer : torch.optim.Optimizer
@@ -422,9 +503,9 @@ class TrainDDPM(nn.Module):
     max_length : int, optional
         Maximum length for tokenized prompts (default: 77).
     store_path : str, optional
-        Path to save model checkpoints (default: "ddpm_model.pth").
+        Path to save model checkpoints (default: "sde_model.pth").
     patience : int, optional
-        Number of epochs to wait for improvement before early stopping (default: 100).
+        Number of epochs to wait for improvement before early stopping (default: 10).
     warmup_epochs : int, optional
         Number of epochs for learning rate warmup (default: 100).
     val_frequency : int, optional
@@ -434,10 +515,12 @@ class TrainDDPM(nn.Module):
     ----------
     device : torch.device
         Device used for computation.
+    method : str
+        Selected SDE method.
     noise_predictor : nn.Module
         Noise prediction model.
-    hyper_params : nn.Module
-        Hyperparameter module for the noise schedule.
+    hyper_params_model : nn.Module
+        Hyperparameter module for the noise schedule and SDE parameters.
     conditional_model : nn.Module or None
         Conditional model for text-based training, if provided.
     optimizer : torch.optim.Optimizer
@@ -458,8 +541,8 @@ class TrainDDPM(nn.Module):
         Patience for early stopping.
     scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
         Learning rate scheduler based on validation or training loss.
-    forward_diffusion : ForwardDDPM
-        Forward diffusion module.
+    forward_diffusion : ForwardSDE
+        Forward SDE diffusion module.
     warmup_lr_scheduler : torch.optim.lr_scheduler.LambdaLR
         Learning rate scheduler for warmup.
     val_frequency : int
@@ -472,24 +555,26 @@ class TrainDDPM(nn.Module):
     ValueError
         If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
     """
-    def __init__(self, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
+
+    def __init__(self, method, noise_predictor, hyper_params_model, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, tokenizer=None, max_length=77,
-                 store_path=None, patience=100, warmup_epochs=100, val_frequency=10):
+                 store_path=None, patience=10, warmup_epochs=100, val_frequency=10):
         super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.method = method
         self.noise_predictor = noise_predictor
-        self.hyper_params = hyper_params.to(self.device)
+        self.hyper_params_model = hyper_params_model.to(self.device)
         self.conditional_model = conditional_model
         self.optimizer = optimizer
         self.objective = objective
-        self.store_path = store_path or "ddpm_model.pth"
+        self.store_path = store_path or "sde_model.pth"
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epoch = max_epoch
         self.max_length = max_length
         self.patience = patience
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=self.patience, factor=0.5)
-        self.forward_diffusion = ForwardDDPM(hyper_params=self.hyper_params).to(self.device)
+        self.forward_diffusion = ForwardSDE(hyper_params=self.hyper_params_model, method=self.method).to(self.device)
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
         if tokenizer is None:
@@ -497,6 +582,7 @@ class TrainDDPM(nn.Module):
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
             except Exception as e:
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
+
 
     def load_checkpoint(self, checkpoint_path):
         """Loads a training checkpoint to resume training.
@@ -568,7 +654,7 @@ class TrainDDPM(nn.Module):
         return epoch, loss
 
     @staticmethod
-    def warmup_scheduler(optimizer, warmup_epochs):
+    def warmup_scheduler(optimizer, warmup_epochs=10):
         """Creates a learning rate scheduler for warmup.
 
         Generates a scheduler that linearly increases the learning rate from 0 to the
@@ -579,7 +665,7 @@ class TrainDDPM(nn.Module):
         optimizer : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
         warmup_epochs : int, optional
-            Number of epochs for the warmup phase.
+            Number of epochs for the warmup phase (default: 10).
 
         Returns
         -------
@@ -594,7 +680,7 @@ class TrainDDPM(nn.Module):
         return LambdaLR(optimizer, lr_lambda)
 
     def forward(self):
-        """Trains the DDPM model to predict noise added by the forward diffusion process.
+        """Trains the SDE model to predict noise added by the forward diffusion process.
 
         Executes the training loop, optimizing the noise predictor and conditional model
         (if applicable) using mixed precision, gradient clipping, and learning rate
@@ -609,7 +695,9 @@ class TrainDDPM(nn.Module):
 
         Notes
         -----
-        - Checkpoints are saved when the validation (or training) loss improves, and on early stopping.
+        - Training uses mixed precision via `torch.cuda.amp` or `torch.amp` for efficiency.
+        - Checkpoints are saved when the validation (or training) loss improves, and on
+          early stopping.
         - Early stopping is triggered if no improvement occurs for `patience` epochs.
         """
         self.noise_predictor.train()
@@ -646,7 +734,7 @@ class TrainDDPM(nn.Module):
                 self.optimizer.zero_grad()
                 with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
                     noise = torch.randn_like(x).to(self.device)
-                    t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
+                    t = torch.randint(0, self.hyper_params_model.num_steps, (x.shape[0],)).to(self.device)
                     assert x.device == noise.device == t.device, "Device mismatch detected"
                     assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
                     noisy_x = self.forward_diffusion(x, noise, t)
@@ -685,7 +773,7 @@ class TrainDDPM(nn.Module):
                         'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                         'optimizer_state_dict': self.optimizer.state_dict(),
                         'loss': best_val_loss,
-                        'hyper_params_model': self.hyper_params,
+                        'hyper_params_model': self.hyper_params_model,
                         'max_epoch': self.max_epoch,
                     }, self.store_path)
                     print(f"Model saved at epoch {epoch + 1}")
@@ -702,7 +790,7 @@ class TrainDDPM(nn.Module):
                             'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                             'optimizer_state_dict': self.optimizer.state_dict(),
                             'loss': best_val_loss,
-                            'hyper_params_model': self.hyper_params,
+                            'hyper_params_model': self.hyper_params_model,
                             'max_epoch': self.max_epoch,
                         }, self.store_path + "_early_stop.pth")
                         print(f"Final model saved at {self.store_path}_early_stop.pth")
@@ -713,15 +801,21 @@ class TrainDDPM(nn.Module):
         return train_losses, best_val_loss
 
     def validate(self):
-        """Validates the DDPM model on the validation dataset.
+        """Validates the SDE model on the validation dataset.
 
-        Computes the validation loss using the noise predictor and forward diffusion
+        Computes the validation loss using the noise predictor and forward SDE diffusion
         process, with optional conditional inputs.
 
         Returns
         -------
         float
             Mean validation loss across the validation dataset.
+
+        Notes
+        -----
+        - Validation is performed with `torch.no_grad()` for efficiency.
+        - The noise predictor and conditional model (if applicable) are set to evaluation
+          mode during validation and restored to training mode afterward.
         """
         self.noise_predictor.eval()
         if self.conditional_model is not None:
@@ -749,7 +843,7 @@ class TrainDDPM(nn.Module):
                     y_encoded = None
 
                 noise = torch.randn_like(x).to(self.device)
-                t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
+                t = torch.randint(0, self.hyper_params_model.num_steps, (x.shape[0],)).to(self.device)
                 assert x.device == noise.device == t.device, "Device mismatch detected"
                 assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
                 noisy_x = self.forward_diffusion(x, noise, t)
@@ -765,27 +859,25 @@ class TrainDDPM(nn.Module):
 
 ###==================================================================================================================###
 
+class SampleSDE(nn.Module):
+    """Sampler for generating images using SDE-based generative models.
 
-class SampleDDPM(nn.Module):
-    """mage generation using a trained Denoising Diffusion Probabilistic Model (DDPM).
-
-    Implements the sampling process for DDPM, generating images by iteratively
-    denoising random noise using a trained noise predictor and reverse diffusion
-    process. Supports conditional generation with text prompts via a conditional
-    model, as inspired by Ho et al. (2020).
+    Generates images by iteratively denoising random noise using the reverse SDE process
+    and a trained noise predictor, as described in Song et al. (2021). Supports both
+    unconditional and conditional generation with text prompts.
 
     Parameters
     ----------
-    reverse_diffusion : nn.Module
-        Reverse diffusion module (e.g., ReverseDDPM) for the reverse process.
+    reverse_diffusion : ReverseSDE
+        Reverse SDE diffusion module for denoising.
     noise_predictor : nn.Module
-        Trained model to predict noise at each time step.
+        Model to predict noise added during the forward SDE process.
     image_shape : tuple
-        Tuple of (height, width) specifying the generated image dimensions.
+        Shape of generated images as (height, width).
     conditional_model : nn.Module, optional
         Model for conditional generation (e.g., text embeddings), default None.
-    tokenizer : str, optional
-        Pretrained tokenizer name from Hugging Face (default: "bert-base-uncased").
+    tokenizer : str or BertTokenizer, optional
+        Tokenizer for processing text prompts, default "bert-base-uncased".
     max_length : int, optional
         Maximum length for tokenized prompts (default: 77).
     batch_size : int, optional
@@ -795,20 +887,20 @@ class SampleDDPM(nn.Module):
     device : torch.device, optional
         Device for computation (default: CUDA if available, else CPU).
     output_range : tuple, optional
-        Tuple of (min, max) for clamping generated images (default: (-1, 1)).
+        Range for clamping generated images (min, max), default (-1, 1).
 
     Attributes
     ----------
     device : torch.device
         Device used for computation.
-    reverse : nn.Module
-        Reverse diffusion module.
+    reverse : ReverseSDE
+        Reverse SDE diffusion module.
     noise_predictor : nn.Module
         Noise prediction model.
     conditional_model : nn.Module or None
         Conditional model for text-based generation, if provided.
     tokenizer : BertTokenizer
-        Tokenizer for processing text prompts.
+        Tokenizer for text prompts.
     max_length : int
         Maximum length for tokenized prompts.
     in_channels : int
@@ -824,10 +916,10 @@ class SampleDDPM(nn.Module):
     ------
     ValueError
         If `image_shape` is not a tuple of two positive integers, `batch_size` is not
-        positive, or `output_range` is not a valid (min, max) tuple with min < max.
+        positive, or `output_range` is not a tuple (min, max) with min < max.
     """
-    def __init__(self, reverse_diffusion, noise_predictor, image_shape, conditional_model=None, tokenizer="bert-base-uncased",
-                 max_length=77, batch_size=1, in_channels=3, device=None, output_range=(-1, 1)):
+    def __init__(self, reverse_diffusion, noise_predictor, image_shape, conditional_model=None,
+                 tokenizer="bert-base-uncased", max_length=77, batch_size=1, in_channels=3, device=None, output_range=(-1, 1)):
         super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.reverse = reverse_diffusion.to(self.device)
@@ -840,8 +932,7 @@ class SampleDDPM(nn.Module):
         self.batch_size = batch_size
         self.output_range = output_range
 
-        if not isinstance(image_shape, (tuple, list)) or len(image_shape) != 2 or not all(
-                isinstance(s, int) and s > 0 for s in image_shape):
+        if not isinstance(image_shape, (tuple, list)) or len(image_shape) != 2 or not all(isinstance(s, int) and s > 0 for s in image_shape):
             raise ValueError("image_shape must be a tuple of two positive integers (height, width)")
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
@@ -851,20 +942,20 @@ class SampleDDPM(nn.Module):
     def tokenize(self, prompts):
         """Tokenizes text prompts for conditional generation.
 
-        Converts input prompts into tokenized input IDs and attention masks using the
-        specified tokenizer, suitable for use with the conditional model.
+        Converts input prompts into tokenized tensors using the specified tokenizer.
 
         Parameters
         ----------
         prompts : str or list
-            A single text prompt or a list of text prompts.
+            Text prompt(s) for conditional generation. Can be a single string or a list
+            of strings.
 
         Returns
         -------
         tuple
             A tuple containing:
-            - input_ids: Tokenized input IDs, shape (batch_size, max_length).
-            - attention_mask: Attention mask, shape (batch_size, max_length).
+            - input_ids: Tokenized input IDs (torch.Tensor, shape (batch_size, max_length)).
+            - attention_mask: Attention mask for tokenized inputs (torch.Tensor, same shape).
 
         Raises
         ------
@@ -885,10 +976,10 @@ class SampleDDPM(nn.Module):
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
 
     def forward(self, conditions=None, normalize_output=True):
-        """Generates images using the DDPM sampling process.
+        """Generates images using the reverse SDE sampling process.
 
-        Iteratively denoises random noise to generate images using the reverse diffusion
-        process and noise predictor. Supports conditional generation with text prompts.
+        Iteratively denoises random noise to generate images using the reverse SDE process
+        and noise predictor. Supports conditional generation with text prompts.
 
         Parameters
         ----------
@@ -909,8 +1000,13 @@ class SampleDDPM(nn.Module):
         ValueError
             If `conditions` is provided but no conditional model is specified, or if
             a conditional model is specified but `conditions` is None.
-        """
 
+        Notes
+        -----
+        - Sampling is performed with `torch.no_grad()` for efficiency.
+        - The noise predictor, reverse SDE, and conditional model (if applicable) are set
+          to evaluation mode during sampling.
+        """
         if conditions is not None and self.conditional_model is None:
             raise ValueError("Conditions provided but no conditional model specified")
         if conditions is None and self.conditional_model is not None:
@@ -926,7 +1022,9 @@ class SampleDDPM(nn.Module):
         with torch.no_grad():
             xt = noisy_samples
             for t in reversed(range(self.reverse.hyper_params.num_steps)):
+                noise = torch.randn_like(xt) if self.reverse.method != "ode" else None
                 time_steps = torch.full((self.batch_size,), t, device=self.device, dtype=torch.long)
+
                 if self.conditional_model is not None and conditions is not None:
                     input_ids, attention_masks = self.tokenize(conditions)
                     key_padding_mask = (attention_masks == 0)
@@ -934,7 +1032,8 @@ class SampleDDPM(nn.Module):
                     predicted_noise = self.noise_predictor(xt, time_steps, y)
                 else:
                     predicted_noise = self.noise_predictor(xt, time_steps)
-                xt = self.reverse(xt, predicted_noise, time_steps)
+
+                xt = self.reverse(xt, noise, predicted_noise, time_steps)
 
             generated_imgs = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
             if normalize_output:
@@ -945,22 +1044,27 @@ class SampleDDPM(nn.Module):
     def to(self, device):
         """Moves the module and its components to the specified device.
 
-        Updates the device attribute and moves the reverse diffusion, noise predictor,
-        and conditional model (if present) to the specified device.
-
         Parameters
         ----------
         device : torch.device
-            Target device for the module and its components.
+            Target device for computation.
 
         Returns
         -------
-        SampleDDPM
-            The module itself, moved to the specified device.
+        self
+            The module moved to the specified device.
+
+        Notes
+        -----
+        - Moves `noise_predictor`, `reverse`, and `conditional_model` (if applicable) to
+          the specified device.
+        - The `compressor` attribute is not defined in this implementation and should be
+          removed or implemented if intended.
         """
         self.device = device
         self.noise_predictor.to(device)
         self.reverse.to(device)
+        self.compressor.to(device)
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)

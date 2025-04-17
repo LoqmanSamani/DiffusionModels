@@ -6,7 +6,64 @@ from transformers import BertTokenizer
 
 
 class SampleSDE(nn.Module):
+    """Sampler for generating images using SDE-based generative models.
 
+    Generates images by iteratively denoising random noise using the reverse SDE process
+    and a trained noise predictor, as described in Song et al. (2021). Supports both
+    unconditional and conditional generation with text prompts.
+
+    Parameters
+    ----------
+    reverse_diffusion : ReverseSDE
+        Reverse SDE diffusion module for denoising.
+    noise_predictor : nn.Module
+        Model to predict noise added during the forward SDE process.
+    image_shape : tuple
+        Shape of generated images as (height, width).
+    conditional_model : nn.Module, optional
+        Model for conditional generation (e.g., text embeddings), default None.
+    tokenizer : str or BertTokenizer, optional
+        Tokenizer for processing text prompts, default "bert-base-uncased".
+    max_length : int, optional
+        Maximum length for tokenized prompts (default: 77).
+    batch_size : int, optional
+        Number of images to generate per batch (default: 1).
+    in_channels : int, optional
+        Number of input channels for generated images (default: 3).
+    device : torch.device, optional
+        Device for computation (default: CUDA if available, else CPU).
+    output_range : tuple, optional
+        Range for clamping generated images (min, max), default (-1, 1).
+
+    Attributes
+    ----------
+    device : torch.device
+        Device used for computation.
+    reverse : ReverseSDE
+        Reverse SDE diffusion module.
+    noise_predictor : nn.Module
+        Noise prediction model.
+    conditional_model : nn.Module or None
+        Conditional model for text-based generation, if provided.
+    tokenizer : BertTokenizer
+        Tokenizer for text prompts.
+    max_length : int
+        Maximum length for tokenized prompts.
+    in_channels : int
+        Number of input channels.
+    image_shape : tuple
+        Shape of generated images (height, width).
+    batch_size : int
+        Batch size for generation.
+    output_range : tuple
+        Range for clamping generated images.
+
+    Raises
+    ------
+    ValueError
+        If `image_shape` is not a tuple of two positive integers, `batch_size` is not
+        positive, or `output_range` is not a tuple (min, max) with min < max.
+    """
     def __init__(self, reverse_diffusion, noise_predictor, image_shape, conditional_model=None,
                  tokenizer="bert-base-uncased", max_length=77, batch_size=1, in_channels=3, device=None, output_range=(-1, 1)):
         super().__init__()
@@ -29,6 +86,28 @@ class SampleSDE(nn.Module):
             raise ValueError("output_range must be a tuple (min, max) with min < max")
 
     def tokenize(self, prompts):
+        """Tokenizes text prompts for conditional generation.
+
+        Converts input prompts into tokenized tensors using the specified tokenizer.
+
+        Parameters
+        ----------
+        prompts : str or list
+            Text prompt(s) for conditional generation. Can be a single string or a list
+            of strings.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - input_ids: Tokenized input IDs (torch.Tensor, shape (batch_size, max_length)).
+            - attention_mask: Attention mask for tokenized inputs (torch.Tensor, same shape).
+
+        Raises
+        ------
+        TypeError
+            If `prompts` is not a string or a list of strings.
+        """
         if isinstance(prompts, str):
             prompts = [prompts]
         elif not isinstance(prompts, list) or not all(isinstance(p, str) for p in prompts):
@@ -43,7 +122,37 @@ class SampleSDE(nn.Module):
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
 
     def forward(self, conditions=None, normalize_output=True):
+        """Generates images using the reverse SDE sampling process.
 
+        Iteratively denoises random noise to generate images using the reverse SDE process
+        and noise predictor. Supports conditional generation with text prompts.
+
+        Parameters
+        ----------
+        conditions : str or list, optional
+            Text prompt(s) for conditional generation, default None.
+        normalize_output : bool, optional
+            If True, normalizes output images to [0, 1] (default: True).
+
+        Returns
+        -------
+        torch.Tensor
+            Generated images, shape (batch_size, in_channels, height, width).
+            If `normalize_output` is True, images are normalized to [0, 1]; otherwise,
+            they are clamped to `output_range`.
+
+        Raises
+        ------
+        ValueError
+            If `conditions` is provided but no conditional model is specified, or if
+            a conditional model is specified but `conditions` is None.
+
+        Notes
+        -----
+        - Sampling is performed with `torch.no_grad()` for efficiency.
+        - The noise predictor, reverse SDE, and conditional model (if applicable) are set
+          to evaluation mode during sampling.
+        """
         if conditions is not None and self.conditional_model is None:
             raise ValueError("Conditions provided but no conditional model specified")
         if conditions is None and self.conditional_model is not None:
@@ -79,6 +188,25 @@ class SampleSDE(nn.Module):
         return generated_imgs
 
     def to(self, device):
+        """Moves the module and its components to the specified device.
+
+        Parameters
+        ----------
+        device : torch.device
+            Target device for computation.
+
+        Returns
+        -------
+        self
+            The module moved to the specified device.
+
+        Notes
+        -----
+        - Moves `noise_predictor`, `reverse`, and `conditional_model` (if applicable) to
+          the specified device.
+        - The `compressor` attribute is not defined in this implementation and should be
+          removed or implemented if intended.
+        """
         self.device = device
         self.noise_predictor.to(device)
         self.reverse.to(device)

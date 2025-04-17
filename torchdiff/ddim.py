@@ -1,3 +1,53 @@
+__version__ = "1.0.0"
+
+"""Denoising Diffusion Implicit Models (DDIM) implementation.
+
+This module provides a complete implementation of DDIM, as described in Song et al.
+(2021, "Denoising Diffusion Implicit Models"). It includes components for forward and
+reverse diffusion processes, hyperparameter management, training, and image sampling.
+Supports both unconditional and conditional generation with text prompts, using a
+subsampled time step schedule for faster sampling compared to DDPM.
+
+Components:
+- ForwardDDIM: Forward diffusion process to add noise.
+- ReverseDDIM: Reverse diffusion process to denoise with subsampled steps.
+- HyperParamsDDIM: Noise schedule management with subsampled (tau) schedule.
+- TrainDDIM: Training loop with mixed precision and scheduling.
+- SampleDDIM: Image generation from trained models with subsampled steps.
+
+Notes
+-----
+- The subsampled time step schedule (tau) enables faster sampling, controlled by the
+  `tau_num_steps` parameter in HyperParamsDDIM.
+
+References:
+- Song, J., Meng, C., & Ermon, S. (2021). Denoising Diffusion Implicit Models.
+
+Examples
+--------
+>>> hyper_params = HyperParamsDDIM(num_steps=1000, tau_num_steps=100)
+>>> forward_ddim = ForwardDDIM(hyper_params)
+>>> reverse_ddim = ReverseDDIM(hyper_params)
+>>> noise_predictor = NoisePredictor(in_channels=3, down_channels=[32, 64, 128], mid_channels=[128, 128, 128],
+...                                  up_channels=[128, 64, 32], down_sampling=[True, True, True], time_embed_dim=128,
+...                                  y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2, dropout_rate=0.1,
+...                                  down_sampling_factor=2, where_y=True, y_to_all=False)
+>>> train_ddim = TrainDDIM(noise_predictor=noise_predictor, hyper_params_model=hyper_params,
+...                        data_loader=data_loader, optimizer=optimizer, objective=nn.MSELoss())
+>>> train_losses, best_val_loss = train_ddim()
+>>> sampler = SampleDDIM(reverse_ddim, noise_predictor, image_shape=(64, 64))
+>>> images = sampler(conditions="A cat", normalize_output=True)
+
+License
+-------
+MIT License.
+
+Version
+-------
+1.0.0
+"""
+
+
 import torch
 import torch.nn as nn
 from torch.cuda.amp import GradScaler, autocast
@@ -19,7 +69,7 @@ class ForwardDDIM(nn.Module):
     Parameters
     ----------
     hyper_params : object
-        Hyperparameter object containing the noise schedule parameters. Expected to have
+        Hyperparameter object (HyperParamsDDIM) containing the noise schedule parameters. Expected to have
         attributes:
         - `num_steps`: Number of diffusion steps (int).
         - `trainable_beta`: Whether the noise schedule is trainable (bool).
@@ -86,13 +136,6 @@ class ForwardDDIM(nn.Module):
 
 ###==================================================================================================================###
 
-"""Reverse diffusion process for Denoising Diffusion Implicit Models (DDIM).
-
-This module implements the reverse diffusion process for DDIM, as described in Song et al.
-(2021, "Denoising Diffusion Implicit Models"). The reverse process iteratively denoises a
-noisy input to reconstruct the original data distribution using a subset of time steps.
-"""
-
 
 class ReverseDDIM(nn.Module):
     """Reverse diffusion process of DDIM.
@@ -104,7 +147,7 @@ class ReverseDDIM(nn.Module):
     Parameters
     ----------
     hyper_params : object
-        Hyperparameter object containing the noise schedule parameters. Expected to have
+        Hyperparameter object (HyperParamsDDIM) containing the noise schedule parameters. Expected to have
         attributes:
         - `tau_num_steps`: Number of subsampled time steps (int).
         - `eta`: Noise scaling factor for the reverse process (float).
@@ -175,15 +218,6 @@ class ReverseDDIM(nn.Module):
         return xt_prev, x0
 
 ###==================================================================================================================###
-
-"""Hyperparameters for Denoising Diffusion Implicit Models (DDIM) noise schedule.
-
-This module implements a flexible noise schedule for DDIM, as described in Song et al.
-(2021, "Denoising Diffusion Implicit Models"). It supports multiple beta schedule methods,
-trainable or fixed noise schedules, and a subsampled time step schedule for faster sampling.
-"""
-
-
 
 class HyperParamsDDIM(nn.Module):
     """Hyperparameters for DDIM noise schedule with flexible beta computation.
@@ -315,7 +349,6 @@ class HyperParamsDDIM(nn.Module):
             beta = torch.full((num_steps,), beta_max)
         elif method == "inverse_time":
             beta = 1.0 / torch.linspace(num_steps, 1, num_steps)
-            # scale to beta_range
             beta = beta_min + (beta_max - beta_min) * (beta - beta.min()) / (beta.max() - beta.min())
         elif method == "linear":
             beta = torch.linspace(beta_min, beta_max, num_steps)
@@ -399,13 +432,6 @@ class HyperParamsDDIM(nn.Module):
                 self.betas.clamp_(min=self.beta_start, max=self.beta_end)
 
 ###==================================================================================================================###
-
-"""Training module for Denoising Diffusion Implicit Models (DDIM).
-
-This module implements the training process for DDIM, as described in Song et al. (2021,
-"Denoising Diffusion Implicit Models"). It supports both unconditional and conditional
-training with text prompts, using mixed precision and learning rate scheduling.
-"""
 
 class TrainDDIM(nn.Module):
     """Trainer for Denoising Diffusion Implicit Models (DDIM).
@@ -994,7 +1020,6 @@ class SampleDDIM(nn.Module):
         self.device = device
         self.noise_predictor.to(device)
         self.reverse.to(device)
-        self.compressor.to(device)
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)

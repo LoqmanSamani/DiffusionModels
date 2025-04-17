@@ -11,7 +11,92 @@ import warnings
 
 
 class TrainSDE(nn.Module):
-    """Trainer for Score-Based Generative Modeling through Stochastic Differential Equations (SDE)."""
+    """Trainer for score-based generative models using Stochastic Differential Equations.
+
+    Manages the training process for SDE-based generative models, optimizing a noise
+    predictor to learn the noise added by the forward SDE process, as described in Song
+    et al. (2021). Supports conditional training with text prompts, mixed precision,
+    learning rate scheduling, early stopping, and checkpointing.
+
+    Parameters
+    ----------
+    method : str
+        SDE method to use for forward diffusion. Supported methods: "ve", "vp", "sub-vp", "ode".
+    noise_predictor : nn.Module
+        Model to predict noise added during the forward SDE process.
+    hyper_params_model : nn.Module
+        Hyperparameter module (e.g., HyperParamsSDE) defining the noise schedule and SDE parameters.
+    data_loader : torch.utils.data.DataLoader
+        DataLoader for training data.
+    optimizer : torch.optim.Optimizer
+        Optimizer for training the noise predictor and conditional model (if applicable).
+    objective : callable
+        Loss function to compute the difference between predicted and actual noise.
+    val_loader : torch.utils.data.DataLoader, optional
+        DataLoader for validation data, default None.
+    max_epoch : int, optional
+        Maximum number of training epochs (default: 1000).
+    device : torch.device, optional
+        Device for computation (default: CUDA if available, else CPU).
+    conditional_model : nn.Module, optional
+        Model for conditional generation (e.g., text embeddings), default None.
+    tokenizer : BertTokenizer, optional
+        Tokenizer for processing text prompts, default None (loads "bert-base-uncased").
+    max_length : int, optional
+        Maximum length for tokenized prompts (default: 77).
+    store_path : str, optional
+        Path to save model checkpoints (default: "sde_model.pth").
+    patience : int, optional
+        Number of epochs to wait for improvement before early stopping (default: 10).
+    warmup_epochs : int, optional
+        Number of epochs for learning rate warmup (default: 100).
+    val_frequency : int, optional
+        Frequency (in epochs) for validation (default: 10).
+
+    Attributes
+    ----------
+    device : torch.device
+        Device used for computation.
+    method : str
+        Selected SDE method.
+    noise_predictor : nn.Module
+        Noise prediction model.
+    hyper_params_model : nn.Module
+        Hyperparameter module for the noise schedule and SDE parameters.
+    conditional_model : nn.Module or None
+        Conditional model for text-based training, if provided.
+    optimizer : torch.optim.Optimizer
+        Optimizer for training.
+    objective : callable
+        Loss function for training.
+    store_path : str
+        Path for saving checkpoints.
+    data_loader : torch.utils.data.DataLoader
+        Training data loader.
+    val_loader : torch.utils.data.DataLoader or None
+        Validation data loader, if provided.
+    max_epoch : int
+        Maximum training epochs.
+    max_length : int
+        Maximum length for tokenized prompts.
+    patience : int
+        Patience for early stopping.
+    scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
+        Learning rate scheduler based on validation or training loss.
+    forward_diffusion : ForwardSDE
+        Forward SDE diffusion module.
+    warmup_lr_scheduler : torch.optim.lr_scheduler.LambdaLR
+        Learning rate scheduler for warmup.
+    val_frequency : int
+        Frequency for validation.
+    tokenizer : BertTokenizer
+        Tokenizer for text prompts.
+
+    Raises
+    ------
+    ValueError
+        If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
+    """
 
     def __init__(self, method, noise_predictor, hyper_params_model, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, tokenizer=None, max_length=77,
@@ -42,6 +127,38 @@ class TrainSDE(nn.Module):
 
 
     def load_checkpoint(self, checkpoint_path):
+        """Loads a training checkpoint to resume training.
+
+        Restores the state of the noise predictor, conditional model (if applicable),
+        and optimizer from a saved checkpoint.
+
+        Parameters
+        ----------
+        checkpoint_path : str
+            Path to the checkpoint file.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - epoch: The epoch at which the checkpoint was saved (int).
+            - loss: The loss at the checkpoint (float).
+
+        Raises
+        ------
+        FileNotFoundError
+            If the checkpoint file is not found.
+        KeyError
+            If the checkpoint is missing required keys ('model_state_dict_noise_predictor'
+            or 'optimizer_state_dict').
+
+        Warns
+        -----
+        warnings.warn
+            If the optimizer state cannot be loaded, if the checkpoint contains a
+            conditional model state but none is defined, or if no conditional model
+            state is provided when expected.
+        """
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
@@ -80,6 +197,23 @@ class TrainSDE(nn.Module):
 
     @staticmethod
     def warmup_scheduler(optimizer, warmup_epochs=10):
+        """Creates a learning rate scheduler for warmup.
+
+        Generates a scheduler that linearly increases the learning rate from 0 to the
+        optimizer's initial value over the specified warmup epochs, then maintains it.
+
+        Parameters
+        ----------
+        optimizer : torch.optim.Optimizer
+            Optimizer to apply the scheduler to.
+        warmup_epochs : int, optional
+            Number of epochs for the warmup phase (default: 10).
+
+        Returns
+        -------
+        torch.optim.lr_scheduler.LambdaLR
+            Learning rate scheduler for warmup.
+        """
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
                 return epoch / warmup_epochs
@@ -88,6 +222,26 @@ class TrainSDE(nn.Module):
         return LambdaLR(optimizer, lr_lambda)
 
     def forward(self):
+        """Trains the SDE model to predict noise added by the forward diffusion process.
+
+        Executes the training loop, optimizing the noise predictor and conditional model
+        (if applicable) using mixed precision, gradient clipping, and learning rate
+        scheduling. Supports validation, early stopping, and checkpointing.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - train_losses: List of mean training losses per epoch (list of float).
+            - best_val_loss: Best validation or training loss achieved (float).
+
+        Notes
+        -----
+        - Training uses mixed precision via `torch.cuda.amp` or `torch.amp` for efficiency.
+        - Checkpoints are saved when the validation (or training) loss improves, and on
+          early stopping.
+        - Early stopping is triggered if no improvement occurs for `patience` epochs.
+        """
         self.noise_predictor.train()
         self.noise_predictor.to(self.device)
         if self.conditional_model is not None:
@@ -189,6 +343,22 @@ class TrainSDE(nn.Module):
         return train_losses, best_val_loss
 
     def validate(self):
+        """Validates the SDE model on the validation dataset.
+
+        Computes the validation loss using the noise predictor and forward SDE diffusion
+        process, with optional conditional inputs.
+
+        Returns
+        -------
+        float
+            Mean validation loss across the validation dataset.
+
+        Notes
+        -----
+        - Validation is performed with `torch.no_grad()` for efficiency.
+        - The noise predictor and conditional model (if applicable) are set to evaluation
+          mode during validation and restored to training mode afterward.
+        """
         self.noise_predictor.eval()
         if self.conditional_model is not None:
             self.conditional_model.eval()
