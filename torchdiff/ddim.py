@@ -26,7 +26,9 @@ References:
 Examples
 --------
 >>> from torchdiff.ddim import HyperParamsDDIM, ForwardDDIM, ReverseDDIM, TrainDDIM, SampleDDIM
->>> from torchdiff.nets import TextEncoder, NoisePredictor
+>>> from torchdiff.utils import TextEncoder, NoisePredictor
+>>> from torch.optim import Adam
+>>> import torch.nn as nn
 ...
 >>> hyper_params = HyperParamsDDIM(num_steps=1000, tau_num_steps=100)
 >>> forward_ddim = ForwardDDIM(hyper_params)
@@ -38,6 +40,7 @@ Examples
 >>> text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased", vocabulary_size=30522,
 ...                            num_layers=2, input_dimension=128, output_dimension=128, num_heads=4, context_length=77,
 ...                            dropout_rate=0.1, qkv_bias=False, scaling_value=4, epsilon=1e-5)
+>>> optimizer = Adam(compressor.parameters(), lr=1e-4)
 >>> train_ddim = TrainDDIM(noise_predictor=noise_predictor, hyper_params=hyper_params, data_loader=data_loader,
 ...                        optimizer=optimizer, objective=nn.MSELoss(), conditional_model=text_encoder)
 >>> train_losses, best_val_loss = train_ddim()
@@ -1022,5 +1025,3 @@ class SampleDDIM(nn.Module):
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)
-
-###==================================================================================================================###

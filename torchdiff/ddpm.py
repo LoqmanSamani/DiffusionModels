@@ -20,7 +20,9 @@ References:
 Examples
 --------
 >>> from torchdiff.ddpm import HyperParamsDDPM, ForwardDDPM, ReverseDDPM, TrainDDPM, SampleDDPM
->>> from torchdiff.nets import TextEncoder, NoisePredictor
+>>> from torchdiff.utils import TextEncoder, NoisePredictor
+>>> from torch.optim import Adam
+>>> import torch.nn as nn
 ...
 >>> hyper_params = HyperParamsDDPM(num_steps=1000, beta_start=1e-4, beta_end=0.02, beta_method="linear")
 >>> forward_ddpm = ForwardDDPM(hyper_params)
@@ -32,6 +34,7 @@ Examples
 >>> text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased", vocabulary_size=30522,
 ...                            num_layers=2, input_dimension=128, output_dimension=128, num_heads=4, context_length=77,
 ...                            dropout_rate=0.1, qkv_bias=False, scaling_value=4, epsilon=1e-5)
+>>> optimizer = Adam(compressor.parameters(), lr=1e-4)
 >>> train_ddpm = TrainDDPM(noise_predictor=noise_predictor, hyper_params=hyper_params, data_loader=data_loader, 
 ...                        optimizer=optimizer, objective=nn.MSELoss(), conditional_model=text_encoder))
 >>> train_losses, best_val_loss = train_ddpm()
@@ -973,5 +976,3 @@ class SampleDDPM(nn.Module):
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)
-
-###==================================================================================================================###
