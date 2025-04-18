@@ -5,35 +5,45 @@ __version__ = "1.0.0"
 This module provides a framework for training and sampling Latent Diffusion Models, as
 described in Rombach et al. (2022, "High-Resolution Image Synthesis with Latent Diffusion
 Models"). It supports diffusion in the latent space using a variational autoencoder
-(compressor model) and includes utilities for training the autoencoder and noise predictor.
-The framework is compatible with DDPM, DDIM, and SDE diffusion models, supporting both
-unconditional and conditional generation with text prompts.
+(compressor model), includes utilities for training the autoencoder, noise predictor, and
+conditional model, and provides metrics for evaluating generated images. The framework is
+compatible with DDPM, DDIM, and SDE diffusion models, supporting both unconditional and
+conditional generation with text prompts.
 
 Components:
 - AutoencoderLDM: Variational autoencoder for compressing images to latent space and
   decoding back to image space.
-- TrainAE: Trainer for the AutoencoderLDM, optimizing reconstruction and regularization
-  losses.
-- TrainLDM: Training loop with mixed precision and scheduling for the noise predictor in
-  latent space.
+- TrainAE: Trainer for AutoencoderLDM, optimizing reconstruction and regularization
+  losses with evaluation metrics.
+- TrainLDM: Training loop with mixed precision, warmup, and scheduling for the noise
+  predictor and conditional model (e.g., TextEncoder with projection layers) in latent
+  space, with image-domain evaluation metrics using a reverse diffusion model.
 - SampleLDM: Image generation from trained models, decoding from latent to image space.
+- Metrics: Utility for computing image quality metrics (MSE, PSNR, SSIM, FID, LPIPS).
 
 Notes
 -----
 - The `hyper_params` parameter expects an external hyperparameter module (e.g.,
-  HyperParamsDDPM, HyperParamsSDE) for noise schedule management.
+  HyperParamsDDPM, HyperParamsSDE) as an nn.Module for noise schedule management.
 - AutoencoderLDM serves as the `compressor_model` in TrainLDM and SampleLDM, providing
   `encode` and `decode` methods for latent space conversion. It supports KL-divergence or
   vector quantization (VQ) regularization, using internal components (DownBlock, UpBlock,
   Conv3, DownSampling, UpSampling, Attention, VectorQuantizer).
 - TrainAE trains AutoencoderLDM, optimizing reconstruction (MSE), regularization (KL or
-  VQ), and optional perceptual (LPIPS) losses, with metrics (MSE, PSNR, SSIM, FID), KL
-  warmup, early stopping, and learning rate scheduling.
-- The `noise_predictor` parameter expects a model (e.g., UNet from utils module) operating
-  on latent representations, predicting noise in the diffusion process.
-- The `conditional_model` parameter expects a text encoder (e.g., TextEncoder from utils
-  module) for conditional generation, with tokenized text inputs compatible with its
-  attention mask convention (0 for padding in custom transformer, 1 for BERT).
+  VQ), and optional perceptual (LPIPS) losses, with metrics (MSE, PSNR, SSIM, FID, LPIPS)
+  computed via the Metrics class, KL warmup, early stopping, and learning rate scheduling.
+- TrainLDM trains the noise predictor and conditional model, optimizing MSE between
+  predicted and ground truth noise, with optional validation metrics (MSE, PSNR, SSIM, FID,
+  LPIPS) on generated images decoded from latents sampled using a reverse diffusion model
+  (e.g., ReverseDDPM) via manual timestep iteration.
+- Metrics computes MSE, PSNR, SSIM, FID, and LPIPS for evaluating generated images,
+  assuming inputs in [-1, 1] or [0, 1] based on normalization, returning individual metric values.
+- The `noise_predictor` parameter expects a model (e.g., NoisePredictor from
+  noise_predictor module) operating on latent representations, predicting noise in the
+  diffusion process.
+- The `conditional_model` parameter expects a text encoder (e.g., TextEncoder from nets
+  module) with a BERT tokenizer and trainable projection layers for conditional generation,
+  with tokenized text inputs compatible with its attention mask convention (1 for valid tokens).
 - SampleLDM supports multiple diffusion models ("ddpm", "ddim", "sde") via the `model`
   parameter, requiring compatible `reverse_diffusion` modules (e.g., ReverseDDPM,
   ReverseDDIM, ReverseSDE).
@@ -48,8 +58,9 @@ High-Resolution Image Synthesis with Latent Diffusion Models. CVPR 2022.
 Examples
 --------
 >>> from torchdiff.ddpm import HyperParamsDDPM, ForwardDDPM, ReverseDDPM
->>> from torchdiff.ldm import AutoencoderLDM, TrainAE, TrainLDM, SampleLDM
->>> from torchdiff.utils import TextEncoder, UNet
+>>> from torchdiff.ldm import AutoencoderLDM, TrainAE, TrainLDM, SampleLDM, Metrics
+>>> from torchdiff.nets import TextEncoder
+>>> from torchdiff.noise_predictor import NoisePredictor
 >>> from torch.optim import Adam
 >>> import torch.nn as nn
 >>> hyper_params = HyperParamsDDPM(num_steps=1000, beta_start=1e-4, beta_end=0.02, beta_method="linear")
@@ -61,20 +72,26 @@ Examples
 ...                             total_down_sampling_factor=2, latent_channels=3, num_embeddings=32, use_vq=False,
 ...                             beta=1e-4)
 >>> optimizer_ae = Adam(compressor.parameters(), lr=1e-4)
+>>> metrics = Metrics(device='cuda', fid=True, metrics=True, lpips=True)
 >>> train_ae = TrainAE(model=compressor, optimizer=optimizer_ae, data_loader=data_loader, val_loader=val_loader,
-...                    max_epoch=100, device='cuda', save_path='vlc_model.pth')
+...                    max_epoch=100, metrics_=metrics, device='cuda', save_path='vlc_model.pth')
 >>> ae_losses, best_ae_loss = train_ae.train()
->>> noise_predictor = UNet(in_channels=3, attention=True)  # Placeholder until implementation provided
->>> optimizer_ldm = Adam(noise_predictor.parameters(), lr=1e-4)
->>> train_ldm = TrainLDM(forward_model=forward_ddpm, hyper_params=hyper_params,
-...                      noise_predictor=noise_predictor, compressor_model=compressor,
+>>> noise_predictor = NoisePredictor(in_channels=3, down_channels=[16, 32], mid_channels=[32, 32],
+...                                 up_channels=[32, 16], down_sampling=[True, False], time_embed_dim=128,
+...                                 y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2,
+...                                 dropout_rate=0.1, down_sampling_factor=2, where_y=True, y_to_all=False)
+>>> optimizer_ldm = Adam(list(noise_predictor.parameters()) + list(text_encoder.parameters()), lr=1e-4)
+>>> train_ldm = TrainLDM(model="ddpm", forward_model=forward_ddpm, reverse_diffusion=reverse_ddpm,
+...                      hyper_params=hyper_params, noise_predictor=noise_predictor, compressor_model=compressor,
 ...                      optimizer=optimizer_ldm, objective=nn.MSELoss(), data_loader=data_loader,
-...                      conditional_model=text_encoder, tokenizer=tokenizer)
->>> train_losses, best_val_loss = train_ldm()
+...                      val_loader=val_loader, conditional_model=text_encoder, metrics_=metrics,
+...                      device='cuda', store_path='ldm_model.pth')
+>>> train_losses, best_val_loss = train_ldm.train()
 >>> sampler = SampleLDM(model="ddpm", reverse_diffusion=reverse_ddpm,
 ...                     noise_predictor=noise_predictor, compressor_model=compressor,
-...                     image_shape=(256, 256), conditional_model=text_encoder, tokenizer=tokenizer)
+...                     image_shape=(256, 256), conditional_model=text_encoder)
 >>> images = sampler(conditions="A cat", normalize_output=True)
+>>> fid, mse, psnr, ssim, lpips_score = metrics(real_images, images)
 
 License
 -------
@@ -94,125 +111,147 @@ from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 import warnings
 from tqdm import tqdm
-import lpips
-from pytorch_fid import fid_score
-import os
-import shutil
-from torchvision.utils import save_image
 
 ###==================================================================================================================###
 
 class TrainLDM(nn.Module):
-    """Trainer for Latent Diffusion Models (LDM).
+    """Trainer for the noise predictor in Latent Diffusion Models.
 
-    Manages the training process for LDMs, optimizing a noise predictor to learn the noise
-    added by the forward diffusion process in the latent space, as described in Rombach
-    et al. (2022). Uses a pre-trained compressor model to encode images into a latent
-    space, supports conditional training with text prompts, mixed precision, learning rate
-    scheduling, early stopping, and checkpointing.
+    Optimizes the noise predictor and conditional model (e.g., TextEncoder with projection layers)
+    to predict noise in the latent space of AutoencoderLDM, using a diffusion model (DDPM, DDIM, or SDE).
+    Supports mixed precision, conditional generation with text prompts, and evaluation metrics
+    (MSE, PSNR, SSIM, FID, LPIPS) for generated images during validation, using a specified reverse
+    diffusion model.
 
     Parameters
     ----------
-    forward_model : nn.Module
-        Forward diffusion module (e.g., ForwardDDPM, ForwardSDE) to add noise in the latent space.
-    hyper_params : nn.Module
-        Hyperparameter module (e.g., HyperParamsDDPM, HyperParamsSDE) defining the noise schedule.
-    noise_predictor : nn.Module
-        Model to predict noise added during the forward diffusion process.
-    compressor_model : nn.Module
-        Pre-trained model to encode images into the latent space and decode back (e.g., AutoencoderLDM).
+    model : str
+        Diffusion model type ("ddpm", "ddim", "sde").
+    forward_model : ForwardDDPM, ForwardDDIM, or ForwardSDE
+        Forward diffusion model defining the noise schedule.
+    hyper_params : HyperParamsDDPM, HyperParamsDDIM, or HyperParamsSDE
+        Hyperparameters for the diffusion process (nn.Module).
+    noise_predictor : NoisePredictor
+        Model to predict noise in the latent space (e.g., NoisePredictor).
+    compressor_model : AutoencoderLDM
+        Variational autoencoder for encoding/decoding latents.
     optimizer : torch.optim.Optimizer
-        Optimizer for training the noise predictor and conditional model (if applicable).
-    objective : callable
-        Loss function to compute the difference between predicted and actual noise.
+        Optimizer for the noise predictor and conditional model (e.g., Adam).
+    objective : torch.nn.Module
+        Loss function for noise prediction (e.g., MSELoss).
     data_loader : torch.utils.data.DataLoader
         DataLoader for training data.
-    conditional_model : nn.Module, optional
-        Model for conditional generation (e.g., TextEncoder), default None.
     val_loader : torch.utils.data.DataLoader, optional
-        DataLoader for validation data, default None.
+        DataLoader for validation data (default: None).
+    conditional_model : TextEncoder, optional
+        Text encoder with projection layers for conditional generation (default: None).
+    reverse_diffusion : ReverseDDPM, ReverseDDIM, or ReverseSDE, optional
+        Reverse diffusion model for sampling during validation (default: None).
+    metrics_ : Metrics, optional
+        Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
     max_epoch : int, optional
         Maximum number of training epochs (default: 1000).
-    device : torch.device, optional
-        Device for computation (default: CUDA if available, else CPU).
+    device : str, optional
+        Device for computation (e.g., 'cuda', 'cpu') (default: None).
     store_path : str, optional
-        Path to save model checkpoints (default: "ldm_model.pth").
+        Path to save model checkpoints (default: None, uses 'ldm_model.pth').
     patience : int, optional
-        Number of epochs to wait for improvement before early stopping (default: 100).
+        Number of epochs to wait for early stopping if validation loss doesn’t improve
+        (default: 100).
     warmup_epochs : int, optional
         Number of epochs for learning rate warmup (default: 100).
-    tokenizer : BertTokenizer, optional
-        Tokenizer for processing text prompts, default None (loads "bert-base-uncased").
     max_length : int, optional
-        Maximum length for tokenized prompts (default: 77).
+        Maximum sequence length for tokenized text (default: 77).
     val_frequency : int, optional
-        Frequency (in epochs) for validation (default: 10).
+        Frequency (in epochs) for validation and metric computation (default: 10).
+    output_range : tuple, optional
+        Range for clamping generated images (default: (-1, 1)).
+    normalize_output : bool, optional
+        Whether to normalize generated images to [0, 1] for metrics (default: True).
 
     Attributes
     ----------
     device : torch.device
-        Device used for computation.
-    forward_diffusion : nn.Module
-        Forward diffusion module.
-    hyper_params : nn.Module
-        Hyperparameter module for the noise schedule.
-    noise_predictor : nn.Module
+        Computation device.
+    model : str
+        Diffusion model type.
+    forward_model : ForwardDDPM, ForwardDDIM, or ForwardSDE
+        Forward diffusion model.
+    reverse_diffusion : ReverseDDPM, ReverseDDIM, or ReverseSDE or None
+        Reverse diffusion model.
+    hyper_params : HyperParamsDDPM, HyperParamsDDIM, or HyperParamsSDE
+        Diffusion hyperparameters.
+    noise_predictor : NoisePredictor
         Noise prediction model.
-    compressor_model : nn.Module
-        Compressor model for latent space encoding/decoding.
-    conditional_model : nn.Module or None
-        Conditional model for text-based training, if provided.
+    compressor_model : AutoencoderLDM
+        Autoencoder for latent space.
     optimizer : torch.optim.Optimizer
-        Optimizer for training.
-    objective : callable
-        Loss function for training.
+        Training optimizer.
+    objective : torch.nn.Module
+        Loss function.
     data_loader : torch.utils.data.DataLoader
-        Training data loader.
+        Training DataLoader.
     val_loader : torch.utils.data.DataLoader or None
-        Validation data loader, if provided.
+        Validation DataLoader.
+    conditional_model : TextEncoder or None
+        Text encoder for conditioning.
+    tokenizer : callable
+        Text tokenizer.
+    metrics_ : Metrics or None
+        Metrics object for evaluation.
     max_epoch : int
         Maximum training epochs.
     store_path : str
-        Path for saving checkpoints.
-    max_length : int
-        Maximum length for tokenized prompts.
+        Checkpoint save path.
     patience : int
-        Patience for early stopping.
+        Early stopping patience.
+    warmup_epochs : int
+        Warmup epochs for learning rate.
+    max_length : int
+        Maximum text sequence length.
     scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
-        Learning rate scheduler based on validation or training loss.
+        Learning rate scheduler.
     warmup_lr_scheduler : torch.optim.lr_scheduler.LambdaLR
-        Learning rate scheduler for warmup.
-    tokenizer : BertTokenizer
-        Tokenizer for text prompts.
+        Warmup learning rate scheduler.
     val_frequency : int
-        Frequency for validation.
-
-    Raises
-    ------
-    ValueError
-        If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
+        Validation frequency.
+    output_range : tuple
+        Output range for generated images.
+    normalize_output : bool
+        Whether to normalize output.
     """
-    def __init__(self, forward_model, hyper_params, noise_predictor, compressor_model, optimizer, objective, data_loader,
-                 conditional_model=None, val_loader=None, max_epoch=1000, device=None, store_path=None,
-                 patience=100, warmup_epochs=100, tokenizer=None, max_length=77, val_frequency=10):
-        super( ).__init__()
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.forward_diffusion = forward_model.to(device)
-        self.hyper_params = hyper_params.to(device)
-        self.noise_predictor = noise_predictor
-        self.compressor_model = compressor_model
-        self.conditional_model = conditional_model
+
+    def __init__(self, model, forward_model, hyper_params, noise_predictor, compressor_model,
+                 optimizer, objective, data_loader, val_loader=None, conditional_model=None,
+                 reverse_diffusion=None, metrics_=None, max_epoch=1000, device=None,
+                 store_path=None, patience=100, warmup_epochs=100, tokenizer=None, max_length=77,
+                 val_frequency=10, output_range=(-1, 1), normalize_output=True):
+        super().__init__()
+        if model not in ["ddpm", "ddim", "sde"]:
+            raise ValueError(f"Unknown model: {model}. Supported: ddpm, ddim, sde")
+        self.device = torch.device(device if device else "cuda" if torch.cuda.is_available() else "cpu")
+        self.model = model
+        self.forward_model = forward_model.to(self.device)
+        self.reverse_diffusion = reverse_diffusion.to(self.device) if reverse_diffusion else None
+        self.hyper_params = hyper_params.to(self.device)  # nn.Module, move to device
+        self.noise_predictor = noise_predictor.to(self.device)
+        self.compressor_model = compressor_model.to(self.device)
         self.optimizer = optimizer
         self.objective = objective
         self.data_loader = data_loader
         self.val_loader = val_loader
+        self.conditional_model = conditional_model.to(self.device) if conditional_model else None
+        self.metrics_ = metrics_  # Metrics handles device internally
         self.max_epoch = max_epoch
         self.store_path = store_path or "ldm_model.pth"
-        self.max_length = max_length
         self.patience = patience
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=self.patience, factor=0.5)
+        self.warmup_epochs = warmup_epochs
+        self.max_length = max_length
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=patience, factor=0.5)
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
+        self.output_range = output_range
+        self.normalize_output = normalize_output
         if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -220,10 +259,7 @@ class TrainLDM(nn.Module):
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
 
     def load_checkpoint(self, checkpoint_path):
-        """Loads a training checkpoint to resume training.
-
-        Restores the state of the noise predictor, conditional model (if applicable),
-        and optimizer from a saved checkpoint.
+        """Loads a checkpoint for the noise predictor and optional conditional model.
 
         Parameters
         ----------
@@ -242,15 +278,7 @@ class TrainLDM(nn.Module):
         FileNotFoundError
             If the checkpoint file is not found.
         KeyError
-            If the checkpoint is missing required keys ('model_state_dict_noise_predictor'
-            or 'optimizer_state_dict').
-
-        Warns
-        -----
-        warnings.warn
-            If the optimizer state cannot be loaded, if the checkpoint contains a
-            conditional model state but none is defined, or if no conditional model
-            state is provided when expected.
+            If required state dictionaries are missing.
         """
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -292,64 +320,49 @@ class TrainLDM(nn.Module):
     def warmup_scheduler(optimizer, warmup_epochs):
         """Creates a learning rate scheduler for warmup.
 
-        Generates a scheduler that linearly increases the learning rate from 0 to the
-        optimizer's initial value over the specified warmup epochs, then maintains it.
-
         Parameters
         ----------
         optimizer : torch.optim.Optimizer
-            Optimizer to apply the scheduler to.
-        warmup_epochs : int, optional
-            Number of epochs for the warmup phase.
+            The optimizer to schedule.
+        warmup_epochs : int
+            Number of epochs for warmup.
 
         Returns
         -------
         torch.optim.lr_scheduler.LambdaLR
-            Learning rate scheduler for warmup.
+            Scheduler that scales learning rate linearly during warmup.
         """
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
                 return epoch / warmup_epochs
             return 1.0
-
         return LambdaLR(optimizer, lr_lambda)
 
     def forward(self):
-        """Trains the LDM to predict noise added by the forward diffusion process in the latent space.
+        """Trains the noise predictor and conditional model with mixed precision and evaluation metrics.
 
-        Executes the training loop, optimizing the noise predictor and conditional model
-        (if applicable) using mixed precision, gradient clipping, and learning rate
-        scheduling. Uses a pre-trained compressor model to encode images into the latent
-        space. Supports validation, early stopping, and checkpointing.
+        Optimizes the noise predictor and conditional model (e.g., TextEncoder with projection layers)
+        using the forward diffusion model’s noise schedule, with text conditioning. Performs validation
+        with image-domain metrics (MSE, PSNR, SSIM, FID, LPIPS) using the reverse diffusion model,
+        saves checkpoints for the best validation loss, and supports early stopping.
 
         Returns
         -------
         tuple
             A tuple containing:
-            - train_losses: List of mean training losses per epoch (list of float).
-            - best_val_loss: Best validation or training loss achieved (float).
-
-        Notes
-        -----
-        - Training uses mixed precision via `torch.cuda.amp` for efficiency.
-        - The compressor model is assumed pre-trained and set to evaluation mode.
-        - Checkpoints are saved when the validation (or training) loss improves, and on
-          early stopping.
-        - Early stopping is triggered if no improvement occurs for `patience` epochs.
+            - train_losses: List of mean training losses per epoch.
+            - best_val_loss: Best validation loss achieved (or best training loss if no validation).
         """
+        scaler = GradScaler()
         self.noise_predictor.train()
-        self.noise_predictor.to(self.device)
         if self.conditional_model is not None:
             self.conditional_model.train()
-            self.conditional_model.to(self.device)
-        if self.compressor_model is not None:
-            self.compressor_model.eval() # the model is already trained
-            self.compressor_model.to(self.device)
+        self.compressor_model.eval()  # pre-trained, not trained here
 
-        scaler = GradScaler()
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
+
         for epoch in range(self.max_epoch):
             train_losses_ = []
             for x, y in tqdm(self.data_loader):
@@ -375,14 +388,13 @@ class TrainLDM(nn.Module):
                 self.optimizer.zero_grad()
                 with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
                     noise = torch.randn_like(x).to(self.device)
-                    t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
+                    t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],), device=self.device)
                     assert x.device == noise.device == t.device, "Device mismatch detected"
                     assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
-                    noisy_x = self.forward_diffusion(x, noise, t)
+                    noisy_x = self.forward_model(x, noise, t)
                     p_noise = self.noise_predictor(noisy_x, t, y_encoded)
                     loss = self.objective(p_noise, noise)
                 scaler.scale(loss).backward()
-
                 nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), max_norm=1.0)
                 if self.conditional_model is not None:
                     nn.utils.clip_grad_norm_(self.conditional_model.parameters(), max_norm=1.0)
@@ -392,15 +404,23 @@ class TrainLDM(nn.Module):
                 train_losses_.append(loss.item())
 
             if self.hyper_params.trainable_beta:
-                self.hyper_params.constrain_betas() # constrains trainable betas
+                self.hyper_params.constrain_betas()
 
             mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
             train_losses.append(mean_train_loss)
-            print(f"\nEpoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
+            print(f"Epoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
 
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
-                val_loss = self.validate()
-                print(f" | Val Loss: {val_loss:.4f}")
+                val_loss, fid, mse, psnr, ssim, lpips_score = self.validate()
+                print(f" | Val Loss: {val_loss:.4f}", end="")
+                if self.metrics_ and self.metrics_.fid:
+                    print(f" | FID: {fid:.4f}", end="")
+                if self.metrics_ and self.metrics_.metrics:
+                    print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
+                if self.metrics_ and self.metrics_.lpips:
+                    print(f" | LPIPS: {lpips_score:.4f}", end="")
+                print()
+
                 current_best = val_loss
                 self.scheduler.step(val_loss)
             else:
@@ -418,8 +438,7 @@ class TrainLDM(nn.Module):
                         'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                         'optimizer_state_dict': self.optimizer.state_dict(),
                         'loss': best_val_loss,
-                        'hyper_params_model': self.hyper_params,
-                        'max_epoch': self.max_epoch,
+                        'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
                     }, self.store_path)
                     print(f"Model saved at epoch {epoch + 1}")
                 except Exception as e:
@@ -435,8 +454,7 @@ class TrainLDM(nn.Module):
                             'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                             'optimizer_state_dict': self.optimizer.state_dict(),
                             'loss': best_val_loss,
-                            'hyper_params_model': self.hyper_params,
-                            'max_epoch': self.max_epoch,
+                            'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
                         }, self.store_path + "_early_stop.pth")
                         print(f"Final model saved at {self.store_path}_early_stop.pth")
                     except Exception as e:
@@ -446,33 +464,35 @@ class TrainLDM(nn.Module):
         return train_losses, best_val_loss
 
     def validate(self):
-        """Validates the LDM on the validation dataset.
+        """Validates the noise predictor and computes evaluation metrics.
 
-        Computes the validation loss using the noise predictor and forward diffusion
-        process in the latent space, with optional conditional inputs.
+        Computes validation loss (MSE between predicted and ground truth noise) and generates
+        samples using the reverse diffusion model by manually iterating over timesteps.
+        Decodes samples to images and computes image-domain metrics (MSE, PSNR, SSIM, FID, LPIPS)
+        if metrics_ is provided.
 
         Returns
         -------
-        float
-            Mean validation loss across the validation dataset.
-
-        Notes
-        -----
-        - Validation is performed with `torch.no_grad()` for efficiency.
-        - The compressor model is used to encode validation data into the latent space.
-        - The noise predictor and conditional model (if applicable) are set to evaluation
-          mode during validation and restored to training mode afterward.
+        tuple
+            A tuple containing:
+            - val_loss: Mean validation loss (float).
+            - fid: Mean FID score (float, or `float('inf')` if not computed).
+            - mse: Mean MSE (float, or None if not computed).
+            - psnr: Mean PSNR (float, or None if not computed).
+            - ssim: Mean SSIM (float, or None if not computed).
+            - lpips_score: Mean LPIPS score (float, or None if not computed).
         """
         self.noise_predictor.eval()
         if self.conditional_model is not None:
             self.conditional_model.eval()
-
         val_losses = []
+        fid_, mse_, psnr_, ssim_, lpips_score_ = [], [], [], [], []
+        num_steps = self.hyper_params.tau_num_steps if self.model == "ddim" else self.hyper_params.num_steps
         with torch.no_grad():
             for x, y in self.val_loader:
                 x = x.to(self.device)
-                with torch.no_grad():
-                    x, _ = self.compressor_model.encode(x)
+                x_orig = x  # store original images for metrics
+                x, _ = self.compressor_model.encode(x)
                 if self.conditional_model is not None:
                     y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
                     y_list = [str(item) for item in y_list]
@@ -489,20 +509,59 @@ class TrainLDM(nn.Module):
                 else:
                     y_encoded = None
 
+                # validation loss
                 noise = torch.randn_like(x).to(self.device)
-                t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
+                t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],), device=self.device)
                 assert x.device == noise.device == t.device, "Device mismatch detected"
                 assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
-                noisy_x = self.forward_diffusion(x, noise, t)
+                noisy_x = self.forward_model(x, noise, t)
                 p_noise = self.noise_predictor(noisy_x, t, y_encoded)
                 loss = self.objective(p_noise, noise)
                 val_losses.append(loss.item())
 
-        mean_val_loss = torch.mean(torch.tensor(val_losses)).item()
+                # generate samples for metrics
+                if self.metrics_ is not None and self.reverse_diffusion is not None:
+                    xt = torch.randn_like(x).to(self.device)
+                    for t in reversed(range(num_steps)):
+                        time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
+                        prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
+                        predicted_noise = self.noise_predictor(xt, time_steps, y_encoded)
+                        if self.model == "sde":
+                            noise = torch.randn_like(xt) if getattr(self.reverse_diffusion, "method", None) != "ode" else None
+                            xt = self.reverse_diffusion(xt, noise, predicted_noise, time_steps)
+                        elif self.model == "ddim":
+                            xt, _ = self.reverse_diffusion(xt, predicted_noise, time_steps, prev_time_steps)
+                        elif self.model == "ddpm":
+                            xt = self.reverse_diffusion(xt, predicted_noise, time_steps)
+                        else:
+                            raise ValueError(f"Unknown model: {self.model}. Supported: ddpm, ddim, sde")
+
+                    x_hat = self.compressor_model.decode(xt)
+                    x_hat = torch.clamp(x_hat, min=self.output_range[0], max=self.output_range[1])
+                    if self.normalize_output:
+                        x_hat = (x_hat - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+                        x_orig = (x_orig - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+                    fid, mse, psnr, ssim, lpips_score = self.metrics_.forward(x_orig, x_hat)
+                    if self.metrics_.fid:
+                        fid_.append(fid)
+                    if self.metrics_.metrics:
+                        mse_.append(mse)
+                        psnr_.append(psnr)
+                        ssim_.append(ssim)
+                    if self.metrics_.lpips:
+                        lpips_score_.append(lpips_score)
+
+        val_loss = torch.mean(torch.tensor(val_losses)).item()
+        fid_ = torch.mean(torch.tensor(fid_)).item() if fid_ else float('inf')
+        mse_ = torch.mean(torch.tensor(mse_)).item() if mse_ else None
+        psnr_ = torch.mean(torch.tensor(psnr_)).item() if psnr_ else None
+        ssim_ = torch.mean(torch.tensor(ssim_)).item() if ssim_ else None
+        lpips_score_ = torch.mean(torch.tensor(lpips_score_)).item() if lpips_score_ else None
+
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
-        return mean_val_loss
+        return val_loss, fid_, mse_, psnr_, ssim_, lpips_score_
 
 ###==================================================================================================================###
 
@@ -1609,288 +1668,144 @@ class UpSampling(nn.Module):
 
 ###==================================================================================================================###
 
-class TrainAE:
-    """Trainer for the variational autoencoder in Latent Diffusion Models.
+class TrainAE(nn.Module):
+    """Trainer for the AutoencoderLDM variational autoencoder in Latent Diffusion Models.
 
-    Manages training of the `AutoencoderLDM` compressor model, optimizing for
-    reconstruction and regularization losses (KL-divergence or VQ), with optional
-    perceptual loss, metrics (MSE, PSNR, SSIM, FID), KL warmup, early stopping, and
-    learning rate scheduling.
+    Optimizes the AutoencoderLDM model to compress images into latent space and reconstruct
+    them, using reconstruction loss (MSE), regularization (KL or VQ), and optional
+    perceptual loss (LPIPS). Supports mixed precision, KL warmup, early stopping, and
+    learning rate scheduling, with evaluation metrics (MSE, PSNR, SSIM, FID, LPIPS).
 
     Parameters
     ----------
     model : AutoencoderLDM
-        The variational autoencoder model to train (compressor model for LDM).
+        The variational autoencoder model (AutoencoderLDM) to train.
     optimizer : torch.optim.Optimizer
-        Optimizer for training the model.
+        Optimizer for training (e.g., Adam).
     data_loader : torch.utils.data.DataLoader
-        DataLoader for training data, yielding (images, labels) batches.
+        DataLoader for training data.
     val_loader : torch.utils.data.DataLoader, optional
         DataLoader for validation data (default: None).
     max_epoch : int, optional
         Maximum number of training epochs (default: 100).
+    metrics_ : Metrics, optional
+        Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
     device : str, optional
-        Device for training (e.g., 'cuda', 'cpu') (default: 'cuda').
+        Device for computation (e.g., 'cuda', 'cpu') (default: 'cuda').
     save_path : str, optional
-        File path to save the best model checkpoint (default: 'vlc_model.pth').
+        Path to save model checkpoints (default: 'vlc_model.pth').
     checkpoint : int, optional
         Frequency (in epochs) to save model checkpoints (default: 10).
     kl_warmup_epochs : int, optional
-        Number of epochs for KL-divergence loss warmup (default: 10).
+        Number of epochs for KL loss warmup (default: 10).
     patience : int, optional
-        Number of epochs to wait for early stopping if validation loss does not
-        improve (default: 10).
-    per_loss : bool, optional
-        Whether to include perceptual loss using LPIPS (default: True).
-    metrics : bool, optional
-        Whether to compute MSE, PSNR, and SSIM metrics (default: True).
-    fid : bool, optional
-        Whether to compute FID score (default: False).
-    perceptual_weight : float, optional
-        Weight for the perceptual loss term (default: 0.1).
+        Number of epochs to wait for early stopping if validation loss doesn’t improve
+        (default: 10).
+    val_frequency : int, optional
+        Frequency (in epochs) for validation and metric computation (default: 5).
 
     Attributes
     ----------
+    device : torch.device
+        Computation device.
     model : AutoencoderLDM
-        The autoencoder model being trained.
+        Autoencoder model being trained.
     optimizer : torch.optim.Optimizer
-        The optimizer used for training.
+        Training optimizer.
     data_loader : torch.utils.data.DataLoader
         Training DataLoader.
     val_loader : torch.utils.data.DataLoader or None
-        Validation DataLoader, if provided.
+        Validation DataLoader.
     max_epoch : int
         Maximum training epochs.
-    device : str
-        Training device.
+    metrics_ : Metrics or None
+        Metrics object for evaluation.
     save_path : str
-        Path for saving model checkpoints.
+        Checkpoint save path.
     checkpoint : int
-        Epoch frequency for saving checkpoints.
+        Checkpoint frequency.
     kl_warmup_epochs : int
-        Epochs for KL loss warmup.
+        KL warmup epochs.
     patience : int
-        Epochs for early stopping patience.
-    per_loss : bool
-        Flag for perceptual loss computation.
-    metrics : bool
-        Flag for MSE, PSNR, SSIM computation.
-    fid : bool
-        Flag for FID computation.
-    perceptual_loss : lpips.LPIPS
-        LPIPS model for perceptual loss (VGG backbone).
-    perceptual_weight : float
-        Weight for perceptual loss.
+        Early stopping patience.
     scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
-        Learning rate scheduler based on validation loss.
-    temp_dir_real : str
-        Temporary directory for real images during FID computation.
-    temp_dir_fake : str
-        Temporary directory for fake (reconstructed) images during FID computation.
-
-    Notes
-    -----
-    - The total loss includes reconstruction (MSE), regularization (KL or VQ), and
-      optional perceptual (LPIPS) losses.
-    - KL warmup linearly increases the KL loss weight (`model.current_beta`) from 0 to
-      `model.beta` over `kl_warmup_epochs` when `model.use_vq=False`.
-    - Metrics (MSE, PSNR, SSIM) and FID are computed if enabled, with FID requiring
-      temporary disk storage for images.
-    - Early stopping is based on validation loss (or training loss if `val_loader` is
-      None), and the learning rate is reduced if validation loss plateaus.
-    - The model is saved when the best validation (or training) loss is achieved.
+        Learning rate scheduler.
+    val_frequency : int
+        Validation frequency.
     """
-    def __init__(self, model, optimizer, data_loader, val_loader=None, max_epoch=100,
+
+    def __init__(self, model, optimizer, data_loader, val_loader=None, max_epoch=100, metrics_=None,
                  device="cuda", save_path="vlc_model.pth", checkpoint=10, kl_warmup_epochs=10,
-                 patience=10, per_loss=True, metrics=True, fid=False, perceptual_weight=0.1):
-        self.model = model
+                 patience=10, val_frequency=5):
+        super().__init__()
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = model.to(self.device)
         self.optimizer = optimizer
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epoch = max_epoch
-        self.device = device
+        self.metrics_ = metrics_  # Metrics object, not moved to device
         self.save_path = save_path
         self.checkpoint = checkpoint
         self.kl_warmup_epochs = kl_warmup_epochs
         self.patience = patience
-        self.per_loss = per_loss
-        self.metrics = metrics
-        self.fid = fid
-        self.perceptual_loss = lpips.LPIPS(net='vgg').to(device)
-        self.perceptual_weight = perceptual_weight
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=5, factor=0.5)
-        self.temp_dir_real = "temp_real"
-        self.temp_dir_fake = "temp_fake"
-
-    def compute_metrics(self, x, x_hat):
-        """Computes image quality metrics (MSE, PSNR, SSIM) for reconstructed images.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Ground truth images, shape (batch_size, channels, height, width).
-        x_hat : torch.Tensor
-            Reconstructed images, same shape as `x`.
-
-        Returns
-        -------
-        dict
-            Dictionary containing:
-            - mse: Mean squared error (float).
-            - psnr: Peak signal-to-noise ratio (float).
-            - ssim: Structural similarity index (float, mean over batch).
-        """
-        mse = F.mse_loss(x_hat, x)
-        psnr = -10 * torch.log10(mse)
-        c1, c2 = (0.01 * 2) ** 2, (0.03 * 2) ** 2
-        mu_x = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
-        mu_y = F.avg_pool2d(x_hat, kernel_size=3, stride=1, padding=1)
-        mu_xy = mu_x * mu_y
-        sigma_x_sq = F.avg_pool2d(x.pow(2), kernel_size=3, stride=1, padding=1) - mu_x.pow(2)
-        sigma_y_sq = F.avg_pool2d(x_hat.pow(2), kernel_size=3, stride=1, padding=1) - mu_y.pow(2)
-        sigma_xy = F.avg_pool2d(x * x_hat, kernel_size=3, stride=1, padding=1) - mu_xy
-        ssim = ((2 * mu_xy + c1) * (2 * sigma_xy + c2)) / ((mu_x.pow(2) + mu_y.pow(2) + c1) * (sigma_x_sq + sigma_y_sq + c2))
-        return {"mse": mse.item(), "psnr": psnr.item(), "ssim": ssim.mean().item()}
-
-
-    def compute_fid(self, real_images, fake_images):
-        """Computes the Fréchet Inception Distance (FID) between real and reconstructed images.
-
-        Saves images to temporary directories and uses the Inception V3 model to compute
-        FID, cleaning up directories afterward.
-
-        Parameters
-        ----------
-        real_images : torch.Tensor
-            Real images, shape (batch_size, channels, height, width), in [-1, 1] range.
-        fake_images : torch.Tensor
-            Reconstructed images, same shape, in [-1, 1] range.
-
-        Returns
-        -------
-        float
-            FID score, or `float('inf')` if computation fails.
-
-        Notes
-        -----
-        - Images are normalized to [0, 1] and saved as PNG files for FID computation.
-        - The Inception V3 model uses 2048-dimensional features (`dims=2048`).
-        - Temporary directories (`temp_dir_real`, `temp_dir_fake`) are created and
-          removed automatically.
-        """
-        real_images = (real_images + 1) / 2
-        fake_images = (fake_images + 1) / 2
-        real_images = real_images.clamp(0, 1).cpu()
-        fake_images = fake_images.clamp(0, 1).cpu()
-
-        os.makedirs(self.temp_dir_real, exist_ok=True)
-        os.makedirs(self.temp_dir_fake, exist_ok=True)
-
-        try:
-            for i, (real, fake) in enumerate(zip(real_images, fake_images)):
-                save_image(real, f"{self.temp_dir_real}/{i}.png")
-                save_image(fake, f"{self.temp_dir_fake}/{i}.png")
-
-            fid = fid_score.calculate_fid_given_paths(
-                paths=[self.temp_dir_real, self.temp_dir_fake],
-                batch_size=50,
-                device=self.device,
-                dims=2048
-            )
-        except Exception as e:
-            print(f"Error computing FID: {e}")
-            fid = float('inf')
-        finally:
-            shutil.rmtree(self.temp_dir_real, ignore_errors=True)
-            shutil.rmtree(self.temp_dir_fake, ignore_errors=True)
-
-        return fid
+        self.val_frequency = val_frequency
 
     def train(self):
-        """Trains the autoencoder model for the specified number of epochs.
+        """Trains the AutoencoderLDM model with mixed precision and evaluation metrics.
 
-        Optimizes the model using training data, with optional validation, metrics
-        computation, and FID scoring. Saves the best model based on validation (or
-        training) loss.
+        Performs training with reconstruction and regularization losses, KL warmup, gradient
+        clipping, and learning rate scheduling. Saves checkpoints for the best validation
+        loss and supports early stopping.
 
         Returns
         -------
         tuple
             A tuple containing:
             - train_losses: List of mean training losses per epoch.
-            - best_val_loss: Best validation (or training) loss achieved.
-
-        Notes
-        -----
-        - The training loss includes reconstruction, regularization, and optional
-          perceptual losses.
-        - KL warmup adjusts `model.current_beta` for KL-divergence loss if
-          `model.use_vq=False`.
-        - Early stopping halts training if the best loss does not improve for
-          `patience` epochs.
-        - The learning rate is adjusted via `scheduler` based on validation loss.
-        - Metrics and FID are computed if enabled via `metrics` and `fid` flags.
+            - best_val_loss: Best validation loss achieved (or best training loss if no validation).
         """
+        scaler = GradScaler()
         self.model.train()
-        self.model.to(self.device)
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
 
         for epoch in range(self.max_epoch):
             if self.model.use_vq:
-                beta = 1.0
+                beta = 1.0  # No warmup for VQ
             else:
                 beta = min(1.0, epoch / self.kl_warmup_epochs) * self.model.beta
                 self.model.current_beta = beta
 
             train_losses_ = []
-            metrics_epoch = {"mse": [], "psnr": [], "ssim": []}
-            all_real, all_fake = [], []
-
             for x, _ in tqdm(self.data_loader):
                 x = x.to(self.device)
-                x_hat, total_loss, reg_loss, z = self.model(x)
-                if self.per_loss:
-                    percep_loss = self.perceptual_loss(x_hat, x).mean()
-                    loss = total_loss + self.perceptual_weight * percep_loss
-                else:
-                    loss = total_loss
-                train_losses_.append(loss.item())
-
-                if self.metrics or self.fid:
-                    with torch.no_grad():
-                        if self.metrics:
-                            batch_metrics = self.compute_metrics(x, x_hat)
-                            for k, v in batch_metrics.items():
-                                metrics_epoch[k].append(v)
-                        if self.fid:
-                            all_real.append(x)
-                            all_fake.append(x_hat)
-
                 self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+                with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
+                    x_hat, loss, reg_loss, z = self.model(x)
+                scaler.scale(loss).backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                scaler.step(self.optimizer)
+                scaler.update()
+                train_losses_.append(loss.item())
 
             mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
             train_losses.append(mean_train_loss)
-            metrics_summary = {k: sum(v) / len(v) for k, v in metrics_epoch.items()} if self.metrics else {"mse": 0.0, "psnr": 0.0, "ssim": 0.0}
-            fid = self.compute_fid(torch.cat(all_real), torch.cat(all_fake)) if self.fid and all_real else float('inf')
+            print(f"Epoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
 
-            print(f"\nEpoch: {epoch + 1} | Loss: {mean_train_loss:.4f} | Reg Weight: {beta:.4f}", end="")
-            if self.metrics:
-                print(f" | PSNR: {metrics_summary['psnr']:.2f} | SSIM: {metrics_summary['ssim']:.4f}", end="")
-            if self.fid:
-                print(f" | FID: {fid:.2f}", end="")
-            print()
-            if self.val_loader is not None:
-                val_loss, val_metrics, val_fid = self.validate()
-                print(f"Val Loss: {val_loss:.4f}", end="")
-                if self.metrics:
-                    print(f" | Val PSNR: {val_metrics['psnr']:.2f} | Val SSIM: {val_metrics['ssim']:.4f}", end="")
-                if self.fid:
-                    print(f" | Val FID: {val_fid:.2f}", end="")
-                print()
+            if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
+                val_loss, fid, mse, psnr, ssim, lpips_score = self.validate()
+                print(f" | Val Loss: {val_loss:.4f}", end="")
+                if self.metrics_ and self.metrics_.fid:
+                    print(f" | FID: {fid:.4f}", end="")
+                if self.metrics_ and self.metrics_.metrics:
+                    print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
+                if self.metrics_ and self.metrics_.lpips:
+                    print(f" | LPIPS: {lpips_score:.4f}", end="")
+                print()  # Newline after metrics
+
                 current_best = val_loss
                 self.scheduler.step(val_loss)
             else:
@@ -1905,7 +1820,7 @@ class TrainAE:
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'loss': best_val_loss,
                 }, self.save_path)
-                print(f"Model saved at epoch {epoch + 1}")
+                print(f" | Model saved at epoch {epoch + 1}")
             else:
                 wait += 1
                 if wait >= self.patience:
@@ -1915,47 +1830,48 @@ class TrainAE:
         return train_losses, best_val_loss
 
     def validate(self):
-        """Evaluates the model on the validation dataset.
+        """Validates the AutoencoderLDM model and computes evaluation metrics.
 
-        Computes validation loss, metrics (MSE, PSNR, SSIM), and FID score without
-        updating model parameters.
+        Computes validation loss and optional metrics (MSE, PSNR, SSIM, FID, LPIPS) using
+        the provided Metrics object.
 
         Returns
         -------
         tuple
             A tuple containing:
-            - mean_val_loss: Mean validation loss (float).
-            - metrics_summary: Dictionary of mean MSE, PSNR, SSIM (or zeros if
-              `metrics=False`).
-            - fid: FID score (or `float('inf')` if `fid=False` or computation fails).
+            - val_loss: Mean validation loss (float).
+            - fid: Mean FID score (float, or `float('inf')` if not computed).
+            - mse: Mean MSE (float, or None if not computed).
+            - psnr: Mean PSNR (float, or None if not computed).
+            - ssim: Mean SSIM (float, or None if not computed).
+            - lpips_score: Mean LPIPS score (float, or None if not computed).
         """
         self.model.eval()
         val_losses = []
-        metrics_val = {"mse": [], "psnr": [], "ssim": []}
-        all_real, all_fake = [], []
+        fid_, mse_, psnr_, ssim_, lpips_score_ = [], [], [], [], []
 
         with torch.no_grad():
             for x, _ in self.val_loader:
                 x = x.to(self.device)
-                x_hat, total_loss, reg_loss, z = self.model(x)
-                if self.per_loss:
-                    percep_loss = self.perceptual_loss(x_hat, x).mean()
-                    loss = total_loss + self.perceptual_weight * percep_loss
-                else:
-                    loss = total_loss
+                x_hat, loss, reg_loss, z = self.model(x)
                 val_losses.append(loss.item())
-                if self.metrics or self.fid:
-                    if self.metrics:
-                        batch_metrics = self.compute_metrics(x, x_hat)
-                        for k, v in batch_metrics.items():
-                            metrics_val[k].append(v)
-                    if self.fid:
-                        all_real.append(x)
-                        all_fake.append(x_hat)
+                if self.metrics_ is not None:
+                    fid, mse, psnr, ssim, lpips_score = self.metrics_.forward(x, x_hat)
+                    if self.metrics_.fid:
+                        fid_.append(fid)
+                    if self.metrics_.metrics:
+                        mse_.append(mse)
+                        psnr_.append(psnr)
+                        ssim_.append(ssim)
+                    if self.metrics_.lpips:
+                        lpips_score_.append(lpips_score)
 
-        mean_val_loss = torch.mean(torch.tensor(val_losses)).item()
-        metrics_summary = {k: sum(v) / len(v) for k, v in metrics_val.items()} if self.metrics else {"mse": 0.0, "psnr": 0.0, "ssim": 0.0}
-        fid = self.compute_fid(torch.cat(all_real), torch.cat(all_fake)) if self.fid and all_real else float('inf')
+        val_loss = torch.mean(torch.tensor(val_losses)).item()
+        fid_ = torch.mean(torch.tensor(fid_)).item() if fid_ else float('inf')
+        mse_ = torch.mean(torch.tensor(mse_)).item() if mse_ else None
+        psnr_ = torch.mean(torch.tensor(psnr_)).item() if psnr_ else None
+        ssim_ = torch.mean(torch.tensor(ssim_)).item() if ssim_ else None
+        lpips_score_ = torch.mean(torch.tensor(lpips_score_)).item() if lpips_score_ else None
 
         self.model.train()
-        return mean_val_loss, metrics_summary, fid
+        return val_loss, fid_, mse_, psnr_, ssim_, lpips_score_

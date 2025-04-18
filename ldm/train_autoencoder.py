@@ -1,309 +1,150 @@
 import torch
+import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
-import torch.nn.functional as F
-import lpips
-from pytorch_fid import fid_score
-import os
-import shutil
-from torchvision.utils import save_image
 
 
 
 
 
-class TrainAE:
-    """Trainer for the variational autoencoder in Latent Diffusion Models.
+class TrainAE(nn.Module):
+    """Trainer for the AutoencoderLDM variational autoencoder in Latent Diffusion Models.
 
-    Manages training of the `AutoencoderLDM` compressor model, optimizing for
-    reconstruction and regularization losses (KL-divergence or VQ), with optional
-    perceptual loss, metrics (MSE, PSNR, SSIM, FID), KL warmup, early stopping, and
-    learning rate scheduling.
+    Optimizes the AutoencoderLDM model to compress images into latent space and reconstruct
+    them, using reconstruction loss (MSE), regularization (KL or VQ), and optional
+    perceptual loss (LPIPS). Supports mixed precision, KL warmup, early stopping, and
+    learning rate scheduling, with evaluation metrics (MSE, PSNR, SSIM, FID, LPIPS).
 
     Parameters
     ----------
     model : AutoencoderLDM
-        The variational autoencoder model to train (compressor model for LDM).
+        The variational autoencoder model (AutoencoderLDM) to train.
     optimizer : torch.optim.Optimizer
-        Optimizer for training the model.
+        Optimizer for training (e.g., Adam).
     data_loader : torch.utils.data.DataLoader
-        DataLoader for training data, yielding (images, labels) batches.
+        DataLoader for training data.
     val_loader : torch.utils.data.DataLoader, optional
         DataLoader for validation data (default: None).
     max_epoch : int, optional
         Maximum number of training epochs (default: 100).
+    metrics_ : Metrics, optional
+        Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
     device : str, optional
-        Device for training (e.g., 'cuda', 'cpu') (default: 'cuda').
+        Device for computation (e.g., 'cuda', 'cpu') (default: 'cuda').
     save_path : str, optional
-        File path to save the best model checkpoint (default: 'vlc_model.pth').
+        Path to save model checkpoints (default: 'vlc_model.pth').
     checkpoint : int, optional
         Frequency (in epochs) to save model checkpoints (default: 10).
     kl_warmup_epochs : int, optional
-        Number of epochs for KL-divergence loss warmup (default: 10).
+        Number of epochs for KL loss warmup (default: 10).
     patience : int, optional
-        Number of epochs to wait for early stopping if validation loss does not
-        improve (default: 10).
-    per_loss : bool, optional
-        Whether to include perceptual loss using LPIPS (default: True).
-    metrics : bool, optional
-        Whether to compute MSE, PSNR, and SSIM metrics (default: True).
-    fid : bool, optional
-        Whether to compute FID score (default: False).
-    perceptual_weight : float, optional
-        Weight for the perceptual loss term (default: 0.1).
+        Number of epochs to wait for early stopping if validation loss doesn’t improve
+        (default: 10).
+    val_frequency : int, optional
+        Frequency (in epochs) for validation and metric computation (default: 5).
 
     Attributes
     ----------
+    device : torch.device
+        Computation device.
     model : AutoencoderLDM
-        The autoencoder model being trained.
+        Autoencoder model being trained.
     optimizer : torch.optim.Optimizer
-        The optimizer used for training.
+        Training optimizer.
     data_loader : torch.utils.data.DataLoader
         Training DataLoader.
     val_loader : torch.utils.data.DataLoader or None
-        Validation DataLoader, if provided.
+        Validation DataLoader.
     max_epoch : int
         Maximum training epochs.
-    device : str
-        Training device.
+    metrics_ : Metrics or None
+        Metrics object for evaluation.
     save_path : str
-        Path for saving model checkpoints.
+        Checkpoint save path.
     checkpoint : int
-        Epoch frequency for saving checkpoints.
+        Checkpoint frequency.
     kl_warmup_epochs : int
-        Epochs for KL loss warmup.
+        KL warmup epochs.
     patience : int
-        Epochs for early stopping patience.
-    per_loss : bool
-        Flag for perceptual loss computation.
-    metrics : bool
-        Flag for MSE, PSNR, SSIM computation.
-    fid : bool
-        Flag for FID computation.
-    perceptual_loss : lpips.LPIPS
-        LPIPS model for perceptual loss (VGG backbone).
-    perceptual_weight : float
-        Weight for perceptual loss.
+        Early stopping patience.
     scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
-        Learning rate scheduler based on validation loss.
-    temp_dir_real : str
-        Temporary directory for real images during FID computation.
-    temp_dir_fake : str
-        Temporary directory for fake (reconstructed) images during FID computation.
-
-    Notes
-    -----
-    - The total loss includes reconstruction (MSE), regularization (KL or VQ), and
-      optional perceptual (LPIPS) losses.
-    - KL warmup linearly increases the KL loss weight (`model.current_beta`) from 0 to
-      `model.beta` over `kl_warmup_epochs` when `model.use_vq=False`.
-    - Metrics (MSE, PSNR, SSIM) and FID are computed if enabled, with FID requiring
-      temporary disk storage for images.
-    - Early stopping is based on validation loss (or training loss if `val_loader` is
-      None), and the learning rate is reduced if validation loss plateaus.
-    - The model is saved when the best validation (or training) loss is achieved.
+        Learning rate scheduler.
+    val_frequency : int
+        Validation frequency.
     """
-    def __init__(self, model, optimizer, data_loader, val_loader=None, max_epoch=100,
+
+    def __init__(self, model, optimizer, data_loader, val_loader=None, max_epoch=100, metrics_=None,
                  device="cuda", save_path="vlc_model.pth", checkpoint=10, kl_warmup_epochs=10,
-                 patience=10, per_loss=True, metrics=True, fid=False, perceptual_weight=0.1):
-        self.model = model # variational latent compressor model to be trained
+                 patience=10, val_frequency=5):
+        super().__init__()
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = model.to(self.device)
         self.optimizer = optimizer
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epoch = max_epoch
-        self.device = device
-        self.save_path = save_path # file path to save the trained model checkpoint
-        self.checkpoint = checkpoint # frequency (in epochs) to save model checkpoints
-        self.kl_warmup_epochs = kl_warmup_epochs # number of epochs for kl loss warmup
-        self.patience = patience # number of epochs to wait for early stopping if validation loss doesn't improve
-        self.per_loss = per_loss # if perceptual loss should be calculated
-        self.metrics = metrics # if metrics should be calculated
-        self.fid = fid
-        self.perceptual_loss = lpips.LPIPS(net='vgg').to(device) # lpips model for perceptual loss, using vgg backbone
-        self.perceptual_weight = perceptual_weight # weight for the perceptual loss term in the total loss
+        self.metrics_ = metrics_  # Metrics object, not moved to device
+        self.save_path = save_path
+        self.checkpoint = checkpoint
+        self.kl_warmup_epochs = kl_warmup_epochs
+        self.patience = patience
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=5, factor=0.5)
-        self.temp_dir_real = "temp_real" # temporary directory to store real images for fid computation
-        self.temp_dir_fake = "temp_fake" # temporary directory to store fake (reconstructed) images for fid computation
-
-    def compute_metrics(self, x, x_hat):
-        """Computes image quality metrics (MSE, PSNR, SSIM) for reconstructed images.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Ground truth images, shape (batch_size, channels, height, width).
-        x_hat : torch.Tensor
-            Reconstructed images, same shape as `x`.
-
-        Returns
-        -------
-        dict
-            Dictionary containing:
-            - mse: Mean squared error (float).
-            - psnr: Peak signal-to-noise ratio (float).
-            - ssim: Structural similarity index (float, mean over batch).
-        """
-        mse = F.mse_loss(x_hat, x)
-        psnr = -10 * torch.log10(mse)
-        c1, c2 = (0.01 * 2) ** 2, (0.03 * 2) ** 2
-        mu_x = F.avg_pool2d(x, kernel_size=3, stride=1, padding=1)
-        mu_y = F.avg_pool2d(x_hat, kernel_size=3, stride=1, padding=1)
-        mu_xy = mu_x * mu_y
-        sigma_x_sq = F.avg_pool2d(x.pow(2), kernel_size=3, stride=1, padding=1) - mu_x.pow(2)
-        sigma_y_sq = F.avg_pool2d(x_hat.pow(2), kernel_size=3, stride=1, padding=1) - mu_y.pow(2)
-        sigma_xy = F.avg_pool2d(x * x_hat, kernel_size=3, stride=1, padding=1) - mu_xy
-        ssim = ((2 * mu_xy + c1) * (2 * sigma_xy + c2)) / ((mu_x.pow(2) + mu_y.pow(2) + c1) * (sigma_x_sq + sigma_y_sq + c2))
-        return {"mse": mse.item(), "psnr": psnr.item(), "ssim": ssim.mean().item()}
-
-
-    def compute_fid(self, real_images, fake_images):
-        """Computes the Fréchet Inception Distance (FID) between real and reconstructed images.
-
-        Saves images to temporary directories and uses the Inception V3 model to compute
-        FID, cleaning up directories afterward.
-
-        Parameters
-        ----------
-        real_images : torch.Tensor
-            Real images, shape (batch_size, channels, height, width), in [-1, 1] range.
-        fake_images : torch.Tensor
-            Reconstructed images, same shape, in [-1, 1] range.
-
-        Returns
-        -------
-        float
-            FID score, or `float('inf')` if computation fails.
-
-        Notes
-        -----
-        - Images are normalized to [0, 1] and saved as PNG files for FID computation.
-        - The Inception V3 model uses 2048-dimensional features (`dims=2048`).
-        - Temporary directories (`temp_dir_real`, `temp_dir_fake`) are created and
-          removed automatically.
-        """
-        # ensure images are on CPU and in [0, 1] range for saving
-        real_images = (real_images + 1) / 2  # [-1, 1] -> [0, 1]
-        fake_images = (fake_images + 1) / 2  # [-1, 1] -> [0, 1]
-        real_images = real_images.clamp(0, 1).cpu()
-        fake_images = fake_images.clamp(0, 1).cpu()
-
-        # create temporary directories
-        os.makedirs(self.temp_dir_real, exist_ok=True)
-        os.makedirs(self.temp_dir_fake, exist_ok=True)
-
-        try:
-            # save images to disk
-            for i, (real, fake) in enumerate(zip(real_images, fake_images)):
-                save_image(real, f"{self.temp_dir_real}/{i}.png")
-                save_image(fake, f"{self.temp_dir_fake}/{i}.png")
-
-            # compute FID with explicit dims=2048
-            fid = fid_score.calculate_fid_given_paths(
-                paths=[self.temp_dir_real, self.temp_dir_fake],
-                batch_size=50,
-                device=self.device,
-                dims=2048  # inception V3 feature dimension
-            )
-        except Exception as e:
-            print(f"Error computing FID: {e}")
-            fid = float('inf')  # return a sentinel value on failure
-        finally:
-            # clean up directories
-            shutil.rmtree(self.temp_dir_real, ignore_errors=True)
-            shutil.rmtree(self.temp_dir_fake, ignore_errors=True)
-
-        return fid
+        self.val_frequency = val_frequency
 
     def train(self):
-        """Trains the autoencoder model for the specified number of epochs.
+        """Trains the AutoencoderLDM model with mixed precision and evaluation metrics.
 
-        Optimizes the model using training data, with optional validation, metrics
-        computation, and FID scoring. Saves the best model based on validation (or
-        training) loss.
+        Performs training with reconstruction and regularization losses, KL warmup, gradient
+        clipping, and learning rate scheduling. Saves checkpoints for the best validation
+        loss and supports early stopping.
 
         Returns
         -------
         tuple
             A tuple containing:
             - train_losses: List of mean training losses per epoch.
-            - best_val_loss: Best validation (or training) loss achieved.
-
-        Notes
-        -----
-        - The training loss includes reconstruction, regularization, and optional
-          perceptual losses.
-        - KL warmup adjusts `model.current_beta` for KL-divergence loss if
-          `model.use_vq=False`.
-        - Early stopping halts training if the best loss does not improve for
-          `patience` epochs.
-        - The learning rate is adjusted via `scheduler` based on validation loss.
-        - Metrics and FID are computed if enabled via `metrics` and `fid` flags.
+            - best_val_loss: Best validation loss achieved (or best training loss if no validation).
         """
+        scaler = GradScaler()
         self.model.train()
-        self.model.to(self.device)
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
 
         for epoch in range(self.max_epoch):
             if self.model.use_vq:
-                beta = 1.0  # no warmup for vq
+                beta = 1.0  # No warmup for VQ
             else:
                 beta = min(1.0, epoch / self.kl_warmup_epochs) * self.model.beta
                 self.model.current_beta = beta
 
             train_losses_ = []
-            metrics_epoch = {"mse": [], "psnr": [], "ssim": []}
-            all_real, all_fake = [], []
-
             for x, _ in tqdm(self.data_loader):
                 x = x.to(self.device)
-                x_hat, total_loss, reg_loss, z = self.model(x)
-                if self.per_loss:
-                    percep_loss = self.perceptual_loss(x_hat, x).mean()
-                    loss = total_loss + self.perceptual_weight * percep_loss
-                else:
-                    loss = total_loss
-                train_losses_.append(loss.item())
-
-                # only collect images and compute metrics if needed
-                if self.metrics or self.fid:
-                    with torch.no_grad():
-                        if self.metrics:
-                            batch_metrics = self.compute_metrics(x, x_hat)
-                            for k, v in batch_metrics.items():
-                                metrics_epoch[k].append(v)
-                        if self.fid:
-                            all_real.append(x)
-                            all_fake.append(x_hat)
-
                 self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+                with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
+                    x_hat, loss, reg_loss, z = self.model(x)
+                scaler.scale(loss).backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                scaler.step(self.optimizer)
+                scaler.update()
+                train_losses_.append(loss.item())
 
             mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
             train_losses.append(mean_train_loss)
+            print(f"Epoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
 
-            # compute metrics and fid if enabled
-            metrics_summary = {k: sum(v) / len(v) for k, v in metrics_epoch.items()} if self.metrics else {"mse": 0.0, "psnr": 0.0, "ssim": 0.0}
-            fid = self.compute_fid(torch.cat(all_real), torch.cat(all_fake)) if self.fid and all_real else float('inf')
+            if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
+                val_loss, fid, mse, psnr, ssim, lpips_score = self.validate()
+                print(f" | Val Loss: {val_loss:.4f}", end="")
+                if self.metrics_ and self.metrics_.fid:
+                    print(f" | FID: {fid:.4f}", end="")
+                if self.metrics_ and self.metrics_.metrics:
+                    print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
+                if self.metrics_ and self.metrics_.lpips:
+                    print(f" | LPIPS: {lpips_score:.4f}", end="")
+                print()  # Newline after metrics
 
-            # print metrics conditionally
-            print(f"\nEpoch: {epoch + 1} | Loss: {mean_train_loss:.4f} | Reg Weight: {beta:.4f}", end="")
-            if self.metrics:
-                print(f" | PSNR: {metrics_summary['psnr']:.2f} | SSIM: {metrics_summary['ssim']:.4f}", end="")
-            if self.fid:
-                print(f" | FID: {fid:.2f}", end="")
-            print()  # newline
-
-            if self.val_loader is not None:
-                val_loss, val_metrics, val_fid = self.validate()
-                # print validation metrics conditionally
-                print(f"Val Loss: {val_loss:.4f}", end="")
-                if self.metrics:
-                    print(f" | Val PSNR: {val_metrics['psnr']:.2f} | Val SSIM: {val_metrics['ssim']:.4f}", end="")
-                if self.fid:
-                    print(f" | Val FID: {val_fid:.2f}", end="")
-                print()
                 current_best = val_loss
                 self.scheduler.step(val_loss)
             else:
@@ -318,7 +159,7 @@ class TrainAE:
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'loss': best_val_loss,
                 }, self.save_path)
-                print(f"Model saved at epoch {epoch + 1}")
+                print(f" | Model saved at epoch {epoch + 1}")
             else:
                 wait += 1
                 if wait >= self.patience:
@@ -328,51 +169,48 @@ class TrainAE:
         return train_losses, best_val_loss
 
     def validate(self):
-        """Evaluates the model on the validation dataset.
+        """Validates the AutoencoderLDM model and computes evaluation metrics.
 
-        Computes validation loss, metrics (MSE, PSNR, SSIM), and FID score without
-        updating model parameters.
+        Computes validation loss and optional metrics (MSE, PSNR, SSIM, FID, LPIPS) using
+        the provided Metrics object.
 
         Returns
         -------
         tuple
             A tuple containing:
-            - mean_val_loss: Mean validation loss (float).
-            - metrics_summary: Dictionary of mean MSE, PSNR, SSIM (or zeros if
-              `metrics=False`).
-            - fid: FID score (or `float('inf')` if `fid=False` or computation fails).
+            - val_loss: Mean validation loss (float).
+            - fid: Mean FID score (float, or `float('inf')` if not computed).
+            - mse: Mean MSE (float, or None if not computed).
+            - psnr: Mean PSNR (float, or None if not computed).
+            - ssim: Mean SSIM (float, or None if not computed).
+            - lpips_score: Mean LPIPS score (float, or None if not computed).
         """
         self.model.eval()
         val_losses = []
-        metrics_val = {"mse": [], "psnr": [], "ssim": []}
-        all_real, all_fake = [], []
+        fid_, mse_, psnr_, ssim_, lpips_score_ = [], [], [], [], []
 
         with torch.no_grad():
             for x, _ in self.val_loader:
                 x = x.to(self.device)
-                x_hat, total_loss, reg_loss, z = self.model(x)
-                # compute perceptual loss only if enabled
-                if self.per_loss:
-                    percep_loss = self.perceptual_loss(x_hat, x).mean()
-                    loss = total_loss + self.perceptual_weight * percep_loss
-                else:
-                    loss = total_loss
+                x_hat, loss, reg_loss, z = self.model(x)
                 val_losses.append(loss.item())
+                if self.metrics_ is not None:
+                    fid, mse, psnr, ssim, lpips_score = self.metrics_.forward(x, x_hat)
+                    if self.metrics_.fid:
+                        fid_.append(fid)
+                    if self.metrics_.metrics:
+                        mse_.append(mse)
+                        psnr_.append(psnr)
+                        ssim_.append(ssim)
+                    if self.metrics_.lpips:
+                        lpips_score_.append(lpips_score)
 
-                # only collect images and compute metrics if needed
-                if self.metrics or self.fid:
-                    if self.metrics:
-                        batch_metrics = self.compute_metrics(x, x_hat)
-                        for k, v in batch_metrics.items():
-                            metrics_val[k].append(v)
-                    if self.fid:
-                        all_real.append(x)
-                        all_fake.append(x_hat)
-
-        # compute metrics and fid if enabled
-        mean_val_loss = torch.mean(torch.tensor(val_losses)).item()
-        metrics_summary = {k: sum(v) / len(v) for k, v in metrics_val.items()} if self.metrics else {"mse": 0.0, "psnr": 0.0, "ssim": 0.0}
-        fid = self.compute_fid(torch.cat(all_real), torch.cat(all_fake)) if self.fid and all_real else float('inf')
+        val_loss = torch.mean(torch.tensor(val_losses)).item()
+        fid_ = torch.mean(torch.tensor(fid_)).item() if fid_ else float('inf')
+        mse_ = torch.mean(torch.tensor(mse_)).item() if mse_ else None
+        psnr_ = torch.mean(torch.tensor(psnr_)).item() if psnr_ else None
+        ssim_ = torch.mean(torch.tensor(ssim_)).item() if ssim_ else None
+        lpips_score_ = torch.mean(torch.tensor(lpips_score_)).item() if lpips_score_ else None
 
         self.model.train()
-        return mean_val_loss, metrics_summary, fid
+        return val_loss, fid_, mse_, psnr_, ssim_, lpips_score_
