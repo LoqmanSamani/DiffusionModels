@@ -65,6 +65,8 @@ from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 import warnings
+from torchvision.utils import save_image
+import os
 
 ###==================================================================================================================###
 
@@ -470,6 +472,8 @@ class TrainDDIM(nn.Module):
         Device for computation (default: CUDA if available, else CPU).
     conditional_model : nn.Module, optional
         Model for conditional generation (e.g., text embeddings), default None.
+    metrics_ : Metrics, optional
+        Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
     tokenizer : BertTokenizer, optional
         Tokenizer for processing text prompts, default None (loads "bert-base-uncased").
     max_length : int, optional
@@ -482,6 +486,10 @@ class TrainDDIM(nn.Module):
         Number of epochs for learning rate warmup (default: 100).
     val_frequency : int, optional
         Frequency (in epochs) for validation (default: 10).
+    output_range : tuple, optional
+        Range for clamping generated images (default: (-1, 1)).
+    normalize_output : bool, optional
+        Whether to normalize generated images to [0, 1] for metrics (default: True).
 
     Attributes
     ----------
@@ -493,6 +501,8 @@ class TrainDDIM(nn.Module):
         Hyperparameter module for the noise schedule.
     conditional_model : nn.Module or None
         Conditional model for text-based training, if provided.
+    metrics_ : Metrics or None
+        Metrics object for evaluation.
     optimizer : torch.optim.Optimizer
         Optimizer for training.
     objective : callable
@@ -519,6 +529,10 @@ class TrainDDIM(nn.Module):
         Frequency for validation.
     tokenizer : BertTokenizer
         Tokenizer for text prompts.
+    output_range : tuple
+        Output range for generated images.
+    normalize_output : bool
+        Whether to normalize output.
 
     Raises
     ------
@@ -526,13 +540,16 @@ class TrainDDIM(nn.Module):
         If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
     """
     def __init__(self, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
-                 max_epoch=1000, device=None, conditional_model=None, tokenizer=None, max_length=77,
-                 store_path=None, patience=100, warmup_epochs=100, val_frequency=10):
+                 max_epoch=1000, device=None, conditional_model=None, metrics_=None, tokenizer=None, max_length=77,
+                 store_path=None, patience=100, warmup_epochs=100, val_frequency=10, output_range=(-1, 1), normalize_output=True):
         super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.noise_predictor = noise_predictor
+        self.noise_predictor = noise_predictor.to(self.device)
         self.hyper_params = hyper_params.to(self.device)
-        self.conditional_model = conditional_model
+        self.forward_diffusion = ForwardDDIM(hyper_params=self.hyper_params).to(self.device)
+        self.reverse_diffusion = ReverseDDIM(hyper_params=self.hyper_params).to(self.device)
+        self.conditional_model = conditional_model.to(self.device) if conditional_model else None
+        self.metrics_ = metrics_
         self.optimizer = optimizer
         self.objective = objective
         self.store_path = store_path or "ddim_model.pth"
@@ -545,6 +562,8 @@ class TrainDDIM(nn.Module):
         self.forward_diffusion = ForwardDDIM(hyper_params=self.hyper_params).to(self.device)
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
+        self.output_range = output_range
+        self.normalize_output = normalize_output
         if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -666,10 +685,8 @@ class TrainDDIM(nn.Module):
         - Early stopping is triggered if no improvement occurs for `patience` epochs.
         """
         self.noise_predictor.train()
-        self.noise_predictor.to(self.device)
         if self.conditional_model is not None:
             self.conditional_model.train()
-            self.conditional_model.to(self.device)
 
         scaler = GradScaler()
         train_losses = []
@@ -697,7 +714,7 @@ class TrainDDIM(nn.Module):
                     y_encoded = None
 
                 self.optimizer.zero_grad()
-                with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
+                with autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     noise = torch.randn_like(x).to(self.device)
                     t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
                     assert x.device == noise.device == t.device, "Device mismatch detected"
@@ -722,8 +739,16 @@ class TrainDDIM(nn.Module):
             print(f"\nEpoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
 
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
-                val_loss = self.validate()
-                print(f" | Val Loss: {val_loss:.4f}")
+                val_loss, fid, mse, psnr, ssim, lpips_score = self.validate()
+                print(f" | Val Loss: {val_loss:.4f}", end="")
+                if self.metrics_ and self.metrics_.fid:
+                    print(f" | FID: {fid:.4f}", end="")
+                if self.metrics_ and self.metrics_.metrics:
+                    print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
+                if self.metrics_ and self.metrics_.lpips:
+                    print(f" | LPIPS: {lpips_score:.4f}", end="")
+                print()
+
                 current_best = val_loss
                 self.scheduler.step(val_loss)
             else:
@@ -731,7 +756,7 @@ class TrainDDIM(nn.Module):
                 current_best = mean_train_loss
                 self.scheduler.step(mean_train_loss)
 
-            if current_best < best_val_loss:
+            if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
                 best_val_loss = current_best
                 wait = 0
                 try:
@@ -741,7 +766,7 @@ class TrainDDIM(nn.Module):
                         'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                         'optimizer_state_dict': self.optimizer.state_dict(),
                         'loss': best_val_loss,
-                        'hyper_params_model': self.hyper_params,
+                        'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
                         'max_epoch': self.max_epoch,
                     }, self.store_path)
                     print(f"Model saved at epoch {epoch + 1}")
@@ -758,7 +783,7 @@ class TrainDDIM(nn.Module):
                             'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
                             'optimizer_state_dict': self.optimizer.state_dict(),
                             'loss': best_val_loss,
-                            'hyper_params_model': self.hyper_params,
+                            'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
                             'max_epoch': self.max_epoch,
                         }, self.store_path + "_early_stop.pth")
                         print(f"Final model saved at {self.store_path}_early_stop.pth")
@@ -769,24 +794,34 @@ class TrainDDIM(nn.Module):
         return train_losses, best_val_loss
 
     def validate(self):
-        """Validates the DDIM model on the validation dataset.
+        """Validates the noise predictor and computes evaluation metrics.
 
-        Computes the validation loss using the noise predictor and forward diffusion
-        process, with optional conditional inputs.
+        Computes validation loss (MSE between predicted and ground truth noise) and generates
+        samples using the reverse diffusion model by manually iterating over timesteps.
+        Decodes samples to images and computes image-domain metrics (MSE, PSNR, SSIM, FID, LPIPS)
+        if metrics_ is provided.
 
         Returns
         -------
-        float
-            Mean validation loss across the validation dataset.
+        tuple
+            A tuple containing:
+            - val_loss: Mean validation loss (float).
+            - fid: Mean FID score (float, or `float('inf')` if not computed).
+            - mse: Mean MSE (float, or None if not computed).
+            - psnr: Mean PSNR (float, or None if not computed).
+            - ssim: Mean SSIM (float, or None if not computed).
+            - lpips_score: Mean LPIPS score (float, or None if not computed).
         """
         self.noise_predictor.eval()
         if self.conditional_model is not None:
             self.conditional_model.eval()
 
         val_losses = []
+        fid_, mse_, psnr_, ssim_, lpips_score_ = [], [], [], [], []
         with torch.no_grad():
             for x, y in self.val_loader:
                 x = x.to(self.device)
+                x_orig = x  # store original images for metrics
 
                 if self.conditional_model is not None:
                     y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
@@ -804,6 +839,7 @@ class TrainDDIM(nn.Module):
                 else:
                     y_encoded = None
 
+                # validation loss
                 noise = torch.randn_like(x).to(self.device)
                 t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
                 assert x.device == noise.device == t.device, "Device mismatch detected"
@@ -813,11 +849,40 @@ class TrainDDIM(nn.Module):
                 loss = self.objective(p_noise, noise)
                 val_losses.append(loss.item())
 
-        mean_val_loss = torch.mean(torch.tensor(val_losses)).item()
+                # generate samples for metrics
+                if self.metrics_ is not None and self.reverse_diffusion is not None:
+                    xt = torch.randn_like(x).to(self.device)
+                    for t in reversed(range(self.hyper_params.tau_num_steps)):
+                        time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
+                        prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
+                        predicted_noise = self.noise_predictor(xt, time_steps, y_encoded)
+                        xt, _ = self.reverse_diffusion(xt, predicted_noise, time_steps, prev_time_steps)
+
+                    x_hat = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
+                    if self.normalize_output:
+                        x_hat = (x_hat - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+                        x_orig = (x_orig - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+                    fid, mse, psnr, ssim, lpips_score = self.metrics_.forward(x_orig, x_hat)
+                    if self.metrics_.fid:
+                        fid_.append(fid)
+                    if self.metrics_.metrics:
+                        mse_.append(mse)
+                        psnr_.append(psnr)
+                        ssim_.append(ssim)
+                    if self.metrics_.lpips:
+                        lpips_score_.append(lpips_score)
+
+            val_loss = torch.mean(torch.tensor(val_losses)).item()
+            fid_ = torch.mean(torch.tensor(fid_)).item() if fid_ else float('inf')
+            mse_ = torch.mean(torch.tensor(mse_)).item() if mse_ else None
+            psnr_ = torch.mean(torch.tensor(psnr_)).item() if psnr_ else None
+            ssim_ = torch.mean(torch.tensor(ssim_)).item() if ssim_ else None
+            lpips_score_ = torch.mean(torch.tensor(lpips_score_)).item() if lpips_score_ else None
+
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
-        return mean_val_loss
+        return val_loss, fid_, mse_, psnr_, ssim_, lpips_score_
 
 ###==================================================================================================================###
 
@@ -941,7 +1006,7 @@ class SampleDDIM(nn.Module):
         )
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
 
-    def forward(self, conditions=None, normalize_output=True):
+    def forward(self, conditions=None, normalize_output=True, save_images=True, save_path="ddim_generated"):
         """Generates images using the DDIM sampling process.
 
         Iteratively denoises random noise to generate images using the reverse diffusion
@@ -954,6 +1019,10 @@ class SampleDDIM(nn.Module):
             Text prompt(s) for conditional generation, default None.
         normalize_output : bool, optional
             If True, normalizes output images to [0, 1] (default: True).
+        save_images : bool, optional
+            If True, saves generated images to `save_path` (default: True).
+        save_path : str, optional
+            Directory to save generated images (default: "ddim_generated").
 
         Returns
         -------
@@ -1000,6 +1069,12 @@ class SampleDDIM(nn.Module):
             generated_imgs = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
             if normalize_output:
                 generated_imgs = (generated_imgs - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+
+            if save_images:
+                os.makedirs(save_path, exist_ok=True)  # Create directory if it doesn't exist
+                for i in range(generated_imgs.size(0)):
+                    img_path = os.path.join(save_path, f"image_{i}.png")
+                    save_image(generated_imgs[i], img_path)
 
         return generated_imgs
 

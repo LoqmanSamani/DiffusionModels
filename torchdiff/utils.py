@@ -1566,12 +1566,12 @@ class Metrics:
         Temporary directory for fake (generated) images during FID computation.
     """
 
-    def __init__(self, device="cuda", fid=True, metrics=False, lpips=False):
+    def __init__(self, device="cuda", fid=True, metrics=False, lpips_=False):
         self.device = device
         self.fid = fid
         self.metrics = metrics
-        self.lpips = lpips
-        self.lpips_model = lpips.LPIPS(net='vgg').to(device) if lpips else None
+        self.lpips = lpips_
+        self.lpips_model = lpips.LPIPS(net='vgg').to(device) if self.lpips else None
         self.temp_dir_real = "temp_real"
         self.temp_dir_fake = "temp_fake"
 

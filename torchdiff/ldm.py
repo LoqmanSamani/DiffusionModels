@@ -19,7 +19,7 @@ Components:
   predictor and conditional model (e.g., TextEncoder with projection layers) in latent
   space, with image-domain evaluation metrics using a reverse diffusion model.
 - SampleLDM: Image generation from trained models, decoding from latent to image space.
-- Metrics: Utility for computing image quality metrics (MSE, PSNR, SSIM, FID, LPIPS).
+
 
 Notes
 -----
@@ -111,6 +111,8 @@ from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 import warnings
 from tqdm import tqdm
+from torchvision.utils import save_image
+import os
 
 ###==================================================================================================================###
 
@@ -219,6 +221,12 @@ class TrainLDM(nn.Module):
         Output range for generated images.
     normalize_output : bool
         Whether to normalize output.
+
+    Raises
+    ------
+    ValueError
+        If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
+        If model is not one of these models ["ddpm", "ddim", "sde"].
     """
 
     def __init__(self, model, forward_model, hyper_params, noise_predictor, compressor_model,
@@ -353,16 +361,15 @@ class TrainLDM(nn.Module):
             - train_losses: List of mean training losses per epoch.
             - best_val_loss: Best validation loss achieved (or best training loss if no validation).
         """
-        scaler = GradScaler()
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
         self.compressor_model.eval()  # pre-trained, not trained here
 
+        scaler = GradScaler()
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
-
         for epoch in range(self.max_epoch):
             train_losses_ = []
             for x, y in tqdm(self.data_loader):
@@ -386,7 +393,7 @@ class TrainLDM(nn.Module):
                     y_encoded = None
 
                 self.optimizer.zero_grad()
-                with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
+                with autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     noise = torch.randn_like(x).to(self.device)
                     t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],), device=self.device)
                     assert x.device == noise.device == t.device, "Device mismatch detected"
@@ -428,7 +435,7 @@ class TrainLDM(nn.Module):
                 current_best = mean_train_loss
                 self.scheduler.step(mean_train_loss)
 
-            if current_best < best_val_loss:
+            if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
                 best_val_loss = current_best
                 wait = 0
                 try:
@@ -696,7 +703,7 @@ class SampleLDM(nn.Module):
         )
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
 
-    def forward(self, conditions=None, normalize_output=True):
+    def forward(self, conditions=None, normalize_output=True, save_images=True, save_path="ldm_generated"):
         """Generates images using the reverse diffusion process in the latent space.
 
         Iteratively denoises random noise in the latent space using the specified reverse
@@ -786,6 +793,13 @@ class SampleLDM(nn.Module):
             generated_imgs = torch.clamp(x, min=self.output_range[0], max=self.output_range[1])
             if normalize_output:
                 generated_imgs = (generated_imgs - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+
+            # save images if save_images is True
+            if save_images:
+                os.makedirs(save_path, exist_ok=True)  # Create directory if it doesn't exist
+                for i in range(generated_imgs.size(0)):
+                    img_path = os.path.join(save_path, f"image_{i}.png")
+                    save_image(generated_imgs[i], img_path)
 
         return generated_imgs
 
@@ -1744,7 +1758,7 @@ class TrainAE(nn.Module):
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epoch = max_epoch
-        self.metrics_ = metrics_  # Metrics object, not moved to device
+        self.metrics_ = metrics_  
         self.save_path = save_path
         self.checkpoint = checkpoint
         self.kl_warmup_epochs = kl_warmup_epochs
@@ -1752,7 +1766,66 @@ class TrainAE(nn.Module):
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=5, factor=0.5)
         self.val_frequency = val_frequency
 
-    def train(self):
+    def load_checkpoint(self, checkpoint_path):
+        """Loads a training checkpoint to resume training.
+
+        Restores the state of the noise predictor, conditional model (if applicable),
+        and optimizer from a saved checkpoint.
+
+        Parameters
+        ----------
+        checkpoint_path : str
+            Path to the checkpoint file.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - epoch: The epoch at which the checkpoint was saved (int).
+            - loss: The loss at the checkpoint (float).
+
+        Raises
+        ------
+        FileNotFoundError
+            If the checkpoint file is not found.
+        KeyError
+            If the checkpoint is missing required keys ('model_state_dict_noise_predictor'
+            or 'optimizer_state_dict').
+
+        Warns
+        -----
+        warnings.warn
+            If the optimizer state cannot be loaded, if the checkpoint contains a
+            conditional model state but none is defined, or if no conditional model
+            state is provided when expected.
+        """
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
+
+        if 'model_state_dict' not in checkpoint:
+            raise KeyError("Checkpoint missing 'model_state_dict' key")
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+
+        if 'optimizer_state_dict' not in checkpoint:
+            raise KeyError("Checkpoint missing 'optimizer_state_dict' key")
+        try:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        except ValueError as e:
+            warnings.warn(f"Optimizer state loading failed: {e}. Continuing without optimizer state.")
+
+        epoch = checkpoint.get('epoch', -1)
+        loss = checkpoint.get('loss', float('inf'))
+
+        self.noise_predictor.to(self.device)
+        if self.conditional_model is not None:
+            self.conditional_model.to(self.device)
+
+        print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
+        return epoch, loss
+
+    def forward(self):
         """Trains the AutoencoderLDM model with mixed precision and evaluation metrics.
 
         Performs training with reconstruction and regularization losses, KL warmup, gradient
@@ -1783,7 +1856,7 @@ class TrainAE(nn.Module):
             for x, _ in tqdm(self.data_loader):
                 x = x.to(self.device)
                 self.optimizer.zero_grad()
-                with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
+                with autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     x_hat, loss, reg_loss, z = self.model(x)
                 scaler.scale(loss).backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
