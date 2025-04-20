@@ -83,12 +83,12 @@ class ForwardDDIM(nn.Module):
     hyper_params : object
         Hyperparameter object (HyperParamsDDIM) containing the noise schedule parameters. Expected to have
         attributes:
-        - `num_steps`: Number of diffusion steps (int).
-        - `trainable_beta`: Whether the noise schedule is trainable (bool).
-        - `betas`: Noise schedule parameters (torch.Tensor, optional if trainable_beta is True).
-        - `sqrt_alpha_cumprod`: Precomputed cumulative product of alphas (torch.Tensor, optional if trainable_beta is False).
-        - `sqrt_one_minus_alpha_cumprod`: Precomputed square root of one minus cumulative alpha product (torch.Tensor, optional if trainable_beta is False).
-        - `compute_schedule`: Method to compute the noise schedule (callable, optional if trainable_beta is True).
+    - `num_steps`: Number of diffusion steps (int).
+    - `trainable_beta`: Whether the noise schedule is trainable (bool).
+    - `betas`: Noise schedule parameters (torch.Tensor, optional if trainable_beta is True).
+    - `sqrt_alpha_cumprod`: Precomputed cumulative product of alphas (torch.Tensor, optional if trainable_beta is False).
+    - `sqrt_one_minus_alpha_cumprod`: Precomputed square root of one minus cumulative alpha product (torch.Tensor, optional if trainable_beta is False).
+    - `compute_schedule`: Method to compute the noise schedule (callable, optional if trainable_beta is True).
 
     Attributes
     ----------
