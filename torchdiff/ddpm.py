@@ -20,7 +20,7 @@ References:
 Examples
 --------
 >>> from torchdiff.ddpm import HyperParamsDDPM, ForwardDDPM, ReverseDDPM, TrainDDPM, SampleDDPM
->>> from torchdiff.utils import TextEncoder, NoisePredictor
+>>> from torchdiff.utils import TextEncoder, NoisePredictor, Metrics
 >>> from torch.optim import Adam
 >>> import torch.nn as nn
 ...
@@ -35,11 +35,12 @@ Examples
 ...                            num_layers=2, input_dimension=128, output_dimension=128, num_heads=4, context_length=77,
 ...                            dropout_rate=0.1, qkv_bias=False, scaling_value=4, epsilon=1e-5)
 >>> optimizer = Adam(compressor.parameters(), lr=1e-4)
+>>> metrics = Metrics(device='cuda', fid=True, metrics=True, lpips=True)
 >>> train_ddpm = TrainDDPM(noise_predictor=noise_predictor, hyper_params=hyper_params, data_loader=data_loader, 
-...                        optimizer=optimizer, objective=nn.MSELoss(), conditional_model=text_encoder))
+...                        optimizer=optimizer, objective=nn.MSELoss(), conditional_model=text_encoder, metrics_=metrics)
 >>> train_losses, best_val_loss = train_ddpm()
 >>> sampler = SampleDDPM(reverse_ddpm, noise_predictor, image_shape=(64, 64))
->>> images = sampler(conditions="A cat", normalize_output=True)
+>>> images = sampler(conditions="A cat", normalize_output=True, save_images=True, save_path="ddpm_generated")
 
 License
 -------
@@ -687,7 +688,7 @@ class TrainDDPM(nn.Module):
                 train_losses_.append(loss.item())
 
             if self.hyper_params.trainable_beta:
-                self.hyper_params.constrain_betas() # constrains trainable betas
+                self.hyper_params.constrain_betas()
 
             mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
             train_losses.append(mean_train_loss)
@@ -776,7 +777,7 @@ class TrainDDPM(nn.Module):
         with torch.no_grad():
             for x, y in self.val_loader:
                 x = x.to(self.device)
-                x_orig = x  # store original images for metrics
+                x_orig = x
 
                 if self.conditional_model is not None:
                     y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y

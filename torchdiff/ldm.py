@@ -35,25 +35,21 @@ Notes
 - TrainLDM trains the noise predictor and conditional model, optimizing MSE between
   predicted and ground truth noise, with optional validation metrics (MSE, PSNR, SSIM, FID,
   LPIPS) on generated images decoded from latents sampled using a reverse diffusion model
-  (e.g., ReverseDDPM) via manual timestep iteration.
+  (e.g., ReverseDDPM).
 - Metrics computes MSE, PSNR, SSIM, FID, and LPIPS for evaluating generated images,
   assuming inputs in [-1, 1] or [0, 1] based on normalization, returning individual metric values.
-- The `noise_predictor` parameter expects a model (e.g., NoisePredictor from
-  noise_predictor module) operating on latent representations, predicting noise in the
-  diffusion process.
-- The `conditional_model` parameter expects a text encoder (e.g., TextEncoder from nets
+- The `conditional_model` parameter expects a text encoder (e.g., TextEncoder from utils
   module) with a BERT tokenizer and trainable projection layers for conditional generation,
   with tokenized text inputs compatible with its attention mask convention (1 for valid tokens).
 - SampleLDM supports multiple diffusion models ("ddpm", "ddim", "sde") via the `model`
   parameter, requiring compatible `reverse_diffusion` modules (e.g., ReverseDDPM,
   ReverseDDIM, ReverseSDE).
-- Ensure `image_shape` in SampleLDM matches the input resolution expected by the
-  compressor and noise predictor.
+
 
 References
 ----------
 Rombach, R., Blattmann, A., Lorenz, D., Esser, P., & Ommer, B. (2022).
-High-Resolution Image Synthesis with Latent Diffusion Models. CVPR 2022.
+High-Resolution Image Synthesis with Latent Diffusion Models.
 
 Examples
 --------
@@ -91,7 +87,7 @@ Examples
 ...                     noise_predictor=noise_predictor, compressor_model=compressor,
 ...                     image_shape=(256, 256), conditional_model=text_encoder)
 >>> images = sampler(conditions="A cat", normalize_output=True)
->>> fid, mse, psnr, ssim, lpips_score = metrics(real_images, images)
+
 
 License
 -------
@@ -119,8 +115,8 @@ import os
 class TrainLDM(nn.Module):
     """Trainer for the noise predictor in Latent Diffusion Models.
 
-    Optimizes the noise predictor and conditional model (e.g., TextEncoder with projection layers)
-    to predict noise in the latent space of AutoencoderLDM, using a diffusion model (DDPM, DDIM, or SDE).
+    Optimizes the noise predictor and conditional model (e.g., TextEncoder)
+    to predict noise in the latent space of AutoencoderLDM, using a diffusion model (e.g., DDPM, DDIM, SDE).
     Supports mixed precision, conditional generation with text prompts, and evaluation metrics
     (MSE, PSNR, SSIM, FID, LPIPS) for generated images during validation, using a specified reverse
     diffusion model.
@@ -249,7 +245,7 @@ class TrainLDM(nn.Module):
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.conditional_model = conditional_model.to(self.device) if conditional_model else None
-        self.metrics_ = metrics_  # Metrics handles device internally
+        self.metrics_ = metrics_
         self.max_epoch = max_epoch
         self.store_path = store_path or "ldm_model.pth"
         self.patience = patience
@@ -707,7 +703,7 @@ class SampleLDM(nn.Module):
         """Generates images using the reverse diffusion process in the latent space.
 
         Iteratively denoises random noise in the latent space using the specified reverse
-        diffusion model (DDPM, DDIM, or SDE), then decodes the result to the image space
+        diffusion model (DDPM, DDIM, SDE), then decodes the result to the image space
         with the compressor model. Supports conditional generation with text prompts.
 
         Parameters
@@ -796,7 +792,7 @@ class SampleLDM(nn.Module):
 
             # save images if save_images is True
             if save_images:
-                os.makedirs(save_path, exist_ok=True)  # Create directory if it doesn't exist
+                os.makedirs(save_path, exist_ok=True)
                 for i in range(generated_imgs.size(0)):
                     img_path = os.path.join(save_path, f"image_{i}.png")
                     save_image(generated_imgs[i], img_path)
@@ -1847,7 +1843,7 @@ class TrainAE(nn.Module):
 
         for epoch in range(self.max_epoch):
             if self.model.use_vq:
-                beta = 1.0  # No warmup for VQ
+                beta = 1.0  # no warmup for VQ
             else:
                 beta = min(1.0, epoch / self.kl_warmup_epochs) * self.model.beta
                 self.model.current_beta = beta
@@ -1877,7 +1873,7 @@ class TrainAE(nn.Module):
                     print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
                 if self.metrics_ and self.metrics_.lpips:
                     print(f" | LPIPS: {lpips_score:.4f}", end="")
-                print()  # Newline after metrics
+                print()
 
                 current_best = val_loss
                 self.scheduler.step(val_loss)
