@@ -237,7 +237,7 @@ Ensure you have Python 3.8+ installed. For GPU acceleration, install a compatibl
     ldm_trainer()  # Start training
    
     sampler = SampleLDM(
-        model="ddim", reverse_diffusion=rew_ddim,
+        model="ddim", reverse_diffusion=rev_ddim,
         noise_predictor=noise_pred, compressor_model=vae,
         image_shape=(224, 224), conditional_model=text_enc,
         batch_size=1, in_channels=3, device="cuda"
