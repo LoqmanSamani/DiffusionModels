@@ -443,7 +443,7 @@ class Embedding(torch.nn.Module):
 ###==================================================================================================================###
 
 class NoisePredictor(nn.Module):
-    """U-Net-like architecture for noise prediction in Latent Diffusion Models.
+    """U-Net-like architecture for noise prediction in Diffusion Models.
 
     Predicts noise for diffusion models (DDPM, DDIM, SDE), incorporating
     time embeddings and optional text conditioning. used as the `noise_predictor` in
