@@ -23,8 +23,6 @@ Additional utilities include:
 - **Text Encoder**: A transformer-based model (e.g., BERT) for text-conditioned generation (`TextEncoder`).
 - **Metrics**: Evaluates image quality with metrics like MSE, PSNR, SSIM, FID, and LPIPS (`Metrics`).
 
-TorchDiff is actively developed, with more models and features planned. A detailed documentation website is coming soon!
-
 ---
 
 ### Installation
