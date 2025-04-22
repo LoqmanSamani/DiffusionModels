@@ -1,9 +1,0 @@
-.. _ldm:
-
-LDM
-====
-
-.. automodule:: torchdiff.ldm
-   :members:
-   :undoc-members:
-   :show-inheritance:
