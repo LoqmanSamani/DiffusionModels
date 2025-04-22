@@ -8,7 +8,7 @@ setup(
     long_description_content_type="text/markdown",
     author="Loghman Samani",
     author_email="samaniloqman91@gmail.com",
-    url="https://github.com/LoqmanSamani/DiffusionModels",
+    url="https://github.com/LoqmanSamani/TorchDiff",
     packages=find_packages(),
     install_requires=[
         "lpips>=0.1.4",
