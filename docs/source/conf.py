@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath('/home/loqman/Downloads/projs/DiffusionModels
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = 'torchdiff'
+project = 'TorchDiff'
 copyright = '2025, Loghman Samani'
 author = 'Loghman Samani'
 release = '1.0.0'

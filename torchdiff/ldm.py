@@ -1,6 +1,5 @@
-__version__ = "1.0.0"
-
-"""Latent Diffusion Models (LDM) implementation.
+"""
+**Latent Diffusion Models (LDM)**
 
 This module provides a framework for training and sampling Latent Diffusion Models, as
 described in Rombach et al. (2022, "High-Resolution Image Synthesis with Latent Diffusion
@@ -10,19 +9,21 @@ conditional model, and provides metrics for evaluating generated images. The fra
 compatible with DDPM, DDIM, and SDE diffusion models, supporting both unconditional and
 conditional generation with text prompts.
 
-Components:
-- AutoencoderLDM: Variational autoencoder for compressing images to latent space and
+**Components**
+
+- **AutoencoderLDM**: Variational autoencoder for compressing images to latent space and
   decoding back to image space.
-- TrainAE: Trainer for AutoencoderLDM, optimizing reconstruction and regularization
+- **TrainAE**: Trainer for AutoencoderLDM, optimizing reconstruction and regularization
   losses with evaluation metrics.
-- TrainLDM: Training loop with mixed precision, warmup, and scheduling for the noise
+- **TrainLDM**: Training loop with mixed precision, warmup, and scheduling for the noise
   predictor and conditional model (e.g., TextEncoder with projection layers) in latent
   space, with image-domain evaluation metrics using a reverse diffusion model.
-- SampleLDM: Image generation from trained models, decoding from latent to image space.
+- **SampleLDM**: Image generation from trained models, decoding from latent to image space.
 
 
-Notes
------
+**Notes**
+
+
 - The `hyper_params` parameter expects an external hyperparameter module (e.g.,
   HyperParamsDDPM, HyperParamsSDE) as an nn.Module for noise schedule management.
 - AutoencoderLDM serves as the `compressor_model` in TrainLDM and SampleLDM, providing
@@ -36,67 +37,20 @@ Notes
   predicted and ground truth noise, with optional validation metrics (MSE, PSNR, SSIM, FID,
   LPIPS) on generated images decoded from latents sampled using a reverse diffusion model
   (e.g., ReverseDDPM).
-- Metrics computes MSE, PSNR, SSIM, FID, and LPIPS for evaluating generated images,
-  assuming inputs in [-1, 1] or [0, 1] based on normalization, returning individual metric values.
-- The `conditional_model` parameter expects a text encoder (e.g., TextEncoder from utils
-  module) with a BERT tokenizer and trainable projection layers for conditional generation,
-  with tokenized text inputs compatible with its attention mask convention (1 for valid tokens).
 - SampleLDM supports multiple diffusion models ("ddpm", "ddim", "sde") via the `model`
   parameter, requiring compatible `reverse_diffusion` modules (e.g., ReverseDDPM,
   ReverseDDIM, ReverseSDE).
 
 
-References
-----------
+**References**
+
 Rombach, R., Blattmann, A., Lorenz, D., Esser, P., & Ommer, B. (2022).
 High-Resolution Image Synthesis with Latent Diffusion Models.
 
-Examples
---------
->>> from torchdiff.ddpm import HyperParamsDDPM, ForwardDDPM, ReverseDDPM
->>> from torchdiff.ldm import AutoencoderLDM, TrainAE, TrainLDM, SampleLDM, Metrics
->>> from torchdiff.nets import TextEncoder
->>> from torchdiff.noise_predictor import NoisePredictor
->>> from torch.optim import Adam
->>> import torch.nn as nn
->>> hyper_params = HyperParamsDDPM(num_steps=1000, beta_start=1e-4, beta_end=0.02, beta_method="linear")
->>> forward_ddpm = ForwardDDPM(hyper_params)
->>> reverse_ddpm = ReverseDDPM(hyper_params)
->>> text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased")
->>> compressor = AutoencoderLDM(in_channels=3, down_channels=[16, 32], up_channels=[32, 16], out_channels=3,
-...                             dropout_rate=0.1, num_heads=4, num_groups=8, num_layers_per_block=2,
-...                             total_down_sampling_factor=2, latent_channels=3, num_embeddings=32, use_vq=False,
-...                             beta=1e-4)
->>> optimizer_ae = Adam(compressor.parameters(), lr=1e-4)
->>> metrics = Metrics(device='cuda', fid=True, metrics=True, lpips=True)
->>> train_ae = TrainAE(model=compressor, optimizer=optimizer_ae, data_loader=data_loader, val_loader=val_loader,
-...                    max_epoch=100, metrics_=metrics, device='cuda', save_path='vlc_model.pth')
->>> ae_losses, best_ae_loss = train_ae.train()
->>> noise_predictor = NoisePredictor(in_channels=3, down_channels=[16, 32], mid_channels=[32, 32],
-...                                 up_channels=[32, 16], down_sampling=[True, False], time_embed_dim=128,
-...                                 y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2,
-...                                 dropout_rate=0.1, down_sampling_factor=2, where_y=True, y_to_all=False)
->>> optimizer_ldm = Adam(list(noise_predictor.parameters()) + list(text_encoder.parameters()), lr=1e-4)
->>> train_ldm = TrainLDM(model="ddpm", forward_model=forward_ddpm, reverse_diffusion=reverse_ddpm,
-...                      hyper_params=hyper_params, noise_predictor=noise_predictor, compressor_model=compressor,
-...                      optimizer=optimizer_ldm, objective=nn.MSELoss(), data_loader=data_loader,
-...                      val_loader=val_loader, conditional_model=text_encoder, metrics_=metrics,
-...                      device='cuda', store_path='ldm_model.pth')
->>> train_losses, best_val_loss = train_ldm.train()
->>> sampler = SampleLDM(model="ddpm", reverse_diffusion=reverse_ddpm,
-...                     noise_predictor=noise_predictor, compressor_model=compressor,
-...                     image_shape=(256, 256), conditional_model=text_encoder)
->>> images = sampler(conditions="A cat", normalize_output=True)
-
-
-License
--------
-MIT License.
-
-Version
--------
-1.0.0
+---------------------------------------------------------------------------------
 """
+
+
 
 import torch
 import torch.nn as nn
@@ -109,6 +63,7 @@ import warnings
 from tqdm import tqdm
 from torchvision.utils import save_image
 import os
+
 
 ###==================================================================================================================###
 
@@ -166,63 +121,6 @@ class TrainLDM(nn.Module):
         Range for clamping generated images (default: (-1, 1)).
     normalize_output : bool, optional
         Whether to normalize generated images to [0, 1] for metrics (default: True).
-
-    Attributes
-    ----------
-    device : torch.device
-        Computation device.
-    model : str
-        Diffusion model type.
-    forward_model : ForwardDDPM, ForwardDDIM, or ForwardSDE
-        Forward diffusion model.
-    reverse_diffusion : ReverseDDPM, ReverseDDIM, or ReverseSDE or None
-        Reverse diffusion model.
-    hyper_params : HyperParamsDDPM, HyperParamsDDIM, or HyperParamsSDE
-        Diffusion hyperparameters.
-    noise_predictor : NoisePredictor
-        Noise prediction model.
-    compressor_model : AutoencoderLDM
-        Autoencoder for latent space.
-    optimizer : torch.optim.Optimizer
-        Training optimizer.
-    objective : torch.nn.Module
-        Loss function.
-    data_loader : torch.utils.data.DataLoader
-        Training DataLoader.
-    val_loader : torch.utils.data.DataLoader or None
-        Validation DataLoader.
-    conditional_model : TextEncoder or None
-        Text encoder for conditioning.
-    tokenizer : callable
-        Text tokenizer.
-    metrics_ : Metrics or None
-        Metrics object for evaluation.
-    max_epoch : int
-        Maximum training epochs.
-    store_path : str
-        Checkpoint save path.
-    patience : int
-        Early stopping patience.
-    warmup_epochs : int
-        Warmup epochs for learning rate.
-    max_length : int
-        Maximum text sequence length.
-    scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
-        Learning rate scheduler.
-    warmup_lr_scheduler : torch.optim.lr_scheduler.LambdaLR
-        Warmup learning rate scheduler.
-    val_frequency : int
-        Validation frequency.
-    output_range : tuple
-        Output range for generated images.
-    normalize_output : bool
-        Whether to normalize output.
-
-    Raises
-    ------
-    ValueError
-        If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
-        If model is not one of these models ["ddpm", "ddim", "sde"].
     """
 
     def __init__(self, model, forward_model, hyper_params, noise_predictor, compressor_model,
@@ -272,17 +170,10 @@ class TrainLDM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - epoch: The epoch at which the checkpoint was saved (int).
-            - loss: The loss at the checkpoint (float).
-
-        Raises
-        ------
-        FileNotFoundError
-            If the checkpoint file is not found.
-        KeyError
-            If required state dictionaries are missing.
+        epoch : int
+            The epoch at which the checkpoint was saved.
+        loss : float
+             The loss at the checkpoint.
         """
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -333,8 +224,7 @@ class TrainLDM(nn.Module):
 
         Returns
         -------
-        torch.optim.lr_scheduler.LambdaLR
-            Scheduler that scales learning rate linearly during warmup.
+        torch.optim.lr_scheduler.LambdaLR - Scheduler that scales learning rate linearly during warmup.
         """
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
@@ -352,10 +242,10 @@ class TrainLDM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - train_losses: List of mean training losses per epoch.
-            - best_val_loss: Best validation loss achieved (or best training loss if no validation).
+        train_losses : List of float
+            List of mean training losses per epoch.
+        best_val_loss : float
+            Best validation loss achieved (or best training loss if no validation).
         """
         self.noise_predictor.train()
         if self.conditional_model is not None:
@@ -476,14 +366,18 @@ class TrainLDM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - val_loss: Mean validation loss (float).
-            - fid: Mean FID score (float, or `float('inf')` if not computed).
-            - mse: Mean MSE (float, or None if not computed).
-            - psnr: Mean PSNR (float, or None if not computed).
-            - ssim: Mean SSIM (float, or None if not computed).
-            - lpips_score: Mean LPIPS score (float, or None if not computed).
+        val_loss : float
+            Mean validation loss.
+        fid : float, or `float('inf')` if not computed
+            Mean FID score.
+        mse : float, or None if not computed
+            Mean MSE
+        psnr : float, or None if not computed
+             Mean PSNR
+        ssim : float, or None if not computed
+            Mean SSIM
+        lpips_score :  float, or None if not computed
+            Mean LPIPS score
         """
         self.noise_predictor.eval()
         if self.conditional_model is not None:
@@ -602,40 +496,6 @@ class SampleLDM(nn.Module):
         Maximum length for tokenized prompts (default: 77).
     output_range : tuple, optional
         Range for clamping generated images (min, max), default (-1, 1).
-
-    Attributes
-    ----------
-    device : torch.device
-        Device used for computation.
-    model : str
-        Diffusion model type ("ddpm", "ddim", "sde").
-    noise_predictor : nn.Module
-        Noise prediction model.
-    reverse : nn.Module
-        Reverse diffusion module.
-    compressor : nn.Module
-        Compressor model for latent space encoding/decoding.
-    conditional_model : nn.Module or None
-        Conditional model for text-based generation, if provided.
-    tokenizer : BertTokenizer
-        Tokenizer for text prompts.
-    in_channels : int
-        Number of input channels for latent representations.
-    image_shape : tuple
-        Shape of generated images (height, width).
-    batch_size : int
-        Batch size for generation.
-    max_length : int
-        Maximum length for tokenized prompts.
-    output_range : tuple
-        Range for clamping generated images.
-
-    Raises
-    ------
-    ValueError
-        If `image_shape` is not a tuple of two positive integers, `batch_size` is not
-        positive, `in_channels` is not positive, or `output_range` is not a tuple
-        (min, max) with min < max.
     """
     def __init__(self, model, reverse_diffusion, noise_predictor, compressor_model, image_shape, conditional_model=None,
                  tokenizer="bert-base-uncased", batch_size=1, in_channels=3, device=None, max_length=77, output_range=(-1, 1)):
@@ -670,20 +530,14 @@ class SampleLDM(nn.Module):
         Parameters
         ----------
         prompts : str or list
-            Text prompt(s) for conditional generation. Can be a single string or a list
-            of strings.
+            Text prompt(s) for conditional generation. Can be a single string or a list of strings.
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - input_ids: Tokenized input IDs (torch.Tensor, shape (batch_size, max_length)).
-            - attention_mask: Attention mask for tokenized inputs (torch.Tensor, same shape).
-
-        Raises
-        ------
-        TypeError
-            If `prompts` is not a string or a list of strings.
+        input_ids : torch.Tensor
+             Tokenized input IDs, shape (batch_size, max_length).
+        attention_mask : torch.Tensor
+            Attention mask, shape (batch_size, max_length).
         """
         if isinstance(prompts, str):
             prompts = [prompts]
@@ -715,27 +569,7 @@ class SampleLDM(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Generated images, shape (batch_size, channels, height, width).
-            If `normalize_output` is True, images are normalized to [0, 1]; otherwise,
-            they are clamped to `output_range`.
-
-        Raises
-        ------
-        ValueError
-            If `conditions` is provided but no conditional model is specified, if a
-            conditional model is specified but `conditions` is None, or if `model` is not
-            one of "ddpm", "ddim", "sde".
-
-        Notes
-        -----
-        - Sampling is performed with `torch.no_grad()` for efficiency.
-        - The noise predictor, reverse diffusion, compressor, and conditional model
-          (if applicable) are set to evaluation mode during sampling.
-        - For DDIM, uses the subsampled tau schedule (`tau_num_steps`); for DDPM/SDE,
-          uses the full number of steps (`num_steps`).
-        - The compressor model is assumed to have `encode` and `decode` methods for
-          latent space conversion.
+        generated_imgs (torch.Tensor) - Generated images, shape (batch_size, channels, height, width). If `normalize_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `output_range`.
         """
         if conditions is not None and self.conditional_model is None:
             raise ValueError("Conditions provided but no conditional model specified")
@@ -809,13 +643,7 @@ class SampleLDM(nn.Module):
 
         Returns
         -------
-        self
-            The module moved to the specified device.
-
-        Notes
-        -----
-        - Moves `noise_predictor`, `reverse`, `compressor`, and `conditional_model`
-          (if applicable) to the specified device.
+        sample (SampleDDIM, SampleDDIM or SampleSDE) - The module moved to the specified device.
         """
         self.device = device
         self.noise_predictor.to(device)
@@ -863,55 +691,6 @@ class AutoencoderLDM(nn.Module):
         KL-divergence (default: False).
     beta : float, optional
         Weight for KL-divergence loss (if `use_vq=False`) (default: 1.0).
-
-    Attributes
-    ----------
-    use_vq : bool
-        Whether VQ regularization is used.
-    beta : float
-        Fixed weight for KL-divergence loss.
-    current_beta : float
-        Current weight for KL-divergence loss (modifiable during training).
-    down_sampling_factor : int
-        Downsampling factor per block, derived from `total_down_sampling_factor`.
-    conv1 : torch.nn.Conv2d
-        Initial convolutional layer for encoding.
-    down_blocks : torch.nn.ModuleList
-        List of DownBlock modules for encoder downsampling.
-    attention1 : Attention
-        Self-attention layer after encoder downsampling.
-    vq_layer : VectorQuantizer or None
-        Vector quantization layer (if `use_vq=True`).
-    conv_mu : torch.nn.Conv2d or None
-        Convolutional layer for mean of latent distribution (if `use_vq=False`).
-    conv_logvar : torch.nn.Conv2d or None
-        Convolutional layer for log-variance of latent distribution (if `use_vq=False`).
-    quant_conv : torch.nn.Conv2d
-        Convolutional layer to project latent representation to `latent_channels`.
-    conv2 : torch.nn.Conv2d
-        Initial convolutional layer for decoding.
-    attention2 : Attention
-        Self-attention layer after decoder’s initial convolution.
-    up_blocks : torch.nn.ModuleList
-        List of UpBlock modules for decoder upsampling.
-    conv3 : Conv3
-        Final convolutional layer for output reconstruction.
-
-    Raises
-    ------
-    AssertionError
-        If `in_channels` does not equal `out_channels`.
-
-    Notes
-    -----
-    - The encoder downsamples images using `DownBlock` modules, followed by self-attention
-      and latent projection (VQ or KL-based).
-    - The decoder upsamples the latent representation using `UpBlock` modules, with
-      self-attention and final convolution.
-    - The `down_sampling_factor` is computed as `total_down_sampling_factor` raised to
-      the power of `1 / (len(down_channels) - 1)`, applied per downsampling block.
-    - The latent representation has `latent_channels` channels, suitable for LDM’s
-      diffusion process.
     """
     def __init__(
             self,
@@ -989,8 +768,7 @@ class AutoencoderLDM(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Sampled latent representation, same shape as `mu`.
+        reparam (torch.Tensor) - Sampled latent representation, same shape as `mu`.
         """
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
@@ -1009,15 +787,13 @@ class AutoencoderLDM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - z: Latent representation, shape (batch_size, latent_channels,
-              height/down_sampling_factor, width/down_sampling_factor).
-            - reg_loss: Regularization loss (VQ loss if `use_vq=True`, KL-divergence
-              loss if `use_vq=False`).
+        z : (torch.Tensor)
+            Latent representation, shape (batch_size, latent_channels, height/down_sampling_factor, width/down_sampling_factor).
+        reg_loss : float
+            Regularization loss (VQ loss if `use_vq=True`, KL-divergence loss if `use_vq=False`).
 
-        Notes
-        -----
+        **Notes**
+
         - The VQ loss is computed by `VectorQuantizer` if `use_vq=True`.
         - The KL-divergence loss is normalized by batch size and latent size, weighted
           by `current_beta`.
@@ -1057,8 +833,7 @@ class AutoencoderLDM(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Reconstructed images, shape (batch_size, out_channels, height, width).
+        x (torch.Tensor) - Reconstructed images, shape (batch_size, out_channels, height, width).
         """
         x = self.conv2(z)
         res_x = x
@@ -1083,19 +858,18 @@ class AutoencoderLDM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - x_hat: Reconstructed images, shape (batch_size, out_channels, height,
-              width).
-            - total_loss: Sum of reconstruction (MSE) and regularization losses.
-            - reg_loss: Regularization loss (VQ or KL-divergence).
-            - z: Latent representation, shape (batch_size, latent_channels,
-              height/down_sampling_factor, width/down_sampling_factor).
+        x_hat : torch.Tensor
+            Reconstructed images, shape (batch_size, out_channels, height, width).
+        total_loss : float
+            Sum of reconstruction (MSE) and regularization losses.
+        reg_loss : float
+            Regularization loss (VQ or KL-divergence).
+        z : torch.Tensor
+            Latent representation, shape (batch_size, latent_channels, height/down_sampling_factor, width/down_sampling_factor).
 
-        Notes
-        -----
-        - The reconstruction loss is computed as the mean squared error between `x_hat`
-          and `x`.
+        **Notes**
+
+        - The reconstruction loss is computed as the mean squared error between `x_hat` and `x`.
         - The regularization loss depends on `use_vq` (VQ loss or KL-divergence).
         """
         z, reg_loss = self.encode(x)
@@ -1121,31 +895,15 @@ class VectorQuantizer(nn.Module):
     embedding_dim : int
         Dimensionality of each embedding vector (matches input channel dimension).
     commitment_cost : float, optional
-        Weight for the commitment loss, encouraging inputs to be close to quantized
-        values (default: 0.25).
+        Weight for the commitment loss, encouraging inputs to be close to quantized values (default: 0.25).
 
-    Attributes
-    ----------
-    embedding_dim : int
-        Dimensionality of embedding vectors.
-    num_embeddings : int
-        Number of embeddings in the codebook.
-    commitment_cost : float
-        Weight for commitment loss.
-    embedding : torch.nn.Embedding
-        Embedding layer containing the codebook, shape (num_embeddings,
-        embedding_dim).
 
-    Notes
-    -----
-    - The codebook embeddings are initialized uniformly in the range
-      [-1/num_embeddings, 1/num_embeddings].
-    - The forward pass flattens input latents, computes Euclidean distances to
-      codebook embeddings, and selects the nearest embedding for quantization.
-    - The commitment loss encourages input latents to be close to their quantized
-      versions, while the codebook loss updates embeddings to match inputs.
-    - A straight-through estimator is used to pass gradients from the quantized output
-      to the input.
+    **Notes**
+
+    - The codebook embeddings are initialized uniformly in the range [-1/num_embeddings, 1/num_embeddings].
+    - The forward pass flattens input latents, computes Euclidean distances to codebook embeddings, and selects the nearest embedding for quantization.
+    - The commitment loss encourages input latents to be close to their quantized versions, while the codebook loss updates embeddings to match inputs.
+    - A straight-through estimator is used to pass gradients from the quantized output to the input.
     """
     def __init__(self, num_embeddings, embedding_dim, commitment_cost=0.25):
         super().__init__()
@@ -1169,23 +927,16 @@ class VectorQuantizer(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - quantized: Quantized latent representation, same shape as `z`.
-            - vq_loss: Sum of commitment and codebook losses.
+        quantized : torch.Tensor
+            Quantized latent representation, same shape as `z`.
+        vq_loss : torch.Tensor
+            Sum of commitment and codebook losses.
 
-        Raises
-        ------
-        AssertionError
-            If the channel dimension of `z` does not match `embedding_dim`.
+        **Notes**
 
-        Notes
-        -----
-        - The input is flattened to (batch_size * height * width, embedding_dim) for
-          distance computation.
+        - The input is flattened to (batch_size * height * width, embedding_dim) for distance computation.
         - Euclidean distances are computed efficiently using vectorized operations.
-        - The commitment loss is scaled by `commitment_cost`, and the total VQ loss
-          combines commitment and codebook losses.
+        - The commitment loss is scaled by `commitment_cost`, and the total VQ loss combines commitment and codebook losses.
         """
         z = z.contiguous()
         assert z.size(1) == self.embedding_dim, f"Expected channel dim {self.embedding_dim}, got {z.size(1)}"
@@ -1223,25 +974,10 @@ class DownBlock(nn.Module):
     dropout_rate : float
         Dropout rate for Conv3 layers.
 
-    Attributes
-    ----------
-    num_layers : int
-        Number of convolutional layer pairs.
-    conv1 : torch.nn.ModuleList
-        List of Conv3 layers for the first convolution in each pair.
-    conv2 : torch.nn.ModuleList
-        List of Conv3 layers for the second convolution in each pair.
-    down_sampling : DownSampling
-        Downsampling module to reduce spatial dimensions.
-    resnet : torch.nn.ModuleList
-        List of 1x1 convolutional layers for residual connections.
+    **Notes**
 
-    Notes
-    -----
-    - Each layer pair consists of two Conv3 modules with a residual connection using a
-      1x1 convolution to match dimensions.
-    - The downsampling is applied after all convolutional layers, reducing spatial
-      dimensions by `down_sampling_factor`.
+    - Each layer pair consists of two Conv3 modules with a residual connection using a 1x1 convolution to match dimensions.
+    - The downsampling is applied after all convolutional layers, reducing spatial dimensions by `down_sampling_factor`.
     """
     def __init__(self, in_channels, out_channels, num_layers, down_sampling_factor, dropout_rate):
         super().__init__()
@@ -1285,9 +1021,7 @@ class DownBlock(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Output tensor, shape (batch_size, out_channels,
-            height/down_sampling_factor, width/down_sampling_factor).
+        output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor).
         """
         output = x
         for i in range(self.num_layers):
@@ -1315,21 +1049,9 @@ class Conv3(nn.Module):
     dropout_rate : float
         Dropout rate for regularization.
 
-    Attributes
-    ----------
-    group_norm : torch.nn.GroupNorm
-        Group normalization with 8 groups.
-    activation : torch.nn.SiLU
-        SiLU (Swish) activation function.
-    conv : torch.nn.Conv2d
-        3x3 convolutional layer with padding to maintain spatial dimensions.
-    dropout : torch.nn.Dropout
-        Dropout layer for regularization.
+    **Notes**
 
-    Notes
-    -----
-    - The layer applies group normalization, SiLU activation, dropout, and a 3x3
-      convolution in sequence.
+    - The layer applies group normalization, SiLU activation, dropout, and a 3x3 convolution in sequence.
     - Spatial dimensions are preserved due to padding=1 in the convolution.
     """
     def __init__(self, in_channels, out_channels, dropout_rate):
@@ -1349,8 +1071,7 @@ class Conv3(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Output tensor, shape (batch_size, out_channels, height, width).
+        x (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height, width).
         """
         x = self.group_norm(x)
         x = self.activation(x)
@@ -1375,21 +1096,10 @@ class DownSampling(nn.Module):
     down_sampling_factor : int
         Factor by which to downsample spatial dimensions.
 
-    Attributes
-    ----------
-    down_sampling_factor : int
-        Downsampling factor.
-    conv : torch.nn.Sequential
-        Convolutional path with 1x1 and 3x3 convolutions, outputting out_channels/2.
-    pool : torch.nn.Sequential
-        Max pooling path with 1x1 convolution, outputting out_channels/2.
+    **Notes**
 
-    Notes
-    -----
-    - The module splits the output channels evenly between convolutional and pooling
-      paths, concatenating them along the channel dimension.
-    - The convolutional path uses a stride equal to `down_sampling_factor`, while the
-      pooling path uses max pooling with the same factor.
+    - The module splits the output channels evenly between convolutional and pooling paths, concatenating them along the channel dimension.
+    - The convolutional path uses a stride equal to `down_sampling_factor`, while the pooling path uses max pooling with the same factor.
     """
     def __init__(self, in_channels, out_channels, down_sampling_factor):
         super().__init__()
@@ -1415,9 +1125,7 @@ class DownSampling(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Downsampled tensor, shape (batch_size, out_channels,
-            height/down_sampling_factor, width/down_sampling_factor).
+        x (torch.Tensor) - Downsampled tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor).
         """
         return torch.cat(tensors=[self.conv(batch), self.pool(batch)], dim=1)
 
@@ -1440,19 +1148,9 @@ class Attention(nn.Module):
     dropout_rate : float
         Dropout rate for attention outputs.
 
-    Attributes
-    ----------
-    group_norm : torch.nn.GroupNorm
-        Group normalization before attention.
-    attention : torch.nn.MultiheadAttention
-        Multi-head self-attention with `batch_first=True`.
-    dropout : torch.nn.Dropout
-        Dropout layer for regularization.
+    **Notes**
 
-    Notes
-    -----
-    - The input is reshaped to (batch_size, height * width, num_channels) for
-      attention processing, then restored to (batch_size, num_channels, height, width).
+    - The input is reshaped to (batch_size, height * width, num_channels) for attention processing, then restored to (batch_size, num_channels, height, width).
     - Group normalization is applied before attention to stabilize training.
     """
     def __init__(self, num_channels, num_heads, num_groups, dropout_rate):
@@ -1471,8 +1169,7 @@ class Attention(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Output tensor, same shape as input.
+        x (torch.Tensor) - Output tensor, same shape as input.
         """
         batch_size, channels, h, w = x.shape
         x = x.reshape(batch_size, channels, h * w)
@@ -1505,23 +1202,9 @@ class UpBlock(nn.Module):
     dropout_rate : float
         Dropout rate for Conv3 layers.
 
-    Attributes
-    ----------
-    num_layers : int
-        Number of convolutional layer pairs.
-    up_sampling : UpSampling
-        Upsampling module to increase spatial dimensions.
-    conv1 : torch.nn.ModuleList
-        List of Conv3 layers for the first convolution in each pair.
-    conv2 : torch.nn.ModuleList
-        List of Conv3 layers for the second convolution in each pair.
-    resnet : torch.nn.ModuleList
-        List of 1x1 convolutional layers for residual connections.
+    **Notes**
 
-    Notes
-    -----
-    - Upsampling is applied first, followed by convolutional layer pairs with residual
-      connections using 1x1 convolutions.
+    - Upsampling is applied first, followed by convolutional layer pairs with residual connections using 1x1 convolutions.
     - Each layer pair consists of two Conv3 modules.
     """
     def __init__(self, in_channels, out_channels, num_layers, up_sampling_factor, dropout_rate):
@@ -1567,9 +1250,7 @@ class UpBlock(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Output tensor, shape (batch_size, out_channels,
-            height * up_sampling_factor, width * up_sampling_factor).
+        output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height * up_sampling_factor, width * up_sampling_factor).
         """
         x = self.up_sampling(x)
         output = x
@@ -1597,22 +1278,10 @@ class UpSampling(nn.Module):
     up_sampling_factor : int
         Factor by which to upsample spatial dimensions.
 
-    Attributes
-    ----------
-    up_sampling_factor : int
-        Upsampling factor.
-    conv : torch.nn.Sequential
-        Transposed convolutional path, outputting out_channels/2.
-    up_sample : torch.nn.Sequential
-        Nearest-neighbor upsampling path with 1x1 convolution, outputting
-        out_channels/2.
+    **Notes**
 
-    Notes
-    -----
-    - The module splits the output channels evenly between transposed convolution and
-      upsampling paths, concatenating them along the channel dimension.
-    - If the spatial dimensions of the two paths differ, the upsampling path is
-      interpolated to match the convolutional path’s size.
+    - The module splits the output channels evenly between transposed convolution and upsampling paths, concatenating them along the channel dimension.
+    - If the spatial dimensions of the two paths differ, the upsampling path is interpolated to match the convolutional path’s size.
     """
     def __init__(self, in_channels, out_channels, up_sampling_factor):
         super().__init__()
@@ -1656,14 +1325,11 @@ class UpSampling(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Upsampled tensor, shape (batch_size, out_channels,
-            height * up_sampling_factor, width * up_sampling_factor).
+        x (torch.Tensor) - Upsampled tensor, shape (batch_size, out_channels, height * up_sampling_factor, width * up_sampling_factor).
 
-        Notes
-        -----
-        - Interpolation is applied if the spatial dimensions of the convolutional and
-          upsampling paths differ, using nearest-neighbor mode.
+        **Notes**
+
+        - Interpolation is applied if the spatial dimensions of the convolutional and upsampling paths differ, using nearest-neighbor mode.
         """
         conv_output = self.conv(batch)
         up_sample_output = self.up_sample(batch)
@@ -1713,35 +1379,6 @@ class TrainAE(nn.Module):
         (default: 10).
     val_frequency : int, optional
         Frequency (in epochs) for validation and metric computation (default: 5).
-
-    Attributes
-    ----------
-    device : torch.device
-        Computation device.
-    model : AutoencoderLDM
-        Autoencoder model being trained.
-    optimizer : torch.optim.Optimizer
-        Training optimizer.
-    data_loader : torch.utils.data.DataLoader
-        Training DataLoader.
-    val_loader : torch.utils.data.DataLoader or None
-        Validation DataLoader.
-    max_epoch : int
-        Maximum training epochs.
-    metrics_ : Metrics or None
-        Metrics object for evaluation.
-    save_path : str
-        Checkpoint save path.
-    checkpoint : int
-        Checkpoint frequency.
-    kl_warmup_epochs : int
-        KL warmup epochs.
-    patience : int
-        Early stopping patience.
-    scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
-        Learning rate scheduler.
-    val_frequency : int
-        Validation frequency.
     """
 
     def __init__(self, model, optimizer, data_loader, val_loader=None, max_epoch=100, metrics_=None,
@@ -1775,25 +1412,10 @@ class TrainAE(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - epoch: The epoch at which the checkpoint was saved (int).
-            - loss: The loss at the checkpoint (float).
-
-        Raises
-        ------
-        FileNotFoundError
-            If the checkpoint file is not found.
-        KeyError
-            If the checkpoint is missing required keys ('model_state_dict_noise_predictor'
-            or 'optimizer_state_dict').
-
-        Warns
-        -----
-        warnings.warn
-            If the optimizer state cannot be loaded, if the checkpoint contains a
-            conditional model state but none is defined, or if no conditional model
-            state is provided when expected.
+        epoch : float
+            The epoch at which the checkpoint was saved (int).
+        loss : float
+            The loss at the checkpoint (float).
         """
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -1830,10 +1452,10 @@ class TrainAE(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - train_losses: List of mean training losses per epoch.
-            - best_val_loss: Best validation loss achieved (or best training loss if no validation).
+        train_losses : list
+            List of mean training losses per epoch.
+        best_val_loss :  float
+            Best validation loss achieved (or best training loss if no validation).
         """
         scaler = GradScaler()
         self.model.train()
@@ -1906,14 +1528,18 @@ class TrainAE(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - val_loss: Mean validation loss (float).
-            - fid: Mean FID score (float, or `float('inf')` if not computed).
-            - mse: Mean MSE (float, or None if not computed).
-            - psnr: Mean PSNR (float, or None if not computed).
-            - ssim: Mean SSIM (float, or None if not computed).
-            - lpips_score: Mean LPIPS score (float, or None if not computed).
+        val_loss : float
+            Mean validation loss.
+        fid : float, or `float('inf')` if not computed
+            Mean FID score.
+        mse : float, or None if not computed
+            Mean MSE
+        psnr : float, or None if not computed
+             Mean PSNR
+        ssim : float, or None if not computed
+            Mean SSIM
+        lpips_score :  float, or None if not computed
+            Mean LPIPS score
         """
         self.model.eval()
         val_losses = []

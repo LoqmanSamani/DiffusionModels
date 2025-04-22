@@ -1,6 +1,5 @@
-__version__ = "1.0.0"
-
-"""Score-Based Generative Modeling with Stochastic Differential Equations (SDE).
+"""
+**Score-Based Generative Modeling with Stochastic Differential Equations (SDE)**
 
 This module implements a complete framework for score-based generative models using SDEs,
 as described in Song et al. (2021, "Score-Based Generative Modeling through Stochastic
@@ -10,51 +9,20 @@ Exploding (VE), Variance Preserving (VP), sub-Variance Preserving (sub-VP), and 
 methods for flexible noise schedules. Supports both unconditional and conditional
 generation with text prompts.
 
-Components:
-- ForwardSDE: Forward diffusion process to add noise using SDE methods.
-- ReverseSDE: Reverse diffusion process to denoise using SDE methods.
-- HyperParamsSDE: Noise schedule and SDE-specific parameter management.
-- TrainSDE: Training loop with mixed precision and scheduling.
-- SampleSDE: Image generation from trained SDE models.
+**Components**
 
-References:
+- **ForwardSDE**: Forward diffusion process to add noise using SDE methods.
+- **ReverseSDE**: Reverse diffusion process to denoise using SDE methods.
+- **HyperParamsSDE**: Noise schedule and SDE-specific parameter management.
+- **TrainSDE**: Training loop with mixed precision and scheduling.
+- **SampleSDE**: Image generation from trained SDE models.
+
+**References**
+
 - Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., & Poole, B. (2021).
   Score-Based Generative Modeling through Stochastic Differential Equations.
 
-Examples
---------
->>> from torchdiff.sde import HyperParamsSDE, ForwardSDE, ReverseSDE, TrainSDE, SampleSDE
->>> from torchdiff.utils import TextEncoder, NoisePredictor, Metrics
->>> from torch.optim import Adam
->>> import torch.nn as nn
-...
->>> hyper_params = HyperParamsSDE(num_steps=1000, beta_start=1e-4, beta_end=0.02)
->>> forward_sde = ForwardSDE(hyper_params, method="vp")
->>> reverse_sde = ReverseSDE(hyper_params, method="vp")
->>> metrics = Metrics(device='cuda', fid=True, metrics=True, lpips=True)
->>> noise_predictor = NoisePredictor(in_channels=3, down_channels=[32, 64, 128], mid_channels=[128, 128, 128],
-...                                  up_channels=[128, 64, 32], down_sampling=[True, True, True], time_embed_dim=128,
-...                                  y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2, dropout_rate=0.1,
-...                                  down_sampling_factor=2, where_y=True, y_to_all=False)
->>> text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased", vocabulary_size=30522,
-...                            num_layers=2, input_dimension=128, output_dimension=128, num_heads=4, context_length=77,
-...                            dropout_rate=0.1, qkv_bias=False, scaling_value=4, epsilon=1e-5)
->>> optimizer = Adam(compressor.parameters(), lr=1e-4)
->>> metrics = Metrics(device='cuda', fid=True, metrics=True, lpips=True)
->>> train_sde = TrainSDE(method="vp", noise_predictor=noise_predictor, hyper_params=hyper_params,
-...                      data_loader=data_loader, optimizer=optimizer, objective=nn.MSELoss(),
-...                      conditional_model=text_encoder, tokenizer=tokenizer, metrics_=metrics)
->>> train_losses, best_val_loss = train_sde()
->>> sampler = SampleSDE(reverse_sde, noise_predictor, image_shape=(64, 64))
->>> images = sampler(conditions="A cat", normalize_output=True, save_images=True, save_path="sde_generated")
-
-License
--------
-MIT License.
-
-Version
--------
-1.0.0
+---------------------------------------------------------------------------------
 """
 
 
@@ -83,25 +51,9 @@ class ForwardSDE(nn.Module):
     ----------
     hyper_params : object
         Hyperparameter object (HyperParamsSDE) containing SDE-specific parameters. Expected to have
-        attributes:
-        - `dt`: Time step size for SDE integration (float).
-        - `sigmas`: Sigma values for VE method (torch.Tensor, optional).
-        - `betas`: Beta values for VP, sub-VP, or ODE methods (torch.Tensor).
-        - `cum_betas`: Cumulative beta values for sub-VP method (torch.Tensor, optional).
+        attributes: `dt`, `sigmas`, `betas`, `cum_betas`.
     method : str
         SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
-
-    Attributes
-    ----------
-    hyper_params : object
-        Stores the provided hyperparameter object.
-    method : str
-        Selected SDE method.
-
-    Raises
-    ------
-    ValueError
-        If `method` is not one of the supported methods ("ve", "vp", "sub-vp", "ode").
     """
     def __init__(self, hyper_params, method):
         super().__init__()
@@ -126,13 +78,8 @@ class ForwardSDE(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Noisy data tensor at the specified time steps, same shape as `x0`.
+        xt (torch.Tensor) - Noisy data tensor at the specified time steps, same shape as `x0`.
 
-        Raises
-        ------
-        ValueError
-            If `method` is not one of the supported methods ("ve", "vp", "sub-vp", "ode").
         """
         dt = self.hyper_params.dt
         if self.method == "ve":
@@ -180,25 +127,9 @@ class ReverseSDE(nn.Module):
     ----------
     hyper_params : object
         Hyperparameter object (HyperParamsSDE) containing SDE-specific parameters. Expected to have
-        attributes:
-        - `dt`: Time step size for SDE integration (float).
-        - `sigmas`: Sigma values for VE method (torch.Tensor, optional).
-        - `betas`: Beta values for VP, sub-VP, or ODE methods (torch.Tensor).
-        - `cum_betas`: Cumulative beta values for sub-VP method (torch.Tensor, optional).
+        attributes: `dt`, `sigmas`, `betas`, `cum_betas`.
     method : str
         SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
-
-    Attributes
-    ----------
-    hyper_params : object
-        Stores the provided hyperparameter object.
-    method : str
-        Selected SDE method.
-
-    Raises
-    ------
-    ValueError
-        If `method` is not one of the supported methods ("ve", "vp", "sub-vp", "ode").
     """
     def __init__(self, hyper_params, method):
         super().__init__()
@@ -227,20 +158,12 @@ class ReverseSDE(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Denoised tensor at the previous time step, same shape as `xt`.
+        xt (torch.Tensor) - Denoised tensor at the previous time step, same shape as `xt`.
 
-        Raises
-        ------
-        ValueError
-            If `method` is not one of the supported methods ("ve", "vp", "sub-vp", "ode").
+        **Notes**
 
-        Notes
-        -----
-        - For the "ve" and "ode" methods, the output is clamped to [-1e5, 1e5] to prevent
-          numerical instability.
-        - Stochastic noise (`noise`) is only added if provided and the method supports it
-          (not applicable for "ode" in non-VE cases).
+        - For the "ve" and "ode" methods, the output is clamped to [-1e5, 1e5] to prevent numerical instability.
+        - Stochastic noise (`noise`) is only added if provided and the method supports it (not applicable for "ode" in non-VE cases).
         """
         dt = self.hyper_params.dt
         betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
@@ -308,47 +231,6 @@ class HyperParamsSDE(nn.Module):
         Start of the time interval for SDE integration (default: 0.0).
     end : float, optional
         End of the time interval for SDE integration (default: 1.0).
-
-    Attributes
-    ----------
-    num_steps : int
-        Number of diffusion steps.
-    beta_start : float
-        Minimum beta value.
-    beta_end : float
-        Maximum beta value.
-    trainable_beta : bool
-        Whether the beta schedule is trainable.
-    beta_method : str
-        Method used for beta schedule computation.
-    sigma_start : float
-        Minimum sigma value for VE method.
-    sigma_end : float
-        Maximum sigma value for VE method.
-    start : float
-        Start of the time interval.
-    end : float
-        End of the time interval.
-    betas : torch.Tensor
-        Beta schedule values, shape (num_steps,). Trainable if `trainable_beta` is True,
-        otherwise a fixed buffer.
-    cum_betas : torch.Tensor, optional
-        Cumulative sum of betas scaled by `dt`, shape (num_steps,). Available if
-        `trainable_beta` is False.
-    sigmas : torch.Tensor, optional
-        Sigma schedule for VE method, shape (num_steps,). Available if
-        `trainable_beta` is False.
-    time : torch.Tensor
-        Time points for SDE integration, shape (num_steps,).
-    dt : float
-        Time step size for SDE integration, computed as (end - start) / num_steps.
-
-    Raises
-    ------
-    ValueError
-        If `beta_start` or `beta_end` do not satisfy 0 < beta_start < beta_end,
-        `sigma_start` or `sigma_end` do not satisfy 0 < sigma_start < sigma_end,
-        or `num_steps` is not positive.
     """
     def __init__(self, num_steps=1000, beta_start=1e-4, beta_end=0.02, trainable_beta=False, beta_method="linear",
                  sigma_start=1e-3, sigma_end=10.0, start=0.0, end=1.0):
@@ -400,13 +282,7 @@ class HyperParamsSDE(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Tensor of beta values, shape (num_steps,).
-
-        Raises
-        ------
-        ValueError
-            If `method` is not one of the supported beta schedule methods.
+        betas (torch.Tensor) - Tensor of beta values, shape (num_steps,).
         """
         beta_min, beta_max = beta_range
         if method == "sigmoid":
@@ -433,8 +309,8 @@ class HyperParamsSDE(nn.Module):
         Ensures that trainable beta values remain within the specified range
         [beta_start, beta_end] by clamping them in-place.
 
-        Notes
-        -----
+        **Notes**
+
         This method only applies when `trainable_beta` is True.
         """
         if self.trainable_beta:
@@ -457,13 +333,7 @@ class HyperParamsSDE(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Variance values for the specified time steps, shape (batch_size,).
-
-        Raises
-        ------
-        ValueError
-            If `method` is not one of the supported methods ("ve", "vp", "sub-vp").
+        variance_values (torch.Tensor) - Variance values for the specified time steps, shape (batch_size,).
         """
         if method == "ve":
             return self.sigmas[time_steps] ** 2
@@ -524,56 +394,6 @@ class TrainSDE(nn.Module):
         Range for clamping generated images (default: (-1, 1)).
     normalize_output : bool, optional
         Whether to normalize generated images to [0, 1] for metrics (default: True).
-
-    Attributes
-    ----------
-    device : torch.device
-        Device used for computation.
-    method : str
-        Selected SDE method.
-    noise_predictor : nn.Module
-        Noise prediction model.
-    hyper_params : nn.Module
-        Hyperparameter module for the noise schedule and SDE parameters.
-    conditional_model : nn.Module or None
-        Conditional model for text-based training, if provided.
-    metrics_ : Metrics or None
-        Metrics object for evaluation.
-    optimizer : torch.optim.Optimizer
-        Optimizer for training.
-    objective : callable
-        Loss function for training.
-    store_path : str
-        Path for saving checkpoints.
-    data_loader : torch.utils.data.DataLoader
-        Training data loader.
-    val_loader : torch.utils.data.DataLoader or None
-        Validation data loader, if provided.
-    max_epoch : int
-        Maximum training epochs.
-    max_length : int
-        Maximum length for tokenized prompts.
-    patience : int
-        Patience for early stopping.
-    scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
-        Learning rate scheduler based on validation or training loss.
-    forward_diffusion : ForwardSDE
-        Forward SDE diffusion module.
-    warmup_lr_scheduler : torch.optim.lr_scheduler.LambdaLR
-        Learning rate scheduler for warmup.
-    val_frequency : int
-        Frequency for validation.
-    tokenizer : BertTokenizer
-        Tokenizer for text prompts.
-    output_range : tuple
-        Output range for generated images.
-    normalize_output : bool
-        Whether to normalize output.
-
-    Raises
-    ------
-    ValueError
-        If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
     """
     def __init__(self, method, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, metrics_=None, tokenizer=None, max_length=77,
@@ -619,25 +439,10 @@ class TrainSDE(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - epoch: The epoch at which the checkpoint was saved (int).
-            - loss: The loss at the checkpoint (float).
-
-        Raises
-        ------
-        FileNotFoundError
-            If the checkpoint file is not found.
-        KeyError
-            If the checkpoint is missing required keys ('model_state_dict_noise_predictor'
-            or 'optimizer_state_dict').
-
-        Warns
-        -----
-        warnings.warn
-            If the optimizer state cannot be loaded, if the checkpoint contains a
-            conditional model state but none is defined, or if no conditional model
-            state is provided when expected.
+        epoch : int
+            The epoch at which the checkpoint was saved (int).
+        loss : float
+            The loss at the checkpoint (float).
         """
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -691,8 +496,7 @@ class TrainSDE(nn.Module):
 
         Returns
         -------
-        torch.optim.lr_scheduler.LambdaLR
-            Learning rate scheduler for warmup.
+        lr_scheduler (torch.optim.lr_scheduler.LambdaLR) - Learning rate scheduler for warmup.
         """
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
@@ -710,16 +514,15 @@ class TrainSDE(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - train_losses: List of mean training losses per epoch (list of float).
-            - best_val_loss: Best validation or training loss achieved (float).
+        train_losses : list of float
+             List of mean training losses per epoch.
+        best_val_loss : float
+             Best validation or training loss achieved.
 
-        Notes
-        -----
+        **Notes**
+
         - Training uses mixed precision via `torch.cuda.amp` or `torch.amp` for efficiency.
-        - Checkpoints are saved when the validation (or training) loss improves, and on
-          early stopping.
+        - Checkpoints are saved when the validation (or training) loss improves, and on early stopping.
         - Early stopping is triggered if no improvement occurs for `patience` epochs.
         """
         self.noise_predictor.train()
@@ -840,14 +643,18 @@ class TrainSDE(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - val_loss: Mean validation loss (float).
-            - fid: Mean FID score (float, or `float('inf')` if not computed).
-            - mse: Mean MSE (float, or None if not computed).
-            - psnr: Mean PSNR (float, or None if not computed).
-            - ssim: Mean SSIM (float, or None if not computed).
-            - lpips_score: Mean LPIPS score (float, or None if not computed).
+        val_loss : float
+            Mean validation loss.
+        fid : float, or `float('inf')` if not computed
+            Mean FID score.
+        mse : float, or None if not computed
+            Mean MSE
+        psnr : float, or None if not computed
+             Mean PSNR
+        ssim : float, or None if not computed
+            Mean SSIM
+        lpips_score :  float, or None if not computed
+            Mean LPIPS score
         """
         self.noise_predictor.eval()
         if self.conditional_model is not None:
@@ -952,35 +759,6 @@ class SampleSDE(nn.Module):
         Device for computation (default: CUDA if available, else CPU).
     output_range : tuple, optional
         Range for clamping generated images (min, max), default (-1, 1).
-
-    Attributes
-    ----------
-    device : torch.device
-        Device used for computation.
-    reverse : ReverseSDE
-        Reverse SDE diffusion module.
-    noise_predictor : nn.Module
-        Noise prediction model.
-    conditional_model : nn.Module or None
-        Conditional model for text-based generation, if provided.
-    tokenizer : BertTokenizer
-        Tokenizer for text prompts.
-    max_length : int
-        Maximum length for tokenized prompts.
-    in_channels : int
-        Number of input channels.
-    image_shape : tuple
-        Shape of generated images (height, width).
-    batch_size : int
-        Batch size for generation.
-    output_range : tuple
-        Range for clamping generated images.
-
-    Raises
-    ------
-    ValueError
-        If `image_shape` is not a tuple of two positive integers, `batch_size` is not
-        positive, or `output_range` is not a tuple (min, max) with min < max.
     """
     def __init__(self, reverse_diffusion, noise_predictor, image_shape, conditional_model=None,
                  tokenizer="bert-base-uncased", max_length=77, batch_size=1, in_channels=3, device=None, output_range=(-1, 1)):
@@ -1016,15 +794,10 @@ class SampleSDE(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - input_ids: Tokenized input IDs (torch.Tensor, shape (batch_size, max_length)).
-            - attention_mask: Attention mask for tokenized inputs (torch.Tensor, same shape).
-
-        Raises
-        ------
-        TypeError
-            If `prompts` is not a string or a list of strings.
+        input_ids : torch.Tensor
+             Tokenized input IDs, shape (batch_size, max_length).
+        attention_mask : torch.Tensor
+            Attention mask, shape (batch_size, max_length).
         """
         if isinstance(prompts, str):
             prompts = [prompts]
@@ -1058,22 +831,7 @@ class SampleSDE(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Generated images, shape (batch_size, in_channels, height, width).
-            If `normalize_output` is True, images are normalized to [0, 1]; otherwise,
-            they are clamped to `output_range`.
-
-        Raises
-        ------
-        ValueError
-            If `conditions` is provided but no conditional model is specified, or if
-            a conditional model is specified but `conditions` is None.
-
-        Notes
-        -----
-        - Sampling is performed with `torch.no_grad()` for efficiency.
-        - The noise predictor, reverse SDE, and conditional model (if applicable) are set
-          to evaluation mode during sampling.
+        generated_imgs (torch.Tensor) - Generated images, shape (batch_size, in_channels, height, width). If `normalize_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `output_range`.
         """
         if conditions is not None and self.conditional_model is None:
             raise ValueError("Conditions provided but no conditional model specified")
@@ -1119,20 +877,17 @@ class SampleSDE(nn.Module):
     def to(self, device):
         """Moves the module and its components to the specified device.
 
+        Updates the device attribute and moves the reverse diffusion, noise predictor,
+        and conditional model (if present) to the specified device.
+
         Parameters
         ----------
         device : torch.device
-            Target device for computation.
+            Target device for the module and its components.
 
         Returns
         -------
-        self
-            The module moved to the specified device.
-
-        Notes
-        -----
-        - Moves `noise_predictor`, `reverse`, and `conditional_model` (if applicable) to
-          the specified device.
+        sample_sde (SampleSDE) - moved to the specified device.
         """
         self.device = device
         self.noise_predictor.to(device)

@@ -1,3 +1,26 @@
+"""
+**Utilities for text encoding, noise prediction, and evaluation in diffusion models**
+
+This module provides core components for building diffusion model pipelines, including
+text encoding, used as conditional model, U-Net-based noise prediction, and image quality evaluation. These
+utilities support various diffusion model architectures, such as DDPM, DDIM, LDM, and
+SDE, and are designed for standalone use in model training and sampling.
+
+**Primary Components**
+
+- **TextEncoder**: Encodes text prompts into embeddings using a pre-trained BERT model or a custom transformer.
+- **NoisePredictor**: U-Net-like architecture for predicting noise in diffusion models, supporting time and text conditioning.
+- **Metrics**: Computes image quality metrics (MSE, PSNR, SSIM, FID, LPIPS) for evaluating generated images.
+
+**Notes**
+
+- The primary components are intended to be imported directly for use in diffusion model workflows.
+- Additional supporting classes and functions in this module provide internal functionality for the primary components.
+
+---------------------------------------------------------------------------------
+"""
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -51,24 +74,8 @@ class TextEncoder(torch.nn.Module):
     epsilon : float, optional
         Epsilon for layer normalization in the custom transformer (default: 1e-5).
 
-    Attributes
-    ----------
-    use_pretrained_model : bool
-        Whether a pre-trained model is used.
-    bert : transformers.BertModel or None
-        Pre-trained BERT model, if `use_pretrained_model` is True.
-    projection : torch.nn.Linear or None
-        Linear layer to project BERT outputs to `output_dimension`, if
-        `use_pretrained_model` is True.
-    embedding : Embedding or None
-        Token and positional embedding layer for the custom transformer, if
-        `use_pretrained_model` is False.
-    layers : torch.nn.ModuleList or None
-        List of EncoderLayer modules for the custom transformer, if
-        `use_pretrained_model` is False.
+    **Notes**
 
-    Notes
-    -----
     - When `use_pretrained_model` is True, the BERT model’s parameters are frozen
       (`requires_grad = False`), and a projection layer maps outputs to
       `output_dimension`.
@@ -133,11 +140,10 @@ class TextEncoder(torch.nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Encoded embeddings, shape (batch_size, seq_len, output_dimension).
+        x (torch.Tensor) - Encoded embeddings, shape (batch_size, seq_len, output_dimension).
 
-        Notes
-        -----
+        **Notes**
+
         - For pre-trained BERT, the `last_hidden_state` is projected to
           `output_dimension`.
         - For the custom transformer, token embeddings are processed through
@@ -180,26 +186,8 @@ class EncoderLayer(torch.nn.Module):
     epsilon : float, optional
         Epsilon for layer normalization (default: 1e-5).
 
-    Attributes
-    ----------
-    attention : torch.nn.MultiheadAttention
-        Multi-head self-attention mechanism.
-    output_projection : torch.nn.Linear or torch.nn.Identity
-        Linear layer to project attention outputs to `output_dimension`, or identity
-        if `input_dimension` equals `output_dimension`.
-    norm1 : torch.nn.LayerNorm
-        Layer normalization after attention.
-    dropout1 : torch.nn.Dropout
-        Dropout after attention.
-    feedforward : FeedForward
-        Feedforward network.
-    norm2 : torch.nn.LayerNorm
-        Layer normalization after feedforward.
-    dropout2 : torch.nn.Dropout
-        Dropout after feedforward.
+    **Notes**
 
-    Notes
-    -----
     - The layer follows the standard transformer encoder architecture: attention,
       residual connection, normalization, feedforward, residual connection,
       normalization.
@@ -247,11 +235,10 @@ class EncoderLayer(torch.nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Processed embeddings, shape (batch_size, seq_len, output_dimension).
+        x (torch.Tensor) - Processed embeddings, shape (batch_size, seq_len, output_dimension).
 
-        Notes
-        -----
+        **Notes**
+
         - The attention mask is passed as `key_padding_mask` to
           `nn.MultiheadAttention`, where 0 indicates padding tokens.
         - Residual connections and normalization are applied after attention and
@@ -282,13 +269,9 @@ class FeedForward(torch.nn.Module):
     dropout_rate : float, optional
         Dropout rate after the hidden layer (default: 0.1).
 
-    Attributes
-    ----------
-    layers : torch.nn.Sequential
-        Sequential container with linear, GELU, dropout, and linear layers.
 
-    Notes
-    -----
+    **Notes**
+
     - The hidden layer dimension is `embedding_dimension * scaling_value`, following
       standard transformer feedforward designs.
     - GELU activation is used for non-linearity.
@@ -319,8 +302,7 @@ class FeedForward(torch.nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Processed embeddings, shape (batch_size, seq_len, embedding_dimension).
+        x (torch.Tensor) - Processed embeddings, shape (batch_size, seq_len, embedding_dimension).
         """
         return self.layers(x)
 
@@ -341,24 +323,10 @@ class Embedding(torch.nn.Module):
     context_length : int, optional
         Maximum sequence length for positional encodings (default: 77).
 
-    Attributes
-    ----------
-    token_embedding : torch.nn.Embedding
-        Token embedding layer.
-    embedding_dimension : int
-        Dimension of embeddings.
-    context_length : int
-        Maximum sequence length.
-    positional_encoding : torch.Tensor
-        Pre-computed positional encodings, shape (1, context_length,
-        embedding_dimension).
+    **Notes**
 
-    Notes
-    -----
-    - Positional encodings are computed using sinusoidal functions, following the
-      transformer architecture.
-    - For sequences longer than `context_length`, positional encodings are dynamically
-      generated.
+    - Positional encodings are computed using sinusoidal functions, following the transformer architecture.
+    - For sequences longer than `context_length`, positional encodings are dynamically generated.
     - The output shape is (batch_size, seq_len, embedding_dimension).
     """
     def __init__(
@@ -389,12 +357,10 @@ class Embedding(torch.nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Positional encodings, shape (1, seq_len, embedding_dimension), where
-            even-indexed dimensions use sine and odd-indexed dimensions use cosine.
+        x (torch.Tensor) - Positional encodings, shape (1, seq_len, embedding_dimension), where even-indexed dimensions use sine and odd-indexed dimensions use cosine.
 
-        Notes
-        -----
+        **Notes**
+
         - The encoding follows the formula: for position `pos` and dimension `i`,
           `PE(pos, 2i) = sin(pos / 10000^(2i/d))` and
           `PE(pos, 2i+1) = cos(pos / 10000^(2i/d))`, where `d` is
@@ -422,14 +388,7 @@ class Embedding(torch.nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Embedded tokens with positional encodings, shape (batch_size, seq_len,
-            embedding_dimension).
-
-        Raises
-        ------
-        AssertionError
-            If `token_ids` is not a 2D tensor (batch_size, seq_len).
+        x (torch.Tensor) - Embedded tokens with positional encodings, shape (batch_size, seq_len, embedding_dimension).
         """
         assert token_ids.dim() == 2, "Input token_ids should be of shape (batch_size, seq_len)"
         token_embedded = self.token_embedding(token_ids)
@@ -482,49 +441,8 @@ class NoisePredictor(nn.Module):
         If True, apply text-conditioned attention to all layers; if False, only first layer
         (default: False).
 
-    Attributes
-    ----------
-    in_channels : int
-        Number of input channels.
-    down_channels : list of int
-        Channels for downsampling blocks.
-    mid_channels : list of int
-        Channels for middle blocks.
-    up_channels : list of int
-        Channels for upsampling blocks.
-    down_sampling : list of bool
-        Downsampling flags.
-    time_embed_dim : int
-        Time embedding dimension.
-    y_embed_dim : int
-        Text embedding dimension.
-    num_down_blocks : int
-        Number of layer pairs per down block.
-    num_mid_blocks : int
-        Number of layer pairs per middle block.
-    num_up_blocks : int
-        Number of layer pairs per up block.
-    dropout_rate : float
-        Dropout rate.
-    where_y : bool
-        Flag for text embedding usage.
-    up_sampling : list of bool
-        Reversed `down_sampling` for upsampling blocks.
-    conv1 : torch.nn.Conv2d
-        Initial 3x3 convolutional layer.
-    time_projection : torch.nn.Sequential
-        Projection for time embeddings.
-    down_blocks : torch.nn.ModuleList
-        List of DownBlock modules for downsampling.
-    mid_blocks : torch.nn.ModuleList
-        List of MiddleBlock modules for bottleneck processing.
-    up_blocks : torch.nn.ModuleList
-        List of UpBlock modules for upsampling.
-    conv2 : torch.nn.Sequential
-        Final convolutional layer with group normalization and dropout.
+    **Notes**
 
-    Notes
-    -----
     - The architecture follows a U-Net structure with downsampling, bottleneck, and
       upsampling blocks, incorporating time embeddings and optional text conditioning via
       attention or concatenation.
@@ -651,8 +569,7 @@ class NoisePredictor(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Predicted noise, same shape as input `x`.
+        output (torch.Tensor) - Predicted noise, same shape as input `x`.
         """
         if not self.where_y and y is not None:
             x = torch.cat(tensors=[x, y], dim=1)
@@ -701,25 +618,6 @@ class DownBlock(nn.Module):
         Dropout rate for Conv3 and attention layers.
     y_to_all : bool
         If True, apply text-conditioned attention to all layers; if False, only first layer.
-
-    Attributes
-    ----------
-    num_layers : int
-        Number of convolutional layer pairs.
-    y_to_all : bool
-        Flag for text-conditioned attention scope.
-    conv1 : torch.nn.ModuleList
-        List of Conv3 layers for first convolution in each pair.
-    conv2 : torch.nn.ModuleList
-        List of Conv3 layers for second convolution in each pair.
-    time_embedding : torch.nn.ModuleList
-        List of TimeEmbedding modules for time conditioning.
-    attention : torch.nn.ModuleList
-        List of Attention modules for text conditioning or self-attention.
-    down_sampling : DownSampling or torch.nn.Identity
-        Downsampling module or identity if `down_sample=False`.
-    resnet : torch.nn.ModuleList
-        List of 1x1 convolutional layers for residual connections.
     """
     def __init__(self, in_channels, out_channels, time_embed_dim, y_embed_dim,num_layers, down_sampling_factor,  down_sample, dropout_rate, y_to_all):
         super().__init__()
@@ -793,10 +691,7 @@ class DownBlock(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Output tensor, shape (batch_size, out_channels,
-            height/down_sampling_factor, width/down_sampling_factor) if downsampling;
-            otherwise, same height/width as input.
+        output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor) if downsampling; otherwise, same height/width as input.
         """
         output = x
         for i in range(self.num_layers):
@@ -846,23 +741,6 @@ class MiddleBlock(nn.Module):
     y_to_all : bool, optional
         If True, apply text-conditioned attention to all layers; if False, only first layer
         (default: False).
-
-    Attributes
-    ----------
-    num_layers : int
-        Number of convolutional layer pairs.
-    y_to_all : bool
-        Flag for text-conditioned attention scope.
-    conv1 : torch.nn.ModuleList
-        List of Conv3 layers for first convolution in each pair.
-    conv2 : torch.nn.ModuleList
-        List of Conv3 layers for second convolution in each pair.
-    time_embedding : torch.nn.ModuleList
-        List of TimeEmbedding modules for time conditioning.
-    attention : torch.nn.ModuleList
-        List of Attention modules for text conditioning or self-attention.
-    resnet : torch.nn.ModuleList
-        List of 1x1 convolutional layers for residual connections.
     """
     def __init__(self, in_channels, out_channels, time_embed_dim,  y_embed_dim, num_layers, dropout_rate, y_to_all=False):
         super().__init__()
@@ -928,8 +806,7 @@ class MiddleBlock(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Output tensor, shape (batch_size, out_channels, height, width).
+        output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height, width).
         """
         output = x
         resnet_input = output
@@ -989,25 +866,6 @@ class UpBlock(nn.Module):
     y_to_all : bool, optional
         If True, apply text-conditioned attention to all layers; if False, only first layer
         (default: False).
-
-    Attributes
-    ----------
-    num_layers : int
-        Number of convolutional layer pairs.
-    y_to_all : bool
-        Flag for text-conditioned attention scope.
-    conv1 : torch.nn.ModuleList
-        List of Conv3 layers for first convolution in each pair.
-    conv2 : torch.nn.ModuleList
-        List of Conv3 layers for second convolution in each pair.
-    time_embedding : torch.nn.ModuleList
-        List of TimeEmbedding modules for time conditioning.
-    attention : torch.nn.ModuleList
-        List of Attention modules for text conditioning or self-attention.
-    up_sampling : UpSampling or torch.nn.Identity
-        Upsampling module or identity if `up_sampling=False`.
-    resnet : torch.nn.ModuleList
-        List of 1x1 convolutional layers for residual connections.
     """
     def __init__(self, in_channels, out_channels, skip_channels, time_embed_dim,  y_embed_dim, num_layers, up_sampling_factor, up_sampling=True, dropout_rate=0.2, y_to_all=False):
         super().__init__()
@@ -1085,10 +943,7 @@ class UpBlock(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Output tensor, shape (batch_size, out_channels,
-            height*up_sampling_factor, width*up_sampling_factor) if upsampling;
-            otherwise, same height/width as input (after skip connection).
+        output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height*up_sampling_factor, width*up_sampling_factor) if upsampling; otherwise, same height/width as input (after skip connection).
         """
         x = self.up_sampling(x)
         x = torch.cat(tensors=[x, skip_connection], dim=1)
@@ -1136,17 +991,6 @@ class Conv3(nn.Module):
         If True, apply SiLU activation (default: True).
     dropout_rate : float, optional
         Dropout rate (default: 0.2).
-
-    Attributes
-    ----------
-    conv : torch.nn.Conv2d
-        Convolutional layer with specified kernel size and padding.
-    group_norm : torch.nn.GroupNorm or torch.nn.Identity
-        Group normalization or identity if `norm=False`.
-    activation : torch.nn.SiLU or torch.nn.Identity
-        SiLU activation or identity if `activation=False`.
-    dropout : torch.nn.Dropout
-        Dropout layer.
     """
     def __init__(self, in_channels, out_channels, num_groups=8, kernel_size=3, norm=True, activation=True, dropout_rate=0.2):
         super().__init__()
@@ -1165,8 +1009,7 @@ class Conv3(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Output tensor, shape (batch_size, out_channels, height, width).
+        batch (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height, width).
         """
         batch = self.conv(batch)
         batch = self.group_norm(batch)
@@ -1187,11 +1030,6 @@ class TimeEmbedding(nn.Module):
         Output channel dimension (matches convolutional channels).
     embed_dim : int
         Input time embedding dimension.
-
-    Attributes
-    ----------
-    embedding : torch.nn.Sequential
-        Sequential layer with SiLU activation and linear projection.
     """
     def __init__(self, output_dim, embed_dim):
         super().__init__()
@@ -1226,16 +1064,6 @@ class GetEmbeddedTime(nn.Module):
     ----------
     embed_dim : int
         Dimensionality of the time embeddings (must be even).
-
-    Attributes
-    ----------
-    embed_dim : int
-        Time embedding dimension.
-
-    Raises
-    ------
-    AssertionError
-        If `embed_dim` is not divisible by 2.
     """
     def __init__(self, embed_dim):
         super().__init__()
@@ -1252,8 +1080,7 @@ class GetEmbeddedTime(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Sinusoidal embeddings, shape (batch_size, embed_dim).
+        embed_time (torch.Tensor) - Sinusoidal embeddings, shape (batch_size, embed_dim).
         """
         i = torch.arange(start=0, end=self.embed_dim // 2, dtype=torch.float32, device=time_steps.device)
         factor = 10000 ** (2 * i / self.embed_dim)
@@ -1281,32 +1108,6 @@ class Attention(nn.Module):
         Number of groups for group normalization (default: 8).
     dropout_rate : float, optional
         Dropout rate for attention and output (default: 0.1).
-
-    Attributes
-    ----------
-    in_channels : int
-        Input channel dimension.
-    y_embed_dim : int
-        Text embedding dimension.
-    num_heads : int
-        Number of attention heads.
-    dropout_rate : float
-        Dropout rate.
-    attention : torch.nn.MultiheadAttention
-        Multi-head attention with `batch_first=True`.
-    norm : torch.nn.GroupNorm
-        Group normalization before attention.
-    dropout : torch.nn.Dropout
-        Dropout layer for output.
-    y_projection : torch.nn.Linear
-        Projection for text embeddings to match `in_channels`.
-
-    Raises
-    ------
-    AssertionError
-        If input channels do not match `in_channels`.
-    ValueError
-        If text embeddings (`y`) have incorrect dimensions after projection.
     """
     def __init__(self, in_channels, y_embed_dim=768, num_heads=4, num_groups=8, dropout_rate=0.1):
         super().__init__()
@@ -1332,8 +1133,7 @@ class Attention(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Output tensor, same shape as input `x`.
+        out (torch.Tensor) - Output tensor, same shape as input `x`.
         """
         batch_size, channels, h, w = x.shape
         assert channels == self.in_channels, f"Expected {self.in_channels} channels, got {channels}"
@@ -1379,19 +1179,6 @@ class DownSampling(nn.Module):
         If True, include convolutional path (default: True).
     max_pool : bool, optional
         If True, include max pooling path (default: True).
-
-    Attributes
-    ----------
-    conv_block : bool
-        Flag for convolutional path.
-    max_pool : bool
-        Flag for max pooling path.
-    down_sampling_factor : int
-        Downsampling factor.
-    conv : torch.nn.Sequential or torch.nn.Identity
-        Convolutional path or identity if `conv_block=False`.
-    pool : torch.nn.Sequential or torch.nn.Identity
-        Max pooling path or identity if `max_pool=False`.
     """
     def __init__(self, in_channels, out_channels, down_sampling_factor, conv_block=True, max_pool=True):
         super().__init__()
@@ -1419,9 +1206,7 @@ class DownSampling(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Downsampled tensor, shape (batch_size, out_channels,
-            height/down_sampling_factor, width/down_sampling_factor).
+        batch (torch.Tensor) - Downsampled tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor).
         """
         if not self.conv_block:
             return self.pool(batch)
@@ -1450,19 +1235,6 @@ class UpSampling(nn.Module):
         If True, include transposed convolutional path (default: True).
     up_sampling : bool, optional
         If True, include nearest-neighbor upsampling path (default: True).
-
-    Attributes
-    ----------
-    conv_block : bool
-        Flag for convolutional path.
-    up_sampling : bool
-        Flag for upsampling path.
-    up_sampling_factor : int
-        Upsampling factor.
-    conv : torch.nn.Sequential or torch.nn.Identity
-        Transposed convolutional path or identity if `conv_block=False`.
-    up_sample : torch.nn.Sequential or torch.nn.Identity
-        Nearest-neighbor upsampling path or identity if `up_sampling=False`.
     """
     def __init__(self, in_channels, out_channels, up_sampling_factor, conv_block=True, up_sampling=True):
         super().__init__()
@@ -1504,12 +1276,10 @@ class UpSampling(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Upsampled tensor, shape (batch_size, out_channels,
-            height*up_sampling_factor, width*up_sampling_factor).
+        batch (torch.Tensor) - Upsampled tensor, shape (batch_size, out_channels, height*up_sampling_factor, width*up_sampling_factor).
 
-        Notes
-        -----
+        **Notes**
+
         - Interpolation is applied if the spatial dimensions of the convolutional and
           upsampling paths differ, using nearest-neighbor mode.
         """
@@ -1547,23 +1317,6 @@ class Metrics:
         If True, compute MSE, PSNR, and SSIM (default: False).
     lpips : bool, optional
         If True, compute LPIPS using VGG backbone (default: False).
-
-    Attributes
-    ----------
-    device : str
-        Computation device.
-    fid : bool
-        Flag for FID computation.
-    metrics : bool
-        Flag for MSE, PSNR, SSIM computation.
-    lpips : bool
-        Flag for LPIPS computation.
-    lpips_model : lpips.LPIPS or None
-        LPIPS model (VGG backbone) if `lpips=True`; otherwise, None.
-    temp_dir_real : str
-        Temporary directory for real images during FID computation.
-    temp_dir_fake : str
-        Temporary directory for fake (generated) images during FID computation.
     """
 
     def __init__(self, device="cuda", fid=True, metrics=False, lpips_=False):
@@ -1590,11 +1343,10 @@ class Metrics:
 
         Returns
         -------
-        float
-            FID score, or `float('inf')` if computation fails.
+        fid (float) - FID score, or `float('inf')` if computation fails.
 
-        Notes
-        -----
+        **Notes**
+
         - Images are normalized to [0, 1] and saved as PNG files for FID computation.
         - Uses Inception V3 with 2048-dimensional features (`dims=2048`).
         """
@@ -1641,11 +1393,12 @@ class Metrics:
 
         Returns
         -------
-        tuple
-            Tuple of (mse, psnr, ssim) as floats, where:
-            - mse: Mean squared error.
-            - psnr: Peak signal-to-noise ratio.
-            - ssim: Structural similarity index (mean over batch).
+        mse : float
+            Mean squared error.
+        psnr : float
+            Peak signal-to-noise ratio.
+        ssim : float
+            Structural similarity index (mean over batch).
         """
         if x.shape != x_hat.shape:
             raise ValueError(f"Shape mismatch: x {x.shape}, x_hat {x_hat.shape}")
@@ -1678,13 +1431,7 @@ class Metrics:
 
         Returns
         -------
-        float
-            Mean LPIPS score over the batch.
-
-        Raises
-        ------
-        RuntimeError
-            If `lpips=True` but `lpips_model` is not initialized.
+        lpips (float) - Mean LPIPS score over the batch.
         """
         if self.lpips_model is None:
             raise RuntimeError("LPIPS model not initialized; set lpips=True in __init__")
@@ -1707,13 +1454,16 @@ class Metrics:
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - fid: FID score (float, or `float('inf')` if `fid=False` or fails).
-            - mse: Mean squared error (float, or None if `metrics=False`).
-            - psnr: Peak signal-to-noise ratio (float, or None if `metrics=False`).
-            - ssim: Structural similarity index (float, or None if `metrics=False`).
-            - lpips: LPIPS score (float, or None if `lpips=False`).
+        fid : float, or `float('inf')` if not computed
+            Mean FID score.
+        mse : float, or None if not computed
+            Mean MSE
+        psnr : float, or None if not computed
+             Mean PSNR
+        ssim : float, or None if not computed
+            Mean SSIM
+        lpips_score :  float, or None if not computed
+            Mean LPIPS score
         """
         fid = float('inf')
         mse, psnr, ssim = None, None, None

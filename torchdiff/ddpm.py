@@ -1,54 +1,24 @@
-__version__ = "1.0.0"
-
-"""Denoising Diffusion Probabilistic Models (DDPM) implementation.
+"""
+**Denoising Diffusion Probabilistic Models (DDPM) implementation**
 
 This module provides a complete implementation of DDPM, as described in Ho et al.
 (2020, "Denoising Diffusion Probabilistic Models"). It includes components for forward
 and reverse diffusion processes, hyperparameter management, training, and image
 sampling. Supports both unconditional and conditional generation with text prompts.
 
-Components:
-- ForwardDDPM: Forward diffusion process to add noise.
-- ReverseDDPM: Reverse diffusion process to denoise.
-- HyperParamsDDPM: Noise schedule management.
-- TrainDDPM: Training loop with mixed precision and scheduling.
-- SampleDDPM: Image generation from trained models.
+**Components**
 
-References:
+- **ForwardDDPM**: Forward diffusion process to add noise.
+- **ReverseDDPM**: Reverse diffusion process to denoise.
+- **HyperParamsDDPM**: Noise schedule management.
+- **TrainDDPM**: Training loop with mixed precision and scheduling.
+- **SampleDDPM**: Image generation from trained models.
+
+**References**
+
 - Ho, J., Jain, A., & Abbeel, P. (2020). Denoising Diffusion Probabilistic Models.
 
-Examples
---------
->>> from torchdiff.ddpm import HyperParamsDDPM, ForwardDDPM, ReverseDDPM, TrainDDPM, SampleDDPM
->>> from torchdiff.utils import TextEncoder, NoisePredictor, Metrics
->>> from torch.optim import Adam
->>> import torch.nn as nn
-...
->>> hyper_params = HyperParamsDDPM(num_steps=1000, beta_start=1e-4, beta_end=0.02, beta_method="linear")
->>> forward_ddpm = ForwardDDPM(hyper_params)
->>> reverse_ddpm = ReverseDDPM(hyper_params)
->>> noise_predictor = NoisePredictor(in_channels=3, down_channels=[32, 64, 128], mid_channels=[128, 128, 128],
-...                                  up_channels=[128, 64, 32], down_sampling=[True, True, True], time_embed_dim=128,
-...                                  y_embed_dim=128, num_down_blocks=2, num_mid_blocks=2, num_up_blocks=2, dropout_rate=0.1,
-...                                  down_sampling_factor=2, where_y=True, y_to_all=False)
->>> text_encoder = TextEncoder(use_pretrained_model=True, model_name="bert-base-uncased", vocabulary_size=30522,
-...                            num_layers=2, input_dimension=128, output_dimension=128, num_heads=4, context_length=77,
-...                            dropout_rate=0.1, qkv_bias=False, scaling_value=4, epsilon=1e-5)
->>> optimizer = Adam(compressor.parameters(), lr=1e-4)
->>> metrics = Metrics(device='cuda', fid=True, metrics=True, lpips=True)
->>> train_ddpm = TrainDDPM(noise_predictor=noise_predictor, hyper_params=hyper_params, data_loader=data_loader, 
-...                        optimizer=optimizer, objective=nn.MSELoss(), conditional_model=text_encoder, metrics_=metrics)
->>> train_losses, best_val_loss = train_ddpm()
->>> sampler = SampleDDPM(reverse_ddpm, noise_predictor, image_shape=(64, 64))
->>> images = sampler(conditions="A cat", normalize_output=True, save_images=True, save_path="ddpm_generated")
-
-License
--------
-MIT License.
-
-Version
--------
-1.0.0
+---------------------------------------------------------------------------------
 """
 
 import torch
@@ -76,18 +46,7 @@ class ForwardDDPM(nn.Module):
     ----------
     hyper_params : object
         Hyperparameter object (HyperParamsDDPM) containing the noise schedule parameters. Expected to have
-        attributes:
-        - `num_steps`: Number of diffusion steps (int).
-        - `trainable_beta`: Whether the noise schedule is trainable (bool).
-        - `betas`: Noise schedule parameters (torch.Tensor, optional if trainable_beta is True).
-        - `sqrt_alpha_bars`: Precomputed cumulative product of alphas (torch.Tensor, optional if trainable_beta is False).
-        - `sqrt_one_minus_alpha_bars`: Precomputed square root of one minus cumulative alpha product (torch.Tensor, optional if trainable_beta is False).
-        - `compute_schedule`: Method to compute the noise schedule (callable, optional if trainable_beta is True).
-
-    Attributes
-    ----------
-    hyper_params : object
-        Stores the provided hyperparameter object for use in the forward process.
+        attributes: `num_steps`, `trainable_beta`, `betas`, `sqrt_alpha_bars`, `sqrt_one_minus_alpha_bars`, `compute_schedule`.
     """
     def __init__(self, hyper_params):
         super().__init__()
@@ -113,14 +72,7 @@ class ForwardDDPM(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Noisy data tensor `xt` at the specified time steps, with the same shape as `x0`.
-
-        Raises
-        ------
-        ValueError
-            If any value in `time_steps` is outside the valid range
-            [0, hyper_params.num_steps - 1].
+        xt (torch.Tensor) - Noisy data tensor `xt` at the specified time steps, with the same shape as `x0`.
         """
         if not torch.all((time_steps >= 0) & (time_steps < self.hyper_params.num_steps)):
             raise ValueError(f"time_steps must be between 0 and {self.hyper_params.num_steps - 1}")
@@ -154,18 +106,7 @@ class ReverseDDPM(nn.Module):
     ----------
     hyper_params : object
         Hyperparameter object (HyperParamsDDPM) containing the noise schedule parameters. Expected to have
-        attributes:
-        - `num_steps`: Number of diffusion steps (int).
-        - `trainable_beta`: Whether the noise schedule is trainable (bool).
-        - `betas`: Noise schedule parameters (torch.Tensor, optional if trainable_beta is True).
-        - `alphas`: Precomputed alpha values (torch.Tensor, optional if trainable_beta is False).
-        - `alpha_bars`: Precomputed cumulative product of alphas (torch.Tensor, optional if trainable_beta is False).
-        - `compute_schedule`: Method to compute the noise schedule (callable, optional if trainable_beta is True).
-
-    Attributes
-    ----------
-    hyper_params : object
-        Stores the provided hyperparameter object for use in the reverse process.
+        attributes: `num_steps`, `trainable_beta`, `betas`, `alphas`, `alpha_bars`, `compute_schedule`.
     """
     def __init__(self, hyper_params):
         super().__init__()
@@ -190,15 +131,7 @@ class ReverseDDPM(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Denoised tensor `xt_minus_1` at time step `t-1`, with the same shape as `xt`.
-            For time_steps == 0, returns the mean of the reverse process without added noise.
-
-        Raises
-        ------
-        ValueError
-            If any value in `time_steps` is outside the valid range
-            [0, hyper_params.num_steps - 1].
+        xt_minus_1 (torch.Tensor) - Denoised tensor `xt_minus_1` at time step `t-1`, with the same shape as `xt`. For time_steps == 0, returns the mean of the reverse process without added noise.
         """
         if not torch.all((time_steps >= 0) & (time_steps < self.hyper_params.num_steps)):
             raise ValueError(f"time_steps must be between 0 and {self.hyper_params.num_steps - 1}")
@@ -256,36 +189,6 @@ class HyperParamsDDPM(nn.Module):
     beta_method : str, optional
         Method for computing the beta schedule (default: "linear").
         Supported methods: "linear", "sigmoid", "quadratic", "constant", "inverse_time".
-
-    Attributes
-    ----------
-    num_steps : int
-        Number of diffusion steps.
-    beta_start : float
-        Minimum beta value.
-    beta_end : float
-        Maximum beta value.
-    trainable_beta : bool
-        Whether the beta schedule is trainable.
-    beta_method : str
-        Method used for beta schedule computation.
-    betas : torch.Tensor
-        Beta schedule values, shape (num_steps,). Trainable if `trainable_beta` is True,
-        otherwise a fixed buffer.
-    alphas : torch.Tensor, optional
-        Alpha values (1 - betas), shape (num_steps,). Available if `trainable_beta` is False.
-    alpha_bars : torch.Tensor, optional
-        Cumulative product of alphas, shape (num_steps,). Available if `trainable_beta` is False.
-    sqrt_alpha_bars : torch.Tensor, optional
-        Square root of alpha_bars, shape (num_steps,). Available if `trainable_beta` is False.
-    sqrt_one_minus_alpha_bars : torch.Tensor, optional
-        Square root of (1 - alpha_bars), shape (num_steps,). Available if `trainable_beta` is False.
-
-    Raises
-    ------
-    ValueError
-        If `beta_start` or `beta_end` do not satisfy 0 < beta_start < beta_end < 1,
-        or if `num_steps` is not positive.
     """
     def __init__(self, num_steps=1000, beta_start=1e-4, beta_end=0.02, trainable_beta=False, beta_method="linear"):
         super().__init__()
@@ -330,13 +233,7 @@ class HyperParamsDDPM(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Tensor of beta values, shape (num_steps,).
-
-        Raises
-        ------
-        ValueError
-            If `method` is not one of the supported beta schedule methods.
+        beta (torch.Tensor) - Tensor of beta values, shape (num_steps,).
         """
         beta_min, beta_max = beta_range
         if method == "sigmoid":
@@ -372,13 +269,16 @@ class HyperParamsDDPM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - betas: Input beta values, shape (num_steps,).
-            - alphas: 1 - betas, shape (num_steps,).
-            - alpha_bars: Cumulative product of alphas, shape (num_steps,).
-            - sqrt_alpha_bars: Square root of alpha_bars, shape (num_steps,).
-            - sqrt_one_minus_alpha_bars: Square root of (1 - alpha_bars), shape (num_steps,).
+        betas : torch.Tensor
+            Input beta values, shape (num_steps,).
+        alphas : torch.Tensor
+            1 - betas, shape (num_steps,).
+        alpha_bars : torch.Tensor
+            Cumulative product of alphas, shape (num_steps,).
+        sqrt_alpha_bars : torch.Tensor
+            Square root of alpha_bars, shape (num_steps,).
+        sqrt_one_minus_alpha_bars : torch.Tensor
+            Square root of (1 - alpha_bars), shape (num_steps,).
         """
         alphas = 1 - betas
         alpha_bars = torch.cumprod(alphas, dim=0)
@@ -390,8 +290,8 @@ class HyperParamsDDPM(nn.Module):
         Ensures that trainable beta values remain within the specified range
         [beta_start, beta_end] by clamping them in-place.
 
-        Notes
-        -----
+        **Notes**
+
         This method only applies when `trainable_beta` is True.
         """
         if self.trainable_beta:
@@ -447,54 +347,6 @@ class TrainDDPM(nn.Module):
         Range for clamping generated images (default: (-1, 1)).
     normalize_output : bool, optional
         Whether to normalize generated images to [0, 1] for metrics (default: True).
-
-    Attributes
-    ----------
-    device : torch.device
-        Device used for computation.
-    noise_predictor : nn.Module
-        Noise prediction model.
-    hyper_params : nn.Module
-        Hyperparameter module for the noise schedule.
-    conditional_model : nn.Module or None
-        Conditional model for text-based training, if provided.
-    metrics_ : Metrics or None
-        Metrics object for evaluation.
-    optimizer : torch.optim.Optimizer
-        Optimizer for training.
-    objective : callable
-        Loss function for training.
-    store_path : str
-        Path for saving checkpoints.
-    data_loader : torch.utils.data.DataLoader
-        Training data loader.
-    val_loader : torch.utils.data.DataLoader or None
-        Validation data loader, if provided.
-    max_epoch : int
-        Maximum training epochs.
-    max_length : int
-        Maximum length for tokenized prompts.
-    patience : int
-        Patience for early stopping.
-    scheduler : torch.optim.lr_scheduler.ReduceLROnPlateau
-        Learning rate scheduler based on validation or training loss.
-    forward_diffusion : ForwardDDPM
-        Forward diffusion module.
-    warmup_lr_scheduler : torch.optim.lr_scheduler.LambdaLR
-        Learning rate scheduler for warmup.
-    val_frequency : int
-        Frequency for validation.
-    tokenizer : BertTokenizer
-        Tokenizer for text prompts.
-    output_range : tuple
-        Output range for generated images.
-    normalize_output : bool
-        Whether to normalize output.
-
-    Raises
-    ------
-    ValueError
-        If the default tokenizer ("bert-base-uncased") fails to load and no tokenizer is provided.
     """
     def __init__(self, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, metrics_=None, tokenizer=None, max_length=77,
@@ -539,25 +391,10 @@ class TrainDDPM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - epoch: The epoch at which the checkpoint was saved (int).
-            - loss: The loss at the checkpoint (float).
-
-        Raises
-        ------
-        FileNotFoundError
-            If the checkpoint file is not found.
-        KeyError
-            If the checkpoint is missing required keys ('model_state_dict_noise_predictor'
-            or 'optimizer_state_dict').
-
-        Warns
-        -----
-        warnings.warn
-            If the optimizer state cannot be loaded, if the checkpoint contains a
-            conditional model state but none is defined, or if no conditional model
-            state is provided when expected.
+        epoch : int
+            The epoch at which the checkpoint was saved.
+        loss : float
+             The loss at the checkpoint.
         """
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -611,8 +448,7 @@ class TrainDDPM(nn.Module):
 
         Returns
         -------
-        torch.optim.lr_scheduler.LambdaLR
-            Learning rate scheduler for warmup.
+        lr_scheduler (torch.optim.lr_scheduler.LambdaLR) - Learning rate scheduler for warmup.
         """
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
@@ -630,15 +466,10 @@ class TrainDDPM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - train_losses: List of mean training losses per epoch (list of float).
-            - best_val_loss: Best validation or training loss achieved (float).
-
-        Notes
-        -----
-        - Checkpoints are saved when the validation (or training) loss improves, and on early stopping.
-        - Early stopping is triggered if no improvement occurs for `patience` epochs.
+        train_losses : list of float
+             List of mean training losses per epoch.
+        best_val_loss : float
+             Best validation or training loss achieved.
         """
         self.noise_predictor.train()
         if self.conditional_model is not None:
@@ -759,14 +590,18 @@ class TrainDDPM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - val_loss: Mean validation loss (float).
-            - fid: Mean FID score (float, or `float('inf')` if not computed).
-            - mse: Mean MSE (float, or None if not computed).
-            - psnr: Mean PSNR (float, or None if not computed).
-            - ssim: Mean SSIM (float, or None if not computed).
-            - lpips_score: Mean LPIPS score (float, or None if not computed).
+        val_loss : float
+            Mean validation loss.
+        fid : float, or `float('inf')` if not computed
+            Mean FID score.
+        mse : float, or None if not computed
+            Mean MSE
+        psnr : float, or None if not computed
+             Mean PSNR
+        ssim : float, or None if not computed
+            Mean SSIM
+        lpips_score :  float, or None if not computed
+            Mean LPIPS score
         """
         self.noise_predictor.eval()
         if self.conditional_model is not None:
@@ -872,35 +707,6 @@ class SampleDDPM(nn.Module):
         Device for computation (default: CUDA if available, else CPU).
     output_range : tuple, optional
         Tuple of (min, max) for clamping generated images (default: (-1, 1)).
-
-    Attributes
-    ----------
-    device : torch.device
-        Device used for computation.
-    reverse : nn.Module
-        Reverse diffusion module.
-    noise_predictor : nn.Module
-        Noise prediction model.
-    conditional_model : nn.Module or None
-        Conditional model for text-based generation, if provided.
-    tokenizer : BertTokenizer
-        Tokenizer for processing text prompts.
-    max_length : int
-        Maximum length for tokenized prompts.
-    in_channels : int
-        Number of input channels.
-    image_shape : tuple
-        Shape of generated images (height, width).
-    batch_size : int
-        Batch size for generation.
-    output_range : tuple
-        Range for clamping generated images.
-
-    Raises
-    ------
-    ValueError
-        If `image_shape` is not a tuple of two positive integers, `batch_size` is not
-        positive, or `output_range` is not a valid (min, max) tuple with min < max.
     """
     def __init__(self, reverse_diffusion, noise_predictor, image_shape, conditional_model=None, tokenizer="bert-base-uncased",
                  max_length=77, batch_size=1, in_channels=3, device=None, output_range=(-1, 1)):
@@ -937,15 +743,10 @@ class SampleDDPM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - input_ids: Tokenized input IDs, shape (batch_size, max_length).
-            - attention_mask: Attention mask, shape (batch_size, max_length).
-
-        Raises
-        ------
-        TypeError
-            If `prompts` is not a string or a list of strings.
+        input_ids : torch.Tensor
+             Tokenized input IDs, shape (batch_size, max_length).
+        attention_mask : torch.Tensor
+            Attention mask, shape (batch_size, max_length).
         """
         if isinstance(prompts, str):
             prompts = [prompts]
@@ -980,18 +781,8 @@ class SampleDDPM(nn.Module):
 
         Returns
         -------
-        torch.Tensor
-            Generated images, shape (batch_size, in_channels, height, width).
-            If `normalize_output` is True, images are normalized to [0, 1]; otherwise,
-            they are clamped to `output_range`.
-
-        Raises
-        ------
-        ValueError
-            If `conditions` is provided but no conditional model is specified, or if
-            a conditional model is specified but `conditions` is None.
+        generated_imgs (torch.Tensor) - Generated images, shape (batch_size, in_channels, height, width). If `normalize_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `output_range`.
         """
-
         if conditions is not None and self.conditional_model is None:
             raise ValueError("Conditions provided but no conditional model specified")
         if conditions is None and self.conditional_model is not None:
@@ -1044,8 +835,7 @@ class SampleDDPM(nn.Module):
 
         Returns
         -------
-        SampleDDPM
-            The module itself, moved to the specified device.
+        sample_ddpm (SampleDDPM) - moved to the specified device.
         """
         self.device = device
         self.noise_predictor.to(device)
