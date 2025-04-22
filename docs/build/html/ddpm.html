@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>DDPM &#8212; TorchDiff 1.0.0 documentation</title>
+    <title>ddpm &#8212; TorchDiff 1.0.0 documentation</title>
   
   
   
@@ -44,7 +44,7 @@
     <script>DOCUMENTATION_OPTIONS.pagename = 'ddpm';</script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="DDIM" href="ddim.html" />
+    <link rel="next" title="ddim" href="ddim.html" />
     <link rel="prev" title="Welcome to TorchDiff’s Documentation" href="index.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -126,35 +126,35 @@
     
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="#">
-    DDPM
+    ddpm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddim.html">
-    DDIM
+    ddim
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="sde.html">
-    SDE
+    sde
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ldm.html">
-    LDM
+    ldm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="utils.html">
-    Utils
+    utils
   </a>
 </li>
 
@@ -233,35 +233,35 @@
     
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="#">
-    DDPM
+    ddpm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddim.html">
-    DDIM
+    ddim
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="sde.html">
-    SDE
+    sde
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ldm.html">
-    LDM
+    ldm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="utils.html">
-    Utils
+    utils
   </a>
 </li>
 
@@ -331,7 +331,7 @@
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">DDPM</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">ddpm</span></li>
   </ul>
 </nav>
 </div>
@@ -349,7 +349,7 @@
                 <article class="bd-article">
                   
   <section id="ddpm">
-<span id="id1"></span><h1>DDPM<a class="headerlink" href="#ddpm" title="Link to this heading">#</a></h1>
+<span id="id1"></span><h1>ddpm<a class="headerlink" href="#ddpm" title="Link to this heading">#</a></h1>
 <p id="module-torchdiff.ddpm"><strong>Denoising Diffusion Probabilistic Models (DDPM) implementation</strong></p>
 <p>This module provides a complete implementation of DDPM, as described in Ho et al.
 (2020, “Denoising Diffusion Probabilistic Models”). It includes components for forward
@@ -383,6 +383,7 @@ hyperparameters.</p>
 attributes: <cite>num_steps</cite>, <cite>trainable_beta</cite>, <cite>betas</cite>, <cite>sqrt_alpha_bars</cite>, <cite>sqrt_one_minus_alpha_bars</cite>, <cite>compute_schedule</cite>.</p>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.ddpm.ForwardDDPM.forward">
 <span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_steps</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#ForwardDDPM.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.ForwardDDPM.forward" title="Link to this definition">#</a></dt>
@@ -402,6 +403,46 @@ is in the range [0, hyper_params.num_steps - 1].</p></li>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
 <dd class="field-even"><p>xt (torch.Tensor) - Noisy data tensor <cite>xt</cite> at the specified time steps, with the same shape as <cite>x0</cite>.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.ddpm.ReverseDDPM">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.ddpm.</span></span><span class="sig-name descname"><span class="pre">ReverseDDPM</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hyper_params</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#ReverseDDPM"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.ReverseDDPM" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Reverse diffusion process for Denoising Diffusion Probabilistic Models (DDPM).</p>
+<p>Implements the reverse diffusion process for DDPM, which iteratively denoises a
+noisy input <cite>xt</cite> using a predicted noise component, as defined in Ho et al. (2020).
+The process relies on a noise schedule that can be either fixed or trainable,
+specified through the provided hyperparameters.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>hyper_params</strong> (<em>object</em>) – Hyperparameter object (HyperParamsDDPM) containing the noise schedule parameters. Expected to have
+attributes: <cite>num_steps</cite>, <cite>trainable_beta</cite>, <cite>betas</cite>, <cite>alphas</cite>, <cite>alpha_bars</cite>, <cite>compute_schedule</cite>.</p>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.ddpm.ReverseDDPM.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">xt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">predicted_noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_steps</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#ReverseDDPM.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.ReverseDDPM.forward" title="Link to this definition">#</a></dt>
+<dd><p>Applies the reverse diffusion process to the noisy input.</p>
+<p>Denoises the input <cite>xt</cite> by computing the mean of the reverse process
+distribution using the predicted noise and optionally adding stochastic noise
+for time steps greater than 0, as per the DDPM reverse process.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>xt</strong> (<em>torch.Tensor</em>) – Noisy input tensor at time step <cite>t</cite>, of shape (batch_size, channels, height, width).</p></li>
+<li><p><strong>predicted_noise</strong> (<em>torch.Tensor</em>) – Predicted noise tensor, of the same shape as <cite>xt</cite>, typically output by a neural network.</p></li>
+<li><p><strong>time_steps</strong> (<em>torch.Tensor</em>) – Tensor of time step indices (long), shape (batch_size,), where each value
+is in the range [0, hyper_params.num_steps - 1].</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>xt_minus_1 (torch.Tensor) - Denoised tensor <cite>xt_minus_1</cite> at time step <cite>t-1</cite>, with the same shape as <cite>xt</cite>. For time_steps == 0, returns the mean of the reverse process without added noise.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -429,6 +470,7 @@ Supported methods: “linear”, “sigmoid”, “quadratic”, “constant”,
 </ul>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.ddpm.HyperParamsDDPM.compute_beta_schedule">
 <span class="sig-name descname"><span class="pre">compute_beta_schedule</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">beta_range</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_steps</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">method</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#HyperParamsDDPM.compute_beta_schedule"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.HyperParamsDDPM.compute_beta_schedule" title="Link to this definition">#</a></dt>
@@ -486,38 +528,115 @@ from the provided beta values, as used in the DDPM forward and reverse processes
 </dd></dl>
 
 <dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.ddpm.ReverseDDPM">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.ddpm.</span></span><span class="sig-name descname"><span class="pre">ReverseDDPM</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hyper_params</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#ReverseDDPM"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.ReverseDDPM" title="Link to this definition">#</a></dt>
+<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.ddpm.</span></span><span class="sig-name descname"><span class="pre">TrainDDPM</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">noise_predictor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hyper_params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">data_loader</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">optimizer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">objective</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">val_loader</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_epoch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">conditional_model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metrics_</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tokenizer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_length</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">77</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">store_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patience</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmup_epochs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">val_frequency</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-1,</span> <span class="pre">1)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normalize_output</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Reverse diffusion process for Denoising Diffusion Probabilistic Models (DDPM).</p>
-<p>Implements the reverse diffusion process for DDPM, which iteratively denoises a
-noisy input <cite>xt</cite> using a predicted noise component, as defined in Ho et al. (2020).
-The process relies on a noise schedule that can be either fixed or trainable,
-specified through the provided hyperparameters.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>hyper_params</strong> (<em>object</em>) – Hyperparameter object (HyperParamsDDPM) containing the noise schedule parameters. Expected to have
-attributes: <cite>num_steps</cite>, <cite>trainable_beta</cite>, <cite>betas</cite>, <cite>alphas</cite>, <cite>alpha_bars</cite>, <cite>compute_schedule</cite>.</p>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.ddpm.ReverseDDPM.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">xt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">predicted_noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_steps</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#ReverseDDPM.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.ReverseDDPM.forward" title="Link to this definition">#</a></dt>
-<dd><p>Applies the reverse diffusion process to the noisy input.</p>
-<p>Denoises the input <cite>xt</cite> by computing the mean of the reverse process
-distribution using the predicted noise and optionally adding stochastic noise
-for time steps greater than 0, as per the DDPM reverse process.</p>
+<p>Trainer for Denoising Diffusion Probabilistic Models (DDPM).</p>
+<p>Manages the training process for DDPM, optimizing a noise predictor model to learn
+the noise added by the forward diffusion process. Supports conditional training with
+text prompts, mixed precision training, learning rate scheduling, early stopping, and
+checkpointing, as inspired by Ho et al. (2020).</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>xt</strong> (<em>torch.Tensor</em>) – Noisy input tensor at time step <cite>t</cite>, of shape (batch_size, channels, height, width).</p></li>
-<li><p><strong>predicted_noise</strong> (<em>torch.Tensor</em>) – Predicted noise tensor, of the same shape as <cite>xt</cite>, typically output by a neural network.</p></li>
-<li><p><strong>time_steps</strong> (<em>torch.Tensor</em>) – Tensor of time step indices (long), shape (batch_size,), where each value
-is in the range [0, hyper_params.num_steps - 1].</p></li>
+<li><p><strong>noise_predictor</strong> (<em>nn.Module</em>) – Model to predict noise added during the forward diffusion process.</p></li>
+<li><p><strong>hyper_params</strong> (<em>nn.Module</em>) – Hyperparameter module (e.g., HyperParamsDDPM) defining the noise schedule.</p></li>
+<li><p><strong>data_loader</strong> (<em>torch.utils.data.DataLoader</em>) – DataLoader for training data.</p></li>
+<li><p><strong>optimizer</strong> (<em>torch.optim.Optimizer</em>) – Optimizer for training the noise predictor and conditional model (if applicable).</p></li>
+<li><p><strong>objective</strong> (<em>callable</em>) – Loss function to compute the difference between predicted and actual noise.</p></li>
+<li><p><strong>val_loader</strong> (<em>torch.utils.data.DataLoader</em><em>, </em><em>optional</em>) – DataLoader for validation data, default None.</p></li>
+<li><p><strong>max_epoch</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum number of training epochs (default: 1000).</p></li>
+<li><p><strong>device</strong> (<em>torch.device</em><em>, </em><em>optional</em>) – Device for computation (default: CUDA if available, else CPU).</p></li>
+<li><p><strong>conditional_model</strong> (<em>nn.Module</em><em>, </em><em>optional</em>) – Model for conditional generation (e.g., text embeddings), default None.</p></li>
+<li><p><strong>metrics</strong> (<em>object</em><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
+<li><p><strong>tokenizer</strong> (<em>BertTokenizer</em><em>, </em><em>optional</em>) – Tokenizer for processing text prompts, default None (loads “bert-base-uncased”).</p></li>
+<li><p><strong>max_length</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum length for tokenized prompts (default: 77).</p></li>
+<li><p><strong>store_path</strong> (<em>str</em><em>, </em><em>optional</em>) – Path to save model checkpoints (default: “ddpm_model.pth”).</p></li>
+<li><p><strong>patience</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs to wait for improvement before early stopping (default: 100).</p></li>
+<li><p><strong>warmup_epochs</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs for learning rate warmup (default: 100).</p></li>
+<li><p><strong>val_frequency</strong> (<em>int</em><em>, </em><em>optional</em>) – Frequency (in epochs) for validation (default: 10).</p></li>
+<li><p><strong>output_range</strong> (<em>tuple</em><em>, </em><em>optional</em>) – Range for clamping generated images (default: (-1, 1)).</p></li>
+<li><p><strong>normalize_output</strong> (<em>bool</em><em>, </em><em>optional</em>) – Whether to normalize generated images to [0, 1] for metrics (default: True).</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM.load_checkpoint">
+<span class="sig-name descname"><span class="pre">load_checkpoint</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">checkpoint_path</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM.load_checkpoint"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM.load_checkpoint" title="Link to this definition">#</a></dt>
+<dd><p>Loads a training checkpoint to resume training.</p>
+<p>Restores the state of the noise predictor, conditional model (if applicable),
+and optimizer from a saved checkpoint.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>checkpoint_path</strong> (<em>str</em>) – Path to the checkpoint file.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><ul class="simple">
+<li><p><strong>epoch</strong> (<em>int</em>) – The epoch at which the checkpoint was saved.</p></li>
+<li><p><strong>loss</strong> (<em>float</em>) – The loss at the checkpoint.</p></li>
+</ul>
+</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM.warmup_scheduler">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">warmup_scheduler</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">optimizer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmup_epochs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM.warmup_scheduler"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM.warmup_scheduler" title="Link to this definition">#</a></dt>
+<dd><p>Creates a learning rate scheduler for warmup.</p>
+<p>Generates a scheduler that linearly increases the learning rate from 0 to the
+optimizer’s initial value over the specified warmup epochs, then maintains it.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>optimizer</strong> (<em>torch.optim.Optimizer</em>) – Optimizer to apply the scheduler to.</p></li>
+<li><p><strong>warmup_epochs</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs for the warmup phase.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>xt_minus_1 (torch.Tensor) - Denoised tensor <cite>xt_minus_1</cite> at time step <cite>t-1</cite>, with the same shape as <cite>xt</cite>. For time_steps == 0, returns the mean of the reverse process without added noise.</p>
+<dd class="field-even"><p>lr_scheduler (torch.optim.lr_scheduler.LambdaLR) - Learning rate scheduler for warmup.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM.forward" title="Link to this definition">#</a></dt>
+<dd><p>Trains the DDPM model to predict noise added by the forward diffusion process.</p>
+<p>Executes the training loop, optimizing the noise predictor and conditional model
+(if applicable) using mixed precision, gradient clipping, and learning rate
+scheduling. Supports validation, early stopping, and checkpointing.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><ul class="simple">
+<li><p><strong>train_losses</strong> (<em>list of float</em>) – List of mean training losses per epoch.</p></li>
+<li><p><strong>best_val_loss</strong> (<em>float</em>) – Best validation or training loss achieved.</p></li>
+</ul>
+</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM.validate">
+<span class="sig-name descname"><span class="pre">validate</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM.validate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM.validate" title="Link to this definition">#</a></dt>
+<dd><p>Validates the noise predictor and computes evaluation Metrics.</p>
+<p>Computes validation loss (MSE between predicted and ground truth noise) and generates
+samples using the reverse diffusion model by manually iterating over timesteps.
+Decodes samples to images and computes image-domain Metrics (MSE, PSNR, SSIM, FID, LPIPS)
+if <a href="#id2"><span class="problematic" id="id3">metrics_</span></a> is provided.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><ul class="simple">
+<li><p><strong>val_loss</strong> (<em>float</em>) – Mean validation loss.</p></li>
+<li><p><strong>fid</strong> (float, or <cite>float(‘inf’)</cite> if not computed) – Mean FID score.</p></li>
+<li><p><strong>mse</strong> (<em>float, or None if not computed</em>) – Mean MSE</p></li>
+<li><p><strong>psnr</strong> (<em>float, or None if not computed</em>) – Mean PSNR</p></li>
+<li><p><strong>ssim</strong> (<em>float, or None if not computed</em>) – Mean SSIM</p></li>
+<li><p><strong>lpips_score</strong> (<em>float, or None if not computed</em>) – Mean LPIPS score</p></li>
+</ul>
+</p>
 </dd>
 </dl>
 </dd></dl>
@@ -549,6 +668,27 @@ model, as inspired by Ho et al. (2020).</p>
 </ul>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.ddpm.SampleDDPM.tokenize">
+<span class="sig-name descname"><span class="pre">tokenize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">prompts</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#SampleDDPM.tokenize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.SampleDDPM.tokenize" title="Link to this definition">#</a></dt>
+<dd><p>Tokenizes text prompts for conditional generation.</p>
+<p>Converts input prompts into tokenized input IDs and attention masks using the
+specified tokenizer, suitable for use with the conditional model.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>prompts</strong> (<em>str</em><em> or </em><em>list</em>) – A single text prompt or a list of text prompts.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><ul class="simple">
+<li><p><strong>input_ids</strong> (<em>torch.Tensor</em>) – Tokenized input IDs, shape (batch_size, max_length).</p></li>
+<li><p><strong>attention_mask</strong> (<em>torch.Tensor</em>) – Attention mask, shape (batch_size, max_length).</p></li>
+</ul>
+</p>
+</dd>
+</dl>
+</dd></dl>
+
 <dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.ddpm.SampleDDPM.forward">
 <span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">conditions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normalize_output</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_images</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'ddpm_generated'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#SampleDDPM.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.SampleDDPM.forward" title="Link to this definition">#</a></dt>
@@ -587,141 +727,6 @@ and conditional model (if present) to the specified device.</p>
 </dl>
 </dd></dl>
 
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.ddpm.SampleDDPM.tokenize">
-<span class="sig-name descname"><span class="pre">tokenize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">prompts</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#SampleDDPM.tokenize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.SampleDDPM.tokenize" title="Link to this definition">#</a></dt>
-<dd><p>Tokenizes text prompts for conditional generation.</p>
-<p>Converts input prompts into tokenized input IDs and attention masks using the
-specified tokenizer, suitable for use with the conditional model.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>prompts</strong> (<em>str</em><em> or </em><em>list</em>) – A single text prompt or a list of text prompts.</p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p><ul class="simple">
-<li><p><strong>input_ids</strong> (<em>torch.Tensor</em>) – Tokenized input IDs, shape (batch_size, max_length).</p></li>
-<li><p><strong>attention_mask</strong> (<em>torch.Tensor</em>) – Attention mask, shape (batch_size, max_length).</p></li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.ddpm.</span></span><span class="sig-name descname"><span class="pre">TrainDDPM</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">noise_predictor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hyper_params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">data_loader</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">optimizer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">objective</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">val_loader</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_epoch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">conditional_model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metrics_</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tokenizer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_length</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">77</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">store_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patience</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmup_epochs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">val_frequency</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-1,</span> <span class="pre">1)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normalize_output</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Trainer for Denoising Diffusion Probabilistic Models (DDPM).</p>
-<p>Manages the training process for DDPM, optimizing a noise predictor model to learn
-the noise added by the forward diffusion process. Supports conditional training with
-text prompts, mixed precision training, learning rate scheduling, early stopping, and
-checkpointing, as inspired by Ho et al. (2020).</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>noise_predictor</strong> (<em>nn.Module</em>) – Model to predict noise added during the forward diffusion process.</p></li>
-<li><p><strong>hyper_params</strong> (<em>nn.Module</em>) – Hyperparameter module (e.g., HyperParamsDDPM) defining the noise schedule.</p></li>
-<li><p><strong>data_loader</strong> (<em>torch.utils.data.DataLoader</em>) – DataLoader for training data.</p></li>
-<li><p><strong>optimizer</strong> (<em>torch.optim.Optimizer</em>) – Optimizer for training the noise predictor and conditional model (if applicable).</p></li>
-<li><p><strong>objective</strong> (<em>callable</em>) – Loss function to compute the difference between predicted and actual noise.</p></li>
-<li><p><strong>val_loader</strong> (<em>torch.utils.data.DataLoader</em><em>, </em><em>optional</em>) – DataLoader for validation data, default None.</p></li>
-<li><p><strong>max_epoch</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum number of training epochs (default: 1000).</p></li>
-<li><p><strong>device</strong> (<em>torch.device</em><em>, </em><em>optional</em>) – Device for computation (default: CUDA if available, else CPU).</p></li>
-<li><p><strong>conditional_model</strong> (<em>nn.Module</em><em>, </em><em>optional</em>) – Model for conditional generation (e.g., text embeddings), default None.</p></li>
-<li><p><strong>metrics</strong> (<em>object</em><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
-<li><p><strong>tokenizer</strong> (<em>BertTokenizer</em><em>, </em><em>optional</em>) – Tokenizer for processing text prompts, default None (loads “bert-base-uncased”).</p></li>
-<li><p><strong>max_length</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum length for tokenized prompts (default: 77).</p></li>
-<li><p><strong>store_path</strong> (<em>str</em><em>, </em><em>optional</em>) – Path to save model checkpoints (default: “ddpm_model.pth”).</p></li>
-<li><p><strong>patience</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs to wait for improvement before early stopping (default: 100).</p></li>
-<li><p><strong>warmup_epochs</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs for learning rate warmup (default: 100).</p></li>
-<li><p><strong>val_frequency</strong> (<em>int</em><em>, </em><em>optional</em>) – Frequency (in epochs) for validation (default: 10).</p></li>
-<li><p><strong>output_range</strong> (<em>tuple</em><em>, </em><em>optional</em>) – Range for clamping generated images (default: (-1, 1)).</p></li>
-<li><p><strong>normalize_output</strong> (<em>bool</em><em>, </em><em>optional</em>) – Whether to normalize generated images to [0, 1] for metrics (default: True).</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM.forward" title="Link to this definition">#</a></dt>
-<dd><p>Trains the DDPM model to predict noise added by the forward diffusion process.</p>
-<p>Executes the training loop, optimizing the noise predictor and conditional model
-(if applicable) using mixed precision, gradient clipping, and learning rate
-scheduling. Supports validation, early stopping, and checkpointing.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p><ul class="simple">
-<li><p><strong>train_losses</strong> (<em>list of float</em>) – List of mean training losses per epoch.</p></li>
-<li><p><strong>best_val_loss</strong> (<em>float</em>) – Best validation or training loss achieved.</p></li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM.load_checkpoint">
-<span class="sig-name descname"><span class="pre">load_checkpoint</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">checkpoint_path</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM.load_checkpoint"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM.load_checkpoint" title="Link to this definition">#</a></dt>
-<dd><p>Loads a training checkpoint to resume training.</p>
-<p>Restores the state of the noise predictor, conditional model (if applicable),
-and optimizer from a saved checkpoint.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>checkpoint_path</strong> (<em>str</em>) – Path to the checkpoint file.</p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p><ul class="simple">
-<li><p><strong>epoch</strong> (<em>int</em>) – The epoch at which the checkpoint was saved.</p></li>
-<li><p><strong>loss</strong> (<em>float</em>) – The loss at the checkpoint.</p></li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM.validate">
-<span class="sig-name descname"><span class="pre">validate</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM.validate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM.validate" title="Link to this definition">#</a></dt>
-<dd><p>Validates the noise predictor and computes evaluation metrics.</p>
-<p>Computes validation loss (MSE between predicted and ground truth noise) and generates
-samples using the reverse diffusion model by manually iterating over timesteps.
-Decodes samples to images and computes image-domain metrics (MSE, PSNR, SSIM, FID, LPIPS)
-if <a href="#id2"><span class="problematic" id="id3">metrics_</span></a> is provided.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p><ul class="simple">
-<li><p><strong>val_loss</strong> (<em>float</em>) – Mean validation loss.</p></li>
-<li><p><strong>fid</strong> (float, or <cite>float(‘inf’)</cite> if not computed) – Mean FID score.</p></li>
-<li><p><strong>mse</strong> (<em>float, or None if not computed</em>) – Mean MSE</p></li>
-<li><p><strong>psnr</strong> (<em>float, or None if not computed</em>) – Mean PSNR</p></li>
-<li><p><strong>ssim</strong> (<em>float, or None if not computed</em>) – Mean SSIM</p></li>
-<li><p><strong>lpips_score</strong> (<em>float, or None if not computed</em>) – Mean LPIPS score</p></li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.ddpm.TrainDDPM.warmup_scheduler">
-<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">warmup_scheduler</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">optimizer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmup_epochs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/ddpm.html#TrainDDPM.warmup_scheduler"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.ddpm.TrainDDPM.warmup_scheduler" title="Link to this definition">#</a></dt>
-<dd><p>Creates a learning rate scheduler for warmup.</p>
-<p>Generates a scheduler that linearly increases the learning rate from 0 to the
-optimizer’s initial value over the specified warmup epochs, then maintains it.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>optimizer</strong> (<em>torch.optim.Optimizer</em>) – Optimizer to apply the scheduler to.</p></li>
-<li><p><strong>warmup_epochs</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs for the warmup phase.</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>lr_scheduler (torch.optim.lr_scheduler.LambdaLR) - Learning rate scheduler for warmup.</p>
-</dd>
-</dl>
-</dd></dl>
-
 </dd></dl>
 
 </section>
@@ -750,7 +755,7 @@ optimizer’s initial value over the specified warmup epochs, then maintains it.
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">DDIM</p>
+        <p class="prev-next-title">ddim</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -777,27 +782,27 @@ optimizer’s initial value over the specified warmup epochs, then maintains it.
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.ForwardDDPM.forward"><code class="docutils literal notranslate"><span class="pre">ForwardDDPM.forward()</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.ReverseDDPM"><code class="docutils literal notranslate"><span class="pre">ReverseDDPM</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.ReverseDDPM.forward"><code class="docutils literal notranslate"><span class="pre">ReverseDDPM.forward()</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.HyperParamsDDPM"><code class="docutils literal notranslate"><span class="pre">HyperParamsDDPM</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.HyperParamsDDPM.compute_beta_schedule"><code class="docutils literal notranslate"><span class="pre">HyperParamsDDPM.compute_beta_schedule()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.HyperParamsDDPM.compute_schedule"><code class="docutils literal notranslate"><span class="pre">HyperParamsDDPM.compute_schedule()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.HyperParamsDDPM.constrain_betas"><code class="docutils literal notranslate"><span class="pre">HyperParamsDDPM.constrain_betas()</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.ReverseDDPM"><code class="docutils literal notranslate"><span class="pre">ReverseDDPM</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.ReverseDDPM.forward"><code class="docutils literal notranslate"><span class="pre">ReverseDDPM.forward()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM"><code class="docutils literal notranslate"><span class="pre">TrainDDPM</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM.load_checkpoint"><code class="docutils literal notranslate"><span class="pre">TrainDDPM.load_checkpoint()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM.warmup_scheduler"><code class="docutils literal notranslate"><span class="pre">TrainDDPM.warmup_scheduler()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM.forward"><code class="docutils literal notranslate"><span class="pre">TrainDDPM.forward()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM.validate"><code class="docutils literal notranslate"><span class="pre">TrainDDPM.validate()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.SampleDDPM"><code class="docutils literal notranslate"><span class="pre">SampleDDPM</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.SampleDDPM.tokenize"><code class="docutils literal notranslate"><span class="pre">SampleDDPM.tokenize()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.SampleDDPM.forward"><code class="docutils literal notranslate"><span class="pre">SampleDDPM.forward()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.SampleDDPM.to"><code class="docutils literal notranslate"><span class="pre">SampleDDPM.to()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.SampleDDPM.tokenize"><code class="docutils literal notranslate"><span class="pre">SampleDDPM.tokenize()</span></code></a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM"><code class="docutils literal notranslate"><span class="pre">TrainDDPM</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM.forward"><code class="docutils literal notranslate"><span class="pre">TrainDDPM.forward()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM.load_checkpoint"><code class="docutils literal notranslate"><span class="pre">TrainDDPM.load_checkpoint()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM.validate"><code class="docutils literal notranslate"><span class="pre">TrainDDPM.validate()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.ddpm.TrainDDPM.warmup_scheduler"><code class="docutils literal notranslate"><span class="pre">TrainDDPM.warmup_scheduler()</span></code></a></li>
 </ul>
 </li>
 </ul>

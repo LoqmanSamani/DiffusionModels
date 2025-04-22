@@ -1,6 +1,6 @@
 .. _utils:
 
-Utils
+utils
 =====
 
 .. automodule:: torchdiff.utils

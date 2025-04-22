@@ -1,6 +1,6 @@
 .. _ldm:
 
-LDM
+ldm
 =====
 
 .. automodule:: torchdiff.ldm

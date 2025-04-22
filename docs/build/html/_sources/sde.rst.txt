@@ -1,6 +1,6 @@
 .. _sde:
 
-SDE
+sde
 =====
 
 .. automodule:: torchdiff.sde

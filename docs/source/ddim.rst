@@ -1,6 +1,6 @@
 .. _ddim:
 
-DDIM
+ddim
 =====
 
 .. automodule:: torchdiff.ddim

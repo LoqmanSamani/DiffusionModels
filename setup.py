@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="torchdiff",
+    name="TorchDiff",
     version="1.0.0",
     description="A PyTorch-based library for diffusion models",
     long_description=open("README.md").read(),

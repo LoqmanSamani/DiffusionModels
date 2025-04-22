@@ -634,11 +634,11 @@ class TrainSDE(nn.Module):
         return train_losses, best_val_loss
 
     def validate(self):
-        """Validates the noise predictor and computes evaluation metrics.
+        """Validates the noise predictor and computes evaluation Metrics.
 
         Computes validation loss (MSE between predicted and ground truth noise) and generates
         samples using the reverse diffusion model by manually iterating over timesteps.
-        Decodes samples to images and computes image-domain metrics (MSE, PSNR, SSIM, FID, LPIPS)
+        Decodes samples to images and computes image-domain Metrics (MSE, PSNR, SSIM, FID, LPIPS)
         if metrics_ is provided.
 
         Returns

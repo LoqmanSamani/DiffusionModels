@@ -1,5 +1,5 @@
-sphinx
-pydata_sphinx_theme
+sphinx==8.2.3
+pydata-sphinx-theme>=0.15.4
 lpips==0.1.4
 pytorch-fid==0.3.0
 torch==2.6.0

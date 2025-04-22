@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>SDE &#8212; TorchDiff 1.0.0 documentation</title>
+    <title>sde &#8212; TorchDiff 1.0.0 documentation</title>
   
   
   
@@ -44,8 +44,8 @@
     <script>DOCUMENTATION_OPTIONS.pagename = 'sde';</script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="LDM" href="ldm.html" />
-    <link rel="prev" title="DDIM" href="ddim.html" />
+    <link rel="next" title="ldm" href="ldm.html" />
+    <link rel="prev" title="ddim" href="ddim.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -126,35 +126,35 @@
     
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddpm.html">
-    DDPM
+    ddpm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddim.html">
-    DDIM
+    ddim
   </a>
 </li>
 
 
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="#">
-    SDE
+    sde
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ldm.html">
-    LDM
+    ldm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="utils.html">
-    Utils
+    utils
   </a>
 </li>
 
@@ -233,35 +233,35 @@
     
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddpm.html">
-    DDPM
+    ddpm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddim.html">
-    DDIM
+    ddim
   </a>
 </li>
 
 
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="#">
-    SDE
+    sde
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ldm.html">
-    LDM
+    ldm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="utils.html">
-    Utils
+    utils
   </a>
 </li>
 
@@ -331,7 +331,7 @@
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">SDE</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">sde</span></li>
   </ul>
 </nav>
 </div>
@@ -349,7 +349,7 @@
                 <article class="bd-article">
                   
   <section id="sde">
-<span id="id1"></span><h1>SDE<a class="headerlink" href="#sde" title="Link to this heading">#</a></h1>
+<span id="id1"></span><h1>sde<a class="headerlink" href="#sde" title="Link to this heading">#</a></h1>
 <p id="module-torchdiff.sde"><strong>Score-Based Generative Modeling with Stochastic Differential Equations (SDE)</strong></p>
 <p>This module implements a complete framework for score-based generative models using SDEs,
 as described in Song et al. (2021, “Score-Based Generative Modeling through Stochastic
@@ -390,6 +390,7 @@ attributes: <cite>dt</cite>, <cite>sigmas</cite>, <cite>betas</cite>, <cite>cum_
 </ul>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.sde.ForwardSDE.forward">
 <span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_steps</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#ForwardSDE.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.ForwardSDE.forward" title="Link to this definition">#</a></dt>
@@ -407,6 +408,61 @@ is in the range [0, hyper_params.num_steps - 1].</p></li>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
 <dd class="field-even"><p>xt (torch.Tensor) - Noisy data tensor at the specified time steps, same shape as <cite>x0</cite>.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.sde.ReverseSDE">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.sde.</span></span><span class="sig-name descname"><span class="pre">ReverseSDE</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hyper_params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">method</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#ReverseSDE"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.ReverseSDE" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Reverse diffusion process for SDE-based generative models.</p>
+<p>Implements the reverse diffusion process for score-based generative models using
+Stochastic Differential Equations (SDEs), supporting Variance Exploding (VE),
+Variance Preserving (VP), sub-Variance Preserving (sub-VP), and ODE methods, as
+described in Song et al. (2021). The reverse process denoises a noisy input using
+predicted noise estimates.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>hyper_params</strong> (<em>object</em>) – Hyperparameter object (HyperParamsSDE) containing SDE-specific parameters. Expected to have
+attributes: <cite>dt</cite>, <cite>sigmas</cite>, <cite>betas</cite>, <cite>cum_betas</cite>.</p></li>
+<li><p><strong>method</strong> (<em>str</em>) – SDE method to use. Supported methods: “ve”, “vp”, “sub-vp”, “ode”.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.sde.ReverseSDE.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">xt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">predicted_noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_steps</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#ReverseSDE.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.ReverseSDE.forward" title="Link to this definition">#</a></dt>
+<dd><p>Applies the reverse SDE diffusion process to the noisy input.</p>
+<p>Denoises the input <cite>xt</cite> by applying the reverse SDE process, using predicted
+noise estimates and optional stochastic noise, according to the specified SDE
+method at given time steps. Incorporates drift and diffusion terms as applicable.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>xt</strong> (<em>torch.Tensor</em>) – Noisy input tensor at time step <cite>t</cite>, shape (batch_size, channels, height, width).</p></li>
+<li><p><strong>noise</strong> (<em>torch.Tensor</em><em> or </em><em>None</em>) – Gaussian noise tensor, same shape as <cite>xt</cite>, used for stochasticity. If None,
+no stochastic noise is added (e.g., for deterministic ODE).</p></li>
+<li><p><strong>predicted_noise</strong> (<em>torch.Tensor</em>) – Predicted noise tensor, same shape as <cite>xt</cite>, typically output by a neural network.</p></li>
+<li><p><strong>time_steps</strong> (<em>torch.Tensor</em>) – Tensor of time step indices (long), shape (batch_size,), where each value
+is in the range [0, hyper_params.num_steps - 1].</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><ul class="simple">
+<li><p>xt (torch.Tensor) - Denoised tensor at the previous time step, same shape as <cite>xt</cite>.</p></li>
+<li><p><em>**Notes**</em></p></li>
+<li><p><em>- For the “ve” and “ode” methods, the output is clamped to [-1e5, 1e5] to prevent numerical instability.</em></p></li>
+<li><ul>
+<li><p>Stochastic noise (<cite>noise</cite>) is only added if provided and the method supports it (not applicable for “ode” in non-VE cases).</p></li>
+</ul>
+</li>
+</ul>
+</p>
 </dd>
 </dl>
 </dd></dl>
@@ -438,6 +494,7 @@ Supported methods: “linear”, “sigmoid”, “quadratic”, “constant”,
 </ul>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.sde.HyperParamsSDE.compute_beta_schedule">
 <span class="sig-name descname"><span class="pre">compute_beta_schedule</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">beta_range</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_steps</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">method</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#HyperParamsSDE.compute_beta_schedule"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.HyperParamsSDE.compute_beta_schedule" title="Link to this definition">#</a></dt>
@@ -492,51 +549,124 @@ is in the range [0, num_steps - 1].</p></li>
 </dd></dl>
 
 <dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.sde.ReverseSDE">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.sde.</span></span><span class="sig-name descname"><span class="pre">ReverseSDE</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">hyper_params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">method</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#ReverseSDE"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.ReverseSDE" title="Link to this definition">#</a></dt>
+<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.sde.</span></span><span class="sig-name descname"><span class="pre">TrainSDE</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">method</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise_predictor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hyper_params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">data_loader</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">optimizer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">objective</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">val_loader</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_epoch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">conditional_model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metrics_</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tokenizer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_length</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">77</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">store_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patience</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmup_epochs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">val_frequency</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-1,</span> <span class="pre">1)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normalize_output</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Reverse diffusion process for SDE-based generative models.</p>
-<p>Implements the reverse diffusion process for score-based generative models using
-Stochastic Differential Equations (SDEs), supporting Variance Exploding (VE),
-Variance Preserving (VP), sub-Variance Preserving (sub-VP), and ODE methods, as
-described in Song et al. (2021). The reverse process denoises a noisy input using
-predicted noise estimates.</p>
+<p>Trainer for score-based generative models using Stochastic Differential Equations.</p>
+<p>Manages the training process for SDE-based generative models, optimizing a noise
+predictor to learn the noise added by the forward SDE process, as described in Song
+et al. (2021). Supports conditional training with text prompts, mixed precision,
+learning rate scheduling, early stopping, and checkpointing.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>hyper_params</strong> (<em>object</em>) – Hyperparameter object (HyperParamsSDE) containing SDE-specific parameters. Expected to have
-attributes: <cite>dt</cite>, <cite>sigmas</cite>, <cite>betas</cite>, <cite>cum_betas</cite>.</p></li>
-<li><p><strong>method</strong> (<em>str</em>) – SDE method to use. Supported methods: “ve”, “vp”, “sub-vp”, “ode”.</p></li>
+<li><p><strong>method</strong> (<em>str</em>) – SDE method to use for forward diffusion. Supported methods: “ve”, “vp”, “sub-vp”, “ode”.</p></li>
+<li><p><strong>noise_predictor</strong> (<em>nn.Module</em>) – Model to predict noise added during the forward SDE process.</p></li>
+<li><p><strong>hyper_params</strong> (<em>nn.Module</em>) – Hyperparameter module (e.g., HyperParamsSDE) defining the noise schedule and SDE parameters.</p></li>
+<li><p><strong>data_loader</strong> (<em>torch.utils.data.DataLoader</em>) – DataLoader for training data.</p></li>
+<li><p><strong>optimizer</strong> (<em>torch.optim.Optimizer</em>) – Optimizer for training the noise predictor and conditional model (if applicable).</p></li>
+<li><p><strong>objective</strong> (<em>callable</em>) – Loss function to compute the difference between predicted and actual noise.</p></li>
+<li><p><strong>val_loader</strong> (<em>torch.utils.data.DataLoader</em><em>, </em><em>optional</em>) – DataLoader for validation data, default None.</p></li>
+<li><p><strong>max_epoch</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum number of training epochs (default: 1000).</p></li>
+<li><p><strong>device</strong> (<em>torch.device</em><em>, </em><em>optional</em>) – Device for computation (default: CUDA if available, else CPU).</p></li>
+<li><p><strong>conditional_model</strong> (<em>nn.Module</em><em>, </em><em>optional</em>) – Model for conditional generation (e.g., text embeddings), default None.</p></li>
+<li><p><strong>metrics</strong> (<em>object</em><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
+<li><p><strong>tokenizer</strong> (<em>BertTokenizer</em><em>, </em><em>optional</em>) – Tokenizer for processing text prompts, default None (loads “bert-base-uncased”).</p></li>
+<li><p><strong>max_length</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum length for tokenized prompts (default: 77).</p></li>
+<li><p><strong>store_path</strong> (<em>str</em><em>, </em><em>optional</em>) – Path to save model checkpoints (default: “sde_model.pth”).</p></li>
+<li><p><strong>patience</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs to wait for improvement before early stopping (default: 10).</p></li>
+<li><p><strong>warmup_epochs</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs for learning rate warmup (default: 100).</p></li>
+<li><p><strong>val_frequency</strong> (<em>int</em><em>, </em><em>optional</em>) – Frequency (in epochs) for validation (default: 10).</p></li>
+<li><p><strong>output_range</strong> (<em>tuple</em><em>, </em><em>optional</em>) – Range for clamping generated images (default: (-1, 1)).</p></li>
+<li><p><strong>normalize_output</strong> (<em>bool</em><em>, </em><em>optional</em>) – Whether to normalize generated images to [0, 1] for metrics (default: True).</p></li>
 </ul>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
 <dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.sde.ReverseSDE.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">xt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">predicted_noise</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_steps</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#ReverseSDE.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.ReverseSDE.forward" title="Link to this definition">#</a></dt>
-<dd><p>Applies the reverse SDE diffusion process to the noisy input.</p>
-<p>Denoises the input <cite>xt</cite> by applying the reverse SDE process, using predicted
-noise estimates and optional stochastic noise, according to the specified SDE
-method at given time steps. Incorporates drift and diffusion terms as applicable.</p>
+<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE.load_checkpoint">
+<span class="sig-name descname"><span class="pre">load_checkpoint</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">checkpoint_path</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE.load_checkpoint"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE.load_checkpoint" title="Link to this definition">#</a></dt>
+<dd><p>Loads a training checkpoint to resume training.</p>
+<p>Restores the state of the noise predictor, conditional model (if applicable),
+and optimizer from a saved checkpoint.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>xt</strong> (<em>torch.Tensor</em>) – Noisy input tensor at time step <cite>t</cite>, shape (batch_size, channels, height, width).</p></li>
-<li><p><strong>noise</strong> (<em>torch.Tensor</em><em> or </em><em>None</em>) – Gaussian noise tensor, same shape as <cite>xt</cite>, used for stochasticity. If None,
-no stochastic noise is added (e.g., for deterministic ODE).</p></li>
-<li><p><strong>predicted_noise</strong> (<em>torch.Tensor</em>) – Predicted noise tensor, same shape as <cite>xt</cite>, typically output by a neural network.</p></li>
-<li><p><strong>time_steps</strong> (<em>torch.Tensor</em>) – Tensor of time step indices (long), shape (batch_size,), where each value
-is in the range [0, hyper_params.num_steps - 1].</p></li>
-</ul>
+<dd class="field-odd"><p><strong>checkpoint_path</strong> (<em>str</em>) – Path to the checkpoint file.</p>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
 <dd class="field-even"><p><ul class="simple">
-<li><p>xt (torch.Tensor) - Denoised tensor at the previous time step, same shape as <cite>xt</cite>.</p></li>
+<li><p><strong>epoch</strong> (<em>int</em>) – The epoch at which the checkpoint was saved (int).</p></li>
+<li><p><strong>loss</strong> (<em>float</em>) – The loss at the checkpoint (float).</p></li>
+</ul>
+</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE.warmup_scheduler">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">warmup_scheduler</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">optimizer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmup_epochs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE.warmup_scheduler"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE.warmup_scheduler" title="Link to this definition">#</a></dt>
+<dd><p>Creates a learning rate scheduler for warmup.</p>
+<p>Generates a scheduler that linearly increases the learning rate from 0 to the
+optimizer’s initial value over the specified warmup epochs, then maintains it.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>optimizer</strong> (<em>torch.optim.Optimizer</em>) – Optimizer to apply the scheduler to.</p></li>
+<li><p><strong>warmup_epochs</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs for the warmup phase (default: 10).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>lr_scheduler (torch.optim.lr_scheduler.LambdaLR) - Learning rate scheduler for warmup.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE.forward" title="Link to this definition">#</a></dt>
+<dd><p>Trains the SDE model to predict noise added by the forward diffusion process.</p>
+<p>Executes the training loop, optimizing the noise predictor and conditional model
+(if applicable) using mixed precision, gradient clipping, and learning rate
+scheduling. Supports validation, early stopping, and checkpointing.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><ul class="simple">
+<li><p><strong>train_losses</strong> (<em>list of float</em>) – List of mean training losses per epoch.</p></li>
+<li><p><strong>best_val_loss</strong> (<em>float</em>) – Best validation or training loss achieved.</p></li>
 <li><p><em>**Notes**</em></p></li>
-<li><p><em>- For the “ve” and “ode” methods, the output is clamped to [-1e5, 1e5] to prevent numerical instability.</em></p></li>
 <li><ul>
-<li><p>Stochastic noise (<cite>noise</cite>) is only added if provided and the method supports it (not applicable for “ode” in non-VE cases).</p></li>
+<li><p>Training uses mixed precision via <cite>torch.cuda.amp</cite> or <cite>torch.amp</cite> for efficiency.</p></li>
 </ul>
 </li>
+<li><p><em>- Checkpoints are saved when the validation (or training) loss improves, and on early stopping.</em></p></li>
+<li><ul>
+<li><p>Early stopping is triggered if no improvement occurs for <cite>patience</cite> epochs.</p></li>
+</ul>
+</li>
+</ul>
+</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE.validate">
+<span class="sig-name descname"><span class="pre">validate</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE.validate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE.validate" title="Link to this definition">#</a></dt>
+<dd><p>Validates the noise predictor and computes evaluation Metrics.</p>
+<p>Computes validation loss (MSE between predicted and ground truth noise) and generates
+samples using the reverse diffusion model by manually iterating over timesteps.
+Decodes samples to images and computes image-domain Metrics (MSE, PSNR, SSIM, FID, LPIPS)
+if <a href="#id2"><span class="problematic" id="id3">metrics_</span></a> is provided.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p><ul class="simple">
+<li><p><strong>val_loss</strong> (<em>float</em>) – Mean validation loss.</p></li>
+<li><p><strong>fid</strong> (float, or <cite>float(‘inf’)</cite> if not computed) – Mean FID score.</p></li>
+<li><p><strong>mse</strong> (<em>float, or None if not computed</em>) – Mean MSE</p></li>
+<li><p><strong>psnr</strong> (<em>float, or None if not computed</em>) – Mean PSNR</p></li>
+<li><p><strong>ssim</strong> (<em>float, or None if not computed</em>) – Mean SSIM</p></li>
+<li><p><strong>lpips_score</strong> (<em>float, or None if not computed</em>) – Mean LPIPS score</p></li>
 </ul>
 </p>
 </dd>
@@ -569,6 +699,27 @@ unconditional and conditional generation with text prompts.</p>
 </ul>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.sde.SampleSDE.tokenize">
+<span class="sig-name descname"><span class="pre">tokenize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">prompts</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#SampleSDE.tokenize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.SampleSDE.tokenize" title="Link to this definition">#</a></dt>
+<dd><p>Tokenizes text prompts for conditional generation.</p>
+<p>Converts input prompts into tokenized tensors using the specified tokenizer.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>prompts</strong> (<em>str</em><em> or </em><em>list</em>) – Text prompt(s) for conditional generation. Can be a single string or a list
+of strings.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><ul class="simple">
+<li><p><strong>input_ids</strong> (<em>torch.Tensor</em>) – Tokenized input IDs, shape (batch_size, max_length).</p></li>
+<li><p><strong>attention_mask</strong> (<em>torch.Tensor</em>) – Attention mask, shape (batch_size, max_length).</p></li>
+</ul>
+</p>
+</dd>
+</dl>
+</dd></dl>
+
 <dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.sde.SampleSDE.forward">
 <span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">conditions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normalize_output</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_images</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'sde_generated'</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#SampleSDE.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.SampleSDE.forward" title="Link to this definition">#</a></dt>
@@ -606,152 +757,6 @@ and conditional model (if present) to the specified device.</p>
 </dl>
 </dd></dl>
 
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.sde.SampleSDE.tokenize">
-<span class="sig-name descname"><span class="pre">tokenize</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">prompts</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#SampleSDE.tokenize"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.SampleSDE.tokenize" title="Link to this definition">#</a></dt>
-<dd><p>Tokenizes text prompts for conditional generation.</p>
-<p>Converts input prompts into tokenized tensors using the specified tokenizer.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>prompts</strong> (<em>str</em><em> or </em><em>list</em>) – Text prompt(s) for conditional generation. Can be a single string or a list
-of strings.</p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p><ul class="simple">
-<li><p><strong>input_ids</strong> (<em>torch.Tensor</em>) – Tokenized input IDs, shape (batch_size, max_length).</p></li>
-<li><p><strong>attention_mask</strong> (<em>torch.Tensor</em>) – Attention mask, shape (batch_size, max_length).</p></li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.sde.</span></span><span class="sig-name descname"><span class="pre">TrainSDE</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">method</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">noise_predictor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hyper_params</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">data_loader</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">optimizer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">objective</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">val_loader</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_epoch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">conditional_model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metrics_</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tokenizer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_length</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">77</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">store_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">patience</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmup_epochs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">val_frequency</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-1,</span> <span class="pre">1)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normalize_output</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Trainer for score-based generative models using Stochastic Differential Equations.</p>
-<p>Manages the training process for SDE-based generative models, optimizing a noise
-predictor to learn the noise added by the forward SDE process, as described in Song
-et al. (2021). Supports conditional training with text prompts, mixed precision,
-learning rate scheduling, early stopping, and checkpointing.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>method</strong> (<em>str</em>) – SDE method to use for forward diffusion. Supported methods: “ve”, “vp”, “sub-vp”, “ode”.</p></li>
-<li><p><strong>noise_predictor</strong> (<em>nn.Module</em>) – Model to predict noise added during the forward SDE process.</p></li>
-<li><p><strong>hyper_params</strong> (<em>nn.Module</em>) – Hyperparameter module (e.g., HyperParamsSDE) defining the noise schedule and SDE parameters.</p></li>
-<li><p><strong>data_loader</strong> (<em>torch.utils.data.DataLoader</em>) – DataLoader for training data.</p></li>
-<li><p><strong>optimizer</strong> (<em>torch.optim.Optimizer</em>) – Optimizer for training the noise predictor and conditional model (if applicable).</p></li>
-<li><p><strong>objective</strong> (<em>callable</em>) – Loss function to compute the difference between predicted and actual noise.</p></li>
-<li><p><strong>val_loader</strong> (<em>torch.utils.data.DataLoader</em><em>, </em><em>optional</em>) – DataLoader for validation data, default None.</p></li>
-<li><p><strong>max_epoch</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum number of training epochs (default: 1000).</p></li>
-<li><p><strong>device</strong> (<em>torch.device</em><em>, </em><em>optional</em>) – Device for computation (default: CUDA if available, else CPU).</p></li>
-<li><p><strong>conditional_model</strong> (<em>nn.Module</em><em>, </em><em>optional</em>) – Model for conditional generation (e.g., text embeddings), default None.</p></li>
-<li><p><strong>metrics</strong> (<em>object</em><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
-<li><p><strong>tokenizer</strong> (<em>BertTokenizer</em><em>, </em><em>optional</em>) – Tokenizer for processing text prompts, default None (loads “bert-base-uncased”).</p></li>
-<li><p><strong>max_length</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum length for tokenized prompts (default: 77).</p></li>
-<li><p><strong>store_path</strong> (<em>str</em><em>, </em><em>optional</em>) – Path to save model checkpoints (default: “sde_model.pth”).</p></li>
-<li><p><strong>patience</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs to wait for improvement before early stopping (default: 10).</p></li>
-<li><p><strong>warmup_epochs</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs for learning rate warmup (default: 100).</p></li>
-<li><p><strong>val_frequency</strong> (<em>int</em><em>, </em><em>optional</em>) – Frequency (in epochs) for validation (default: 10).</p></li>
-<li><p><strong>output_range</strong> (<em>tuple</em><em>, </em><em>optional</em>) – Range for clamping generated images (default: (-1, 1)).</p></li>
-<li><p><strong>normalize_output</strong> (<em>bool</em><em>, </em><em>optional</em>) – Whether to normalize generated images to [0, 1] for metrics (default: True).</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE.forward" title="Link to this definition">#</a></dt>
-<dd><p>Trains the SDE model to predict noise added by the forward diffusion process.</p>
-<p>Executes the training loop, optimizing the noise predictor and conditional model
-(if applicable) using mixed precision, gradient clipping, and learning rate
-scheduling. Supports validation, early stopping, and checkpointing.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p><ul class="simple">
-<li><p><strong>train_losses</strong> (<em>list of float</em>) – List of mean training losses per epoch.</p></li>
-<li><p><strong>best_val_loss</strong> (<em>float</em>) – Best validation or training loss achieved.</p></li>
-<li><p><em>**Notes**</em></p></li>
-<li><ul>
-<li><p>Training uses mixed precision via <cite>torch.cuda.amp</cite> or <cite>torch.amp</cite> for efficiency.</p></li>
-</ul>
-</li>
-<li><p><em>- Checkpoints are saved when the validation (or training) loss improves, and on early stopping.</em></p></li>
-<li><ul>
-<li><p>Early stopping is triggered if no improvement occurs for <cite>patience</cite> epochs.</p></li>
-</ul>
-</li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE.load_checkpoint">
-<span class="sig-name descname"><span class="pre">load_checkpoint</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">checkpoint_path</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE.load_checkpoint"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE.load_checkpoint" title="Link to this definition">#</a></dt>
-<dd><p>Loads a training checkpoint to resume training.</p>
-<p>Restores the state of the noise predictor, conditional model (if applicable),
-and optimizer from a saved checkpoint.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>checkpoint_path</strong> (<em>str</em>) – Path to the checkpoint file.</p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p><ul class="simple">
-<li><p><strong>epoch</strong> (<em>int</em>) – The epoch at which the checkpoint was saved (int).</p></li>
-<li><p><strong>loss</strong> (<em>float</em>) – The loss at the checkpoint (float).</p></li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE.validate">
-<span class="sig-name descname"><span class="pre">validate</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE.validate"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE.validate" title="Link to this definition">#</a></dt>
-<dd><p>Validates the noise predictor and computes evaluation metrics.</p>
-<p>Computes validation loss (MSE between predicted and ground truth noise) and generates
-samples using the reverse diffusion model by manually iterating over timesteps.
-Decodes samples to images and computes image-domain metrics (MSE, PSNR, SSIM, FID, LPIPS)
-if <a href="#id2"><span class="problematic" id="id3">metrics_</span></a> is provided.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p><ul class="simple">
-<li><p><strong>val_loss</strong> (<em>float</em>) – Mean validation loss.</p></li>
-<li><p><strong>fid</strong> (float, or <cite>float(‘inf’)</cite> if not computed) – Mean FID score.</p></li>
-<li><p><strong>mse</strong> (<em>float, or None if not computed</em>) – Mean MSE</p></li>
-<li><p><strong>psnr</strong> (<em>float, or None if not computed</em>) – Mean PSNR</p></li>
-<li><p><strong>ssim</strong> (<em>float, or None if not computed</em>) – Mean SSIM</p></li>
-<li><p><strong>lpips_score</strong> (<em>float, or None if not computed</em>) – Mean LPIPS score</p></li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.sde.TrainSDE.warmup_scheduler">
-<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">warmup_scheduler</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">optimizer</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">warmup_epochs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/sde.html#TrainSDE.warmup_scheduler"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.sde.TrainSDE.warmup_scheduler" title="Link to this definition">#</a></dt>
-<dd><p>Creates a learning rate scheduler for warmup.</p>
-<p>Generates a scheduler that linearly increases the learning rate from 0 to the
-optimizer’s initial value over the specified warmup epochs, then maintains it.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>optimizer</strong> (<em>torch.optim.Optimizer</em>) – Optimizer to apply the scheduler to.</p></li>
-<li><p><strong>warmup_epochs</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of epochs for the warmup phase (default: 10).</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>lr_scheduler (torch.optim.lr_scheduler.LambdaLR) - Learning rate scheduler for warmup.</p>
-</dd>
-</dl>
-</dd></dl>
-
 </dd></dl>
 
 </section>
@@ -772,7 +777,7 @@ optimizer’s initial value over the specified warmup epochs, then maintains it.
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">DDIM</p>
+        <p class="prev-next-title">ddim</p>
       </div>
     </a>
     <a class="right-next"
@@ -780,7 +785,7 @@ optimizer’s initial value over the specified warmup epochs, then maintains it.
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">LDM</p>
+        <p class="prev-next-title">ldm</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -807,27 +812,27 @@ optimizer’s initial value over the specified warmup epochs, then maintains it.
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.ForwardSDE.forward"><code class="docutils literal notranslate"><span class="pre">ForwardSDE.forward()</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.ReverseSDE"><code class="docutils literal notranslate"><span class="pre">ReverseSDE</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.ReverseSDE.forward"><code class="docutils literal notranslate"><span class="pre">ReverseSDE.forward()</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.HyperParamsSDE"><code class="docutils literal notranslate"><span class="pre">HyperParamsSDE</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.HyperParamsSDE.compute_beta_schedule"><code class="docutils literal notranslate"><span class="pre">HyperParamsSDE.compute_beta_schedule()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.HyperParamsSDE.constrain_betas"><code class="docutils literal notranslate"><span class="pre">HyperParamsSDE.constrain_betas()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.HyperParamsSDE.get_variance"><code class="docutils literal notranslate"><span class="pre">HyperParamsSDE.get_variance()</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.ReverseSDE"><code class="docutils literal notranslate"><span class="pre">ReverseSDE</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.ReverseSDE.forward"><code class="docutils literal notranslate"><span class="pre">ReverseSDE.forward()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE"><code class="docutils literal notranslate"><span class="pre">TrainSDE</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE.load_checkpoint"><code class="docutils literal notranslate"><span class="pre">TrainSDE.load_checkpoint()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE.warmup_scheduler"><code class="docutils literal notranslate"><span class="pre">TrainSDE.warmup_scheduler()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE.forward"><code class="docutils literal notranslate"><span class="pre">TrainSDE.forward()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE.validate"><code class="docutils literal notranslate"><span class="pre">TrainSDE.validate()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.SampleSDE"><code class="docutils literal notranslate"><span class="pre">SampleSDE</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.SampleSDE.tokenize"><code class="docutils literal notranslate"><span class="pre">SampleSDE.tokenize()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.SampleSDE.forward"><code class="docutils literal notranslate"><span class="pre">SampleSDE.forward()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.SampleSDE.to"><code class="docutils literal notranslate"><span class="pre">SampleSDE.to()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.SampleSDE.tokenize"><code class="docutils literal notranslate"><span class="pre">SampleSDE.tokenize()</span></code></a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE"><code class="docutils literal notranslate"><span class="pre">TrainSDE</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE.forward"><code class="docutils literal notranslate"><span class="pre">TrainSDE.forward()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE.load_checkpoint"><code class="docutils literal notranslate"><span class="pre">TrainSDE.load_checkpoint()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE.validate"><code class="docutils literal notranslate"><span class="pre">TrainSDE.validate()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.sde.TrainSDE.warmup_scheduler"><code class="docutils literal notranslate"><span class="pre">TrainSDE.warmup_scheduler()</span></code></a></li>
 </ul>
 </li>
 </ul>

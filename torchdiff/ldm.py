@@ -357,11 +357,11 @@ class TrainLDM(nn.Module):
         return train_losses, best_val_loss
 
     def validate(self):
-        """Validates the noise predictor and computes evaluation metrics.
+        """Validates the noise predictor and computes evaluation Metrics.
 
         Computes validation loss (MSE between predicted and ground truth noise) and generates
         samples using the reverse diffusion model by manually iterating over timesteps.
-        Decodes samples to images and computes image-domain metrics (MSE, PSNR, SSIM, FID, LPIPS)
+        Decodes samples to images and computes image-domain Metrics (MSE, PSNR, SSIM, FID, LPIPS)
         if metrics_ is provided.
 
         Returns
@@ -1521,9 +1521,9 @@ class TrainAE(nn.Module):
         return train_losses, best_val_loss
 
     def validate(self):
-        """Validates the AutoencoderLDM model and computes evaluation metrics.
+        """Validates the AutoencoderLDM model and computes evaluation Metrics.
 
-        Computes validation loss and optional metrics (MSE, PSNR, SSIM, FID, LPIPS) using
+        Computes validation loss and optional Metrics (MSE, PSNR, SSIM, FID, LPIPS) using
         the provided Metrics object.
 
         Returns

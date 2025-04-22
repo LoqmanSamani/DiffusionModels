@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Utils &#8212; TorchDiff 1.0.0 documentation</title>
+    <title>utils &#8212; TorchDiff 1.0.0 documentation</title>
   
   
   
@@ -44,7 +44,7 @@
     <script>DOCUMENTATION_OPTIONS.pagename = 'utils';</script>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="prev" title="LDM" href="ldm.html" />
+    <link rel="prev" title="ldm" href="ldm.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -125,35 +125,35 @@
     
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddpm.html">
-    DDPM
+    ddpm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddim.html">
-    DDIM
+    ddim
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="sde.html">
-    SDE
+    sde
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ldm.html">
-    LDM
+    ldm
   </a>
 </li>
 
 
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="#">
-    Utils
+    utils
   </a>
 </li>
 
@@ -232,35 +232,35 @@
     
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddpm.html">
-    DDPM
+    ddpm
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ddim.html">
-    DDIM
+    ddim
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="sde.html">
-    SDE
+    sde
   </a>
 </li>
 
 
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="ldm.html">
-    LDM
+    ldm
   </a>
 </li>
 
 
 <li class="nav-item current active">
   <a class="nav-link nav-internal" href="#">
-    Utils
+    utils
   </a>
 </li>
 
@@ -330,7 +330,7 @@
         <i class="fa-solid fa-home"></i>
       </a>
     </li>
-    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Utils</span></li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">utils</span></li>
   </ul>
 </nav>
 </div>
@@ -348,7 +348,7 @@
                 <article class="bd-article">
                   
   <section id="utils">
-<span id="id1"></span><h1>Utils<a class="headerlink" href="#utils" title="Link to this heading">#</a></h1>
+<span id="id1"></span><h1>utils<a class="headerlink" href="#utils" title="Link to this heading">#</a></h1>
 <p id="module-torchdiff.utils"><strong>Utilities for text encoding, noise prediction, and evaluation in diffusion models</strong></p>
 <p>This module provides core components for building diffusion model pipelines, including
 text encoding, used as conditional model, U-Net-based noise prediction, and image quality evaluation. These
@@ -367,189 +367,73 @@ SDE, and are designed for standalone use in model training and sampling.</p>
 </ul>
 <hr class="docutils" />
 <dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.Attention">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">Attention</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">768</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_heads</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_groups</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">8</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Attention"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Attention" title="Link to this definition">#</a></dt>
+<dt class="sig sig-object py" id="torchdiff.utils.TextEncoder">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">TextEncoder</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">use_pretrained_model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">model_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'bert-base-uncased'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vocabulary_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">30522</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_layers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">6</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">input_dimension</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">768</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_dimension</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">768</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_heads</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">8</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">context_length</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">77</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">qkv_bias</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scaling_value</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">epsilon</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-05</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#TextEncoder"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.TextEncoder" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Attention module for NoisePredictor, supporting text conditioning or self-attention.</p>
-<p>Applies multi-head attention to enhance features, with optional text embeddings for
-conditional generation.</p>
+<p>Transformer-based encoder for text prompts in conditional diffusion models.</p>
+<p>Encodes text prompts into embeddings using either a pre-trained BERT model or a
+custom transformer architecture. Used as the <cite>conditional_model</cite> in diffusion models
+(e.g., DDPM, DDIM, SDE, LDM) to provide conditional inputs for noise prediction.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels (embedding dimension for attention).</p></li>
-<li><p><strong>y_embed_dim</strong> (<em>int</em><em>, </em><em>optional</em>) – Dimensionality of text embeddings (default: 768).</p></li>
-<li><p><strong>num_heads</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of attention heads (default: 4).</p></li>
-<li><p><strong>num_groups</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of groups for group normalization (default: 8).</p></li>
-<li><p><strong>dropout_rate</strong> (<em>float</em><em>, </em><em>optional</em>) – Dropout rate for attention and output (default: 0.1).</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.Attention.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Attention.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Attention.forward" title="Link to this definition">#</a></dt>
-<dd><p>Applies attention to input features with optional text conditioning.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
-<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
-(batch_size, y_embed_dim) (default: None).</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>out (torch.Tensor) - Output tensor, same shape as input <cite>x</cite>.</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.Conv3">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">Conv3</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_groups</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">8</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kernel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">norm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">activation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Conv3"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Conv3" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Convolutional layer with optional group normalization, SiLU activation, and dropout.</p>
-<p>Used in DownBlock, MiddleBlock, and UpBlock for feature extraction in NoisePredictor.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
-<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
-<li><p><strong>num_groups</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of groups for group normalization (default: 8).</p></li>
-<li><p><strong>kernel_size</strong> (<em>int</em><em>, </em><em>optional</em>) – Convolutional kernel size (default: 3).</p></li>
-<li><p><strong>norm</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply group normalization (default: True).</p></li>
-<li><p><strong>activation</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply SiLU activation (default: True).</p></li>
-<li><p><strong>dropout_rate</strong> (<em>float</em><em>, </em><em>optional</em>) – Dropout rate (default: 0.2).</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.Conv3.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">batch</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Conv3.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Conv3.forward" title="Link to this definition">#</a></dt>
-<dd><p>Processes input through convolution, normalization, activation, and dropout.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>batch</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>batch (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height, width).</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.DownBlock">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">DownBlock</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_layers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sampling_factor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sample</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_to_all</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#DownBlock"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.DownBlock" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Downsampling block for NoisePredictor’s encoder.</p>
-<p>Applies convolutional layers with residual connections, time embeddings, and optional
-text-conditioned attention, followed by downsampling if enabled.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
-<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
-<li><p><strong>time_embed_dim</strong> (<em>int</em>) – Dimensionality of time embeddings.</p></li>
-<li><p><strong>y_embed_dim</strong> (<em>int</em>) – Dimensionality of text embeddings.</p></li>
-<li><p><strong>num_layers</strong> (<em>int</em>) – Number of convolutional layer pairs (Conv3).</p></li>
-<li><p><strong>down_sampling_factor</strong> (<em>int</em>) – Factor for spatial downsampling.</p></li>
-<li><p><strong>down_sample</strong> (<em>bool</em>) – If True, apply downsampling; if False, use identity (no downsampling).</p></li>
-<li><p><strong>dropout_rate</strong> (<em>float</em>) – Dropout rate for Conv3 and attention layers.</p></li>
-<li><p><strong>y_to_all</strong> (<em>bool</em>) – If True, apply text-conditioned attention to all layers; if False, only first layer.</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.DownBlock.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embed_time</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#DownBlock.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.DownBlock.forward" title="Link to this definition">#</a></dt>
-<dd><p>Processes input through convolutions, time embeddings, attention, and downsampling.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
-<li><p><strong>embed_time</strong> (<em>torch.Tensor</em>) – Time embeddings, shape (batch_size, time_embed_dim).</p></li>
-<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
-(batch_size, y_embed_dim) (default: None).</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor) if downsampling; otherwise, same height/width as input.</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.DownSampling">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">DownSampling</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sampling_factor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">conv_block</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_pool</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#DownSampling"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.DownSampling" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Downsampling module for NoisePredictor’s DownBlock.</p>
-<p>Combines convolutional downsampling and max pooling (if enabled), concatenating
-outputs to preserve feature information.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
-<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
-<li><p><strong>down_sampling_factor</strong> (<em>int</em>) – Factor for spatial downsampling.</p></li>
-<li><p><strong>conv_block</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, include convolutional path (default: True).</p></li>
-<li><p><strong>max_pool</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, include max pooling path (default: True).</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.DownSampling.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">batch</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#DownSampling.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.DownSampling.forward" title="Link to this definition">#</a></dt>
-<dd><p>Downsamples input using convolutional and/or pooling paths.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>batch</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>batch (torch.Tensor) - Downsampled tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor).</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.Embedding">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">Embedding</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">vocabulary_size</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embedding_dimension</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">768</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">context_length</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">77</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Embedding"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Embedding" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Token and positional embedding layer for transformer inputs.</p>
-<p>Used in <cite>TextEncoder</cite>’s custom transformer to embed token IDs and add positional
-encodings.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>vocabulary_size</strong> (<em>int</em>) – Size of the vocabulary for token embeddings.</p></li>
-<li><p><strong>embedding_dimension</strong> (<em>int</em><em>, </em><em>optional</em>) – Dimension of token and positional embeddings (default: 768).</p></li>
-<li><p><strong>context_length</strong> (<em>- For sequences longer than</em>) – Maximum sequence length for positional encodings (default: 77).</p></li>
+<li><p><strong>use_pretrained_model</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, uses a pre-trained BERT model; otherwise, builds a custom transformer
+(default: True).</p></li>
+<li><p><strong>model_name</strong> (<em>str</em><em>, </em><em>optional</em>) – Name of the pre-trained model to load (default: “bert-base-uncased”).</p></li>
+<li><p><strong>vocabulary_size</strong> (<em>int</em><em>, </em><em>optional</em>) – Size of the vocabulary for the custom transformer’s embedding layer
+(default: 30522).</p></li>
+<li><p><strong>num_layers</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of transformer encoder layers for the custom transformer (default: 6).</p></li>
+<li><p><strong>input_dimension</strong> (<em>int</em><em>, </em><em>optional</em>) – Input embedding dimension for the custom transformer (default: 768).</p></li>
+<li><p><strong>output_dimension</strong> (<em>int</em><em>, </em><em>optional</em>) – Output embedding dimension for both pre-trained and custom models
+(default: 768).</p></li>
+<li><p><strong>num_heads</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of attention heads in the custom transformer (default: 8).</p></li>
+<li><p><strong>context_length</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum sequence length for text prompts (default: 77).</p></li>
+<li><p><strong>dropout_rate</strong> (<em>float</em><em>, </em><em>optional</em>) – Dropout rate for attention and feedforward layers (default: 0.1).</p></li>
+<li><p><strong>qkv_bias</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, includes bias in query, key, and value projections for the custom
+transformer (default: False).</p></li>
+<li><p><strong>scaling_value</strong> (<em>int</em><em>, </em><em>optional</em>) – Scaling factor for the feedforward layer’s hidden dimension in the custom
+transformer (default: 4).</p></li>
+<li><p><strong>epsilon</strong> (<em>float</em><em>, </em><em>optional</em>) – Epsilon for layer normalization in the custom transformer (default: 1e-5).</p></li>
 <li><p><strong>**Notes**</strong></p></li>
-<li><p><strong>functions</strong> (<em>- Positional encodings are computed using sinusoidal</em>)</p></li>
-<li><p><strong>architecture.</strong> (<em>following the transformer</em>)</p></li>
-<li><p><strong>context_length</strong></p></li>
-<li><p><strong>generated.</strong> (<em>positional encodings are dynamically</em>)</p></li>
+<li><p><strong>True</strong> (<em>- When use_pretrained_model is</em>) – (<cite>requires_grad = False</cite>), and a projection layer maps outputs to
+<cite>output_dimension</cite>.</p></li>
+<li><p><strong>frozen</strong> (<em>the BERT model’s parameters are</em>) – (<cite>requires_grad = False</cite>), and a projection layer maps outputs to
+<cite>output_dimension</cite>.</p></li>
+<li><p><strong>and</strong> (<em>- The custom transformer uses EncoderLayer modules with multi-head attention</em>) – feedforward networks, supporting variable input/output dimensions.</p></li>
 <li><p><strong>(</strong><strong>batch_size</strong> (<em>- The output shape is</em>)</p></li>
-<li><p><strong>seq_len</strong></p></li>
-<li><p><strong>embedding_dimension</strong><strong>)</strong><strong>.</strong></p></li>
+<li><p><strong>context_length</strong></p></li>
+<li><p><strong>output_dimension</strong><strong>)</strong><strong>.</strong></p></li>
 </ul>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
 <dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.Embedding.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">token_ids</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Embedding.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Embedding.forward" title="Link to this definition">#</a></dt>
-<dd><p>Embeds token IDs and adds positional encodings.</p>
+<dt class="sig sig-object py" id="torchdiff.utils.TextEncoder.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">attention_mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#TextEncoder.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.TextEncoder.forward" title="Link to this definition">#</a></dt>
+<dd><p>Encodes text prompts into embeddings.</p>
+<p>Processes input token IDs and an optional attention mask to produce embeddings
+using either a pre-trained BERT model or a custom transformer.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>token_ids</strong> (<em>torch.Tensor</em>) – Token IDs, shape (batch_size, seq_len).</p>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Token IDs, shape (batch_size, seq_len).</p></li>
+<li><p><strong>attention_mask</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Attention mask, shape (batch_size, seq_len), where 0 indicates padding
+tokens to ignore (default: None).</p></li>
+</ul>
 </dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>x (torch.Tensor) - Embedded tokens with positional encodings, shape (batch_size, seq_len, embedding_dimension).</p>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><ul class="simple">
+<li><p><em>x (torch.Tensor) - Encoded embeddings, shape (batch_size, seq_len, output_dimension).</em></p></li>
+<li><p><em>**Notes**</em></p></li>
+<li><ul>
+<li><p>For pre-trained BERT, the <cite>last_hidden_state</cite> is projected to – <cite>output_dimension</cite>.</p></li>
+</ul>
+</li>
+<li><p><em>- For the custom transformer, token embeddings are processed through</em> – <cite>Embedding</cite> and <cite>EncoderLayer</cite> modules.</p></li>
+<li><p><em>- The attention mask should be 0 for padding tokens and 1 for valid tokens when</em> – using the custom transformer, or follow BERT’s convention for pre-trained
+models.</p></li>
+</ul>
+</p>
 </dd>
 </dl>
 </dd></dl>
@@ -579,6 +463,7 @@ normalization.</p></li>
 </ul>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.utils.EncoderLayer.forward">
 <span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">attention_mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#EncoderLayer.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.EncoderLayer.forward" title="Link to this definition">#</a></dt>
@@ -631,6 +516,7 @@ embedding_dimension * scaling_value).</p></li>
 standard transformer feedforward designs.</p></li>
 <li><p>GELU activation is used for non-linearity.</p></li>
 </ul>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.utils.FeedForward.forward">
 <span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#FeedForward.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.FeedForward.forward" title="Link to this definition">#</a></dt>
@@ -641,6 +527,324 @@ standard transformer feedforward designs.</p></li>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
 <dd class="field-even"><p>x (torch.Tensor) - Processed embeddings, shape (batch_size, seq_len, embedding_dimension).</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.Embedding">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">Embedding</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">vocabulary_size</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embedding_dimension</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">768</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">context_length</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">77</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Embedding"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Embedding" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Token and positional embedding layer for transformer inputs.</p>
+<p>Used in <cite>TextEncoder</cite>’s custom transformer to embed token IDs and add positional
+encodings.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>vocabulary_size</strong> (<em>int</em>) – Size of the vocabulary for token embeddings.</p></li>
+<li><p><strong>embedding_dimension</strong> (<em>int</em><em>, </em><em>optional</em>) – Dimension of token and positional embeddings (default: 768).</p></li>
+<li><p><strong>context_length</strong> (<em>- For sequences longer than</em>) – Maximum sequence length for positional encodings (default: 77).</p></li>
+<li><p><strong>**Notes**</strong></p></li>
+<li><p><strong>functions</strong> (<em>- Positional encodings are computed using sinusoidal</em>)</p></li>
+<li><p><strong>architecture.</strong> (<em>following the transformer</em>)</p></li>
+<li><p><strong>context_length</strong></p></li>
+<li><p><strong>generated.</strong> (<em>positional encodings are dynamically</em>)</p></li>
+<li><p><strong>(</strong><strong>batch_size</strong> (<em>- The output shape is</em>)</p></li>
+<li><p><strong>seq_len</strong></p></li>
+<li><p><strong>embedding_dimension</strong><strong>)</strong><strong>.</strong></p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.Embedding.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">token_ids</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Embedding.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Embedding.forward" title="Link to this definition">#</a></dt>
+<dd><p>Embeds token IDs and adds positional encodings.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>token_ids</strong> (<em>torch.Tensor</em>) – Token IDs, shape (batch_size, seq_len).</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>x (torch.Tensor) - Embedded tokens with positional encodings, shape (batch_size, seq_len, embedding_dimension).</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.NoisePredictor">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">NoisePredictor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mid_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sampling</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_down_blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_mid_blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_up_blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sampling_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">where_y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_to_all</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#NoisePredictor"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.NoisePredictor" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>U-Net-like architecture for noise prediction in Diffusion Models.</p>
+<p>Predicts noise for diffusion models (DDPM, DDIM, SDE), incorporating
+time embeddings and optional text conditioning. used as the <cite>noise_predictor</cite> in
+<cite>Train</cite> and <cite>Sample</cite> from the <cite>ldm</cite>, <cite>sde</cite>, <cite>ddpm</cite>, <cite>ddim</cite> modules.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
+<li><p><strong>down_channels</strong> (<em>list</em><em> of </em><em>int</em>) – List of output channels for downsampling blocks.</p></li>
+<li><p><strong>mid_channels</strong> (<em>list</em><em> of </em><em>int</em>) – List of channels for middle blocks.</p></li>
+<li><p><strong>up_channels</strong> (<em>list</em><em> of </em><em>int</em>) – List of output channels for upsampling blocks.</p></li>
+<li><p><strong>down_sampling</strong> (<em>list</em><em> of </em><em>bool</em>) – List indicating whether to downsample in each down block.</p></li>
+<li><p><strong>time_embed_dim</strong> (<em>int</em>) – Dimensionality of time embeddings.</p></li>
+<li><p><strong>y_embed_dim</strong> (<em>int</em>) – Dimensionality of text embeddings for conditioning.</p></li>
+<li><p><strong>num_down_blocks</strong> (<em>int</em>) – Number of convolutional layer pairs per down block.</p></li>
+<li><p><strong>num_mid_blocks</strong> (<em>int</em>) – Number of convolutional layer pairs per middle block.</p></li>
+<li><p><strong>num_up_blocks</strong> (<em>int</em>) – Number of convolutional layer pairs per up block.</p></li>
+<li><p><strong>dropout_rate</strong> (<em>float</em><em>, </em><em>optional</em>) – Dropout rate for convolutional and attention layers (default: 0.1).</p></li>
+<li><p><strong>down_sampling_factor</strong> (<em>int</em><em>, </em><em>optional</em>) – Factor for spatial downsampling/upsampling (default: 2).</p></li>
+<li><p><strong>where_y</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, text embeddings are used in attention; if False, concatenated to input
+(default: True).</p></li>
+<li><p><strong>y_to_all</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply text-conditioned attention to all layers; if False, only first layer
+(default: False).</p></li>
+<li><p><strong>**Notes**</strong></p></li>
+<li><p><strong>downsampling</strong> (<em>- The architecture follows a U-Net structure with</em>) – upsampling blocks, incorporating time embeddings and optional text conditioning via
+attention or concatenation.</p></li>
+<li><p><strong>bottleneck</strong> – upsampling blocks, incorporating time embeddings and optional text conditioning via
+attention or concatenation.</p></li>
+<li><p><strong>and</strong> – upsampling blocks, incorporating time embeddings and optional text conditioning via
+attention or concatenation.</p></li>
+<li><p><strong>blocks</strong> (<em>- Skip connections link down and up</em>)</p></li>
+<li><p><strong>concatenation.</strong> (<em>with channel adjustments for</em>)</p></li>
+<li><p><strong>stability.</strong> (<em>- Weights are initialized with Kaiming normal</em><em> (</em><em>Leaky ReLU nonlinearity</em><em>) </em><em>for</em>)</p></li>
+<li><p><strong>shape.</strong> (<em>- Input and output tensors have the same</em>)</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.NoisePredictor.initialize_weights">
+<span class="sig-name descname"><span class="pre">initialize_weights</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#NoisePredictor.initialize_weights"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.NoisePredictor.initialize_weights" title="Link to this definition">#</a></dt>
+<dd><p>Initializes model weights for training stability.</p>
+<p>Applies Kaiming normal initialization to convolutional and linear layers with
+Leaky ReLU nonlinearity (a=0.2), and zeros biases.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.NoisePredictor.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#NoisePredictor.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.NoisePredictor.forward" title="Link to this definition">#</a></dt>
+<dd><p>Predicts noise given input, time step, and optional text conditioning.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
+<li><p><strong>t</strong> (<em>torch.Tensor</em>) – Time steps, shape (batch_size,).</p></li>
+<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings for conditioning, shape (batch_size, seq_len, y_embed_dim)
+or (batch_size, y_embed_dim) (default: None).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>output (torch.Tensor) - Predicted noise, same shape as input <cite>x</cite>.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.DownBlock">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">DownBlock</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_layers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sampling_factor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sample</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_to_all</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#DownBlock"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.DownBlock" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Downsampling block for NoisePredictor’s encoder.</p>
+<p>Applies convolutional layers with residual connections, time embeddings, and optional
+text-conditioned attention, followed by downsampling if enabled.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
+<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
+<li><p><strong>time_embed_dim</strong> (<em>int</em>) – Dimensionality of time embeddings.</p></li>
+<li><p><strong>y_embed_dim</strong> (<em>int</em>) – Dimensionality of text embeddings.</p></li>
+<li><p><strong>num_layers</strong> (<em>int</em>) – Number of convolutional layer pairs (Conv3).</p></li>
+<li><p><strong>down_sampling_factor</strong> (<em>int</em>) – Factor for spatial downsampling.</p></li>
+<li><p><strong>down_sample</strong> (<em>bool</em>) – If True, apply downsampling; if False, use identity (no downsampling).</p></li>
+<li><p><strong>dropout_rate</strong> (<em>float</em>) – Dropout rate for Conv3 and attention layers.</p></li>
+<li><p><strong>y_to_all</strong> (<em>bool</em>) – If True, apply text-conditioned attention to all layers; if False, only first layer.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.DownBlock.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embed_time</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#DownBlock.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.DownBlock.forward" title="Link to this definition">#</a></dt>
+<dd><p>Processes input through convolutions, time embeddings, attention, and downsampling.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
+<li><p><strong>embed_time</strong> (<em>torch.Tensor</em>) – Time embeddings, shape (batch_size, time_embed_dim).</p></li>
+<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
+(batch_size, y_embed_dim) (default: None).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor) if downsampling; otherwise, same height/width as input.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.MiddleBlock">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">MiddleBlock</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_layers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_to_all</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#MiddleBlock"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.MiddleBlock" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Bottleneck block for NoisePredictor’s middle layers.</p>
+<p>Applies convolutional layers with residual connections, time embeddings, and optional
+text-conditioned attention, preserving spatial dimensions.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
+<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
+<li><p><strong>time_embed_dim</strong> (<em>int</em>) – Dimensionality of time embeddings.</p></li>
+<li><p><strong>y_embed_dim</strong> (<em>int</em>) – Dimensionality of text embeddings.</p></li>
+<li><p><strong>num_layers</strong> (<em>int</em>) – Number of convolutional layer pairs (Conv3).</p></li>
+<li><p><strong>dropout_rate</strong> (<em>float</em>) – Dropout rate for Conv3 and attention layers.</p></li>
+<li><p><strong>y_to_all</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply text-conditioned attention to all layers; if False, only first layer
+(default: False).</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.MiddleBlock.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embed_time</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#MiddleBlock.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.MiddleBlock.forward" title="Link to this definition">#</a></dt>
+<dd><p>Processes input through convolutions, time embeddings, and attention.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
+<li><p><strong>embed_time</strong> (<em>torch.Tensor</em>) – Time embeddings, shape (batch_size, time_embed_dim).</p></li>
+<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
+(batch_size, y_embed_dim) (default: None).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height, width).</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.UpBlock">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">UpBlock</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_layers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_sampling_factor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_sampling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_to_all</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#UpBlock"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.UpBlock" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Upsampling block for NoisePredictor’s decoder.</p>
+<p>Applies upsampling (if enabled), concatenates skip connections, and processes through
+convolutional layers with residual connections, time embeddings, and optional
+text-conditioned attention.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels (before upsampling).</p></li>
+<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
+<li><p><strong>skip_channels</strong> (<em>int</em>) – Number of channels from skip connection.</p></li>
+<li><p><strong>time_embed_dim</strong> (<em>int</em>) – Dimensionality of time embeddings.</p></li>
+<li><p><strong>y_embed_dim</strong> (<em>int</em>) – Dimensionality of text embeddings.</p></li>
+<li><p><strong>num_layers</strong> (<em>int</em>) – Number of convolutional layer pairs (Conv3).</p></li>
+<li><p><strong>up_sampling_factor</strong> (<em>int</em>) – Factor for spatial upsampling.</p></li>
+<li><p><strong>up_sampling</strong> (<em>bool</em>) – If True, apply upsampling; if False, use identity (no upsampling).</p></li>
+<li><p><strong>dropout_rate</strong> (<em>float</em>) – Dropout rate for Conv3 and attention layers.</p></li>
+<li><p><strong>y_to_all</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply text-conditioned attention to all layers; if False, only first layer
+(default: False).</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.UpBlock.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_connection</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embed_time</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#UpBlock.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.UpBlock.forward" title="Link to this definition">#</a></dt>
+<dd><p>Processes input through upsampling, skip connection, convolutions, time embeddings, and attention.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
+<li><p><strong>skip_connection</strong> (<em>torch.Tensor</em>) – Skip connection tensor, shape (batch_size, skip_channels,
+height*up_sampling_factor, width*up_sampling_factor).</p></li>
+<li><p><strong>embed_time</strong> (<em>torch.Tensor</em>) – Time embeddings, shape (batch_size, time_embed_dim).</p></li>
+<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
+(batch_size, y_embed_dim) (default: None).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height*up_sampling_factor, width*up_sampling_factor) if upsampling; otherwise, same height/width as input (after skip connection).</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.Conv3">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">Conv3</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_groups</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">8</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kernel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">norm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">activation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Conv3"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Conv3" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Convolutional layer with optional group normalization, SiLU activation, and dropout.</p>
+<p>Used in DownBlock, MiddleBlock, and UpBlock for feature extraction in NoisePredictor.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
+<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
+<li><p><strong>num_groups</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of groups for group normalization (default: 8).</p></li>
+<li><p><strong>kernel_size</strong> (<em>int</em><em>, </em><em>optional</em>) – Convolutional kernel size (default: 3).</p></li>
+<li><p><strong>norm</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply group normalization (default: True).</p></li>
+<li><p><strong>activation</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply SiLU activation (default: True).</p></li>
+<li><p><strong>dropout_rate</strong> (<em>float</em><em>, </em><em>optional</em>) – Dropout rate (default: 0.2).</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.Conv3.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">batch</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Conv3.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Conv3.forward" title="Link to this definition">#</a></dt>
+<dd><p>Processes input through convolution, normalization, activation, and dropout.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>batch</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>batch (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height, width).</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.TimeEmbedding">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">TimeEmbedding</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">output_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embed_dim</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#TimeEmbedding"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.TimeEmbedding" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Time embedding projection for conditioning NoisePredictor layers.</p>
+<p>Projects time embeddings to match the channel dimension of convolutional outputs.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>output_dim</strong> (<em>int</em>) – Output channel dimension (matches convolutional channels).</p></li>
+<li><p><strong>embed_dim</strong> (<em>int</em>) – Input time embedding dimension.</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.TimeEmbedding.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">batch</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#TimeEmbedding.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.TimeEmbedding.forward" title="Link to this definition">#</a></dt>
+<dd><p>Projects time embeddings to output dimension.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>batch</strong> (<em>torch.Tensor</em>) – Time embeddings, shape (batch_size, embed_dim).</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Projected embeddings, shape (batch_size, output_dim).</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>torch.Tensor</p>
 </dd>
 </dl>
 </dd></dl>
@@ -659,6 +863,7 @@ the transformer embedding approach.</p>
 <dd class="field-odd"><p><strong>embed_dim</strong> (<em>int</em>) – Dimensionality of the time embeddings (must be even).</p>
 </dd>
 </dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.utils.GetEmbeddedTime.forward">
 <span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">time_steps</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#GetEmbeddedTime.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.GetEmbeddedTime.forward" title="Link to this definition">#</a></dt>
@@ -669,6 +874,121 @@ the transformer embedding approach.</p>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
 <dd class="field-even"><p>embed_time (torch.Tensor) - Sinusoidal embeddings, shape (batch_size, embed_dim).</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.Attention">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">Attention</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">768</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_heads</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_groups</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">8</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Attention"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Attention" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Attention module for NoisePredictor, supporting text conditioning or self-attention.</p>
+<p>Applies multi-head attention to enhance features, with optional text embeddings for
+conditional generation.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels (embedding dimension for attention).</p></li>
+<li><p><strong>y_embed_dim</strong> (<em>int</em><em>, </em><em>optional</em>) – Dimensionality of text embeddings (default: 768).</p></li>
+<li><p><strong>num_heads</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of attention heads (default: 4).</p></li>
+<li><p><strong>num_groups</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of groups for group normalization (default: 8).</p></li>
+<li><p><strong>dropout_rate</strong> (<em>float</em><em>, </em><em>optional</em>) – Dropout rate for attention and output (default: 0.1).</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.Attention.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Attention.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Attention.forward" title="Link to this definition">#</a></dt>
+<dd><p>Applies attention to input features with optional text conditioning.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
+<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
+(batch_size, y_embed_dim) (default: None).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>out (torch.Tensor) - Output tensor, same shape as input <cite>x</cite>.</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.DownSampling">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">DownSampling</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sampling_factor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">conv_block</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_pool</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#DownSampling"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.DownSampling" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Downsampling module for NoisePredictor’s DownBlock.</p>
+<p>Combines convolutional downsampling and max pooling (if enabled), concatenating
+outputs to preserve feature information.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
+<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
+<li><p><strong>down_sampling_factor</strong> (<em>int</em>) – Factor for spatial downsampling.</p></li>
+<li><p><strong>conv_block</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, include convolutional path (default: True).</p></li>
+<li><p><strong>max_pool</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, include max pooling path (default: True).</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.DownSampling.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">batch</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#DownSampling.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.DownSampling.forward" title="Link to this definition">#</a></dt>
+<dd><p>Downsamples input using convolutional and/or pooling paths.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>batch</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>batch (torch.Tensor) - Downsampled tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor).</p>
+</dd>
+</dl>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="torchdiff.utils.UpSampling">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">UpSampling</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_sampling_factor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">conv_block</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_sampling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#UpSampling"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.UpSampling" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
+<p>Upsampling module for NoisePredictor’s UpBlock.</p>
+<p>Combines transposed convolution and nearest-neighbor upsampling (if enabled),
+concatenating outputs to preserve feature information, with interpolation to align
+spatial dimensions if needed.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
+<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
+<li><p><strong>up_sampling_factor</strong> (<em>int</em>) – Factor for spatial upsampling.</p></li>
+<li><p><strong>conv_block</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, include transposed convolutional path (default: True).</p></li>
+<li><p><strong>up_sampling</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, include nearest-neighbor upsampling path (default: True).</p></li>
+</ul>
+</dd>
+</dl>
+<p>Initialize internal Module state, shared by both nn.Module and ScriptModule.</p>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.UpSampling.forward">
+<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">batch</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#UpSampling.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.UpSampling.forward" title="Link to this definition">#</a></dt>
+<dd><p>Upsamples input using convolutional and/or upsampling paths.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>batch</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p><ul class="simple">
+<li><p><em>batch (torch.Tensor) - Upsampled tensor, shape (batch_size, out_channels, height*up_sampling_factor, width*up_sampling_factor).</em></p></li>
+<li><p><em>**Notes**</em></p></li>
+<li><p><em>- Interpolation is applied if the spatial dimensions of the convolutional and</em> – upsampling paths differ, using nearest-neighbor mode.</p></li>
+</ul>
+</p>
 </dd>
 </dl>
 </dd></dl>
@@ -722,23 +1042,6 @@ cleaning up directories afterward.</p>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.Metrics.compute_lpips">
-<span class="sig-name descname"><span class="pre">compute_lpips</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">x_hat</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Metrics.compute_lpips"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Metrics.compute_lpips" title="Link to this definition">#</a></dt>
-<dd><p>Computes LPIPS using a pre-trained VGG network.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Ground truth images, shape (batch_size, channels, height, width), in [-1, 1].</p></li>
-<li><p><strong>x_hat</strong> (<em>torch.Tensor</em>) – Generated images, same shape as <cite>x</cite>.</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>lpips (float) - Mean LPIPS score over the batch.</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
 <dt class="sig sig-object py" id="torchdiff.utils.Metrics.compute_metrics">
 <span class="sig-name descname"><span class="pre">compute_metrics</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">x_hat</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Metrics.compute_metrics"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Metrics.compute_metrics" title="Link to this definition">#</a></dt>
 <dd><p>Computes MSE, PSNR, and SSIM for evaluating image quality.</p>
@@ -756,6 +1059,23 @@ cleaning up directories afterward.</p>
 <li><p><strong>ssim</strong> (<em>float</em>) – Structural similarity index (mean over batch).</p></li>
 </ul>
 </p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchdiff.utils.Metrics.compute_lpips">
+<span class="sig-name descname"><span class="pre">compute_lpips</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">x_hat</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#Metrics.compute_lpips"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.Metrics.compute_lpips" title="Link to this definition">#</a></dt>
+<dd><p>Computes LPIPS using a pre-trained VGG network.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Ground truth images, shape (batch_size, channels, height, width), in [-1, 1].</p></li>
+<li><p><strong>x_hat</strong> (<em>torch.Tensor</em>) – Generated images, same shape as <cite>x</cite>.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p>lpips (float) - Mean LPIPS score over the batch.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -786,312 +1106,6 @@ cleaning up directories afterward.</p>
 
 </dd></dl>
 
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.MiddleBlock">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">MiddleBlock</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_layers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_to_all</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#MiddleBlock"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.MiddleBlock" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Bottleneck block for NoisePredictor’s middle layers.</p>
-<p>Applies convolutional layers with residual connections, time embeddings, and optional
-text-conditioned attention, preserving spatial dimensions.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
-<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
-<li><p><strong>time_embed_dim</strong> (<em>int</em>) – Dimensionality of time embeddings.</p></li>
-<li><p><strong>y_embed_dim</strong> (<em>int</em>) – Dimensionality of text embeddings.</p></li>
-<li><p><strong>num_layers</strong> (<em>int</em>) – Number of convolutional layer pairs (Conv3).</p></li>
-<li><p><strong>dropout_rate</strong> (<em>float</em>) – Dropout rate for Conv3 and attention layers.</p></li>
-<li><p><strong>y_to_all</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply text-conditioned attention to all layers; if False, only first layer
-(default: False).</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.MiddleBlock.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embed_time</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#MiddleBlock.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.MiddleBlock.forward" title="Link to this definition">#</a></dt>
-<dd><p>Processes input through convolutions, time embeddings, and attention.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
-<li><p><strong>embed_time</strong> (<em>torch.Tensor</em>) – Time embeddings, shape (batch_size, time_embed_dim).</p></li>
-<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
-(batch_size, y_embed_dim) (default: None).</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height, width).</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.NoisePredictor">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">NoisePredictor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mid_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sampling</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_down_blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_mid_blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_up_blocks</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">down_sampling_factor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">where_y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_to_all</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#NoisePredictor"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.NoisePredictor" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>U-Net-like architecture for noise prediction in Diffusion Models.</p>
-<p>Predicts noise for diffusion models (DDPM, DDIM, SDE), incorporating
-time embeddings and optional text conditioning. used as the <cite>noise_predictor</cite> in
-<cite>Train</cite> and <cite>Sample</cite> from the <cite>ldm</cite>, <cite>sde</cite>, <cite>ddpm</cite>, <cite>ddim</cite> modules.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
-<li><p><strong>down_channels</strong> (<em>list</em><em> of </em><em>int</em>) – List of output channels for downsampling blocks.</p></li>
-<li><p><strong>mid_channels</strong> (<em>list</em><em> of </em><em>int</em>) – List of channels for middle blocks.</p></li>
-<li><p><strong>up_channels</strong> (<em>list</em><em> of </em><em>int</em>) – List of output channels for upsampling blocks.</p></li>
-<li><p><strong>down_sampling</strong> (<em>list</em><em> of </em><em>bool</em>) – List indicating whether to downsample in each down block.</p></li>
-<li><p><strong>time_embed_dim</strong> (<em>int</em>) – Dimensionality of time embeddings.</p></li>
-<li><p><strong>y_embed_dim</strong> (<em>int</em>) – Dimensionality of text embeddings for conditioning.</p></li>
-<li><p><strong>num_down_blocks</strong> (<em>int</em>) – Number of convolutional layer pairs per down block.</p></li>
-<li><p><strong>num_mid_blocks</strong> (<em>int</em>) – Number of convolutional layer pairs per middle block.</p></li>
-<li><p><strong>num_up_blocks</strong> (<em>int</em>) – Number of convolutional layer pairs per up block.</p></li>
-<li><p><strong>dropout_rate</strong> (<em>float</em><em>, </em><em>optional</em>) – Dropout rate for convolutional and attention layers (default: 0.1).</p></li>
-<li><p><strong>down_sampling_factor</strong> (<em>int</em><em>, </em><em>optional</em>) – Factor for spatial downsampling/upsampling (default: 2).</p></li>
-<li><p><strong>where_y</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, text embeddings are used in attention; if False, concatenated to input
-(default: True).</p></li>
-<li><p><strong>y_to_all</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply text-conditioned attention to all layers; if False, only first layer
-(default: False).</p></li>
-<li><p><strong>**Notes**</strong></p></li>
-<li><p><strong>downsampling</strong> (<em>- The architecture follows a U-Net structure with</em>) – upsampling blocks, incorporating time embeddings and optional text conditioning via
-attention or concatenation.</p></li>
-<li><p><strong>bottleneck</strong> – upsampling blocks, incorporating time embeddings and optional text conditioning via
-attention or concatenation.</p></li>
-<li><p><strong>and</strong> – upsampling blocks, incorporating time embeddings and optional text conditioning via
-attention or concatenation.</p></li>
-<li><p><strong>blocks</strong> (<em>- Skip connections link down and up</em>)</p></li>
-<li><p><strong>concatenation.</strong> (<em>with channel adjustments for</em>)</p></li>
-<li><p><strong>stability.</strong> (<em>- Weights are initialized with Kaiming normal</em><em> (</em><em>Leaky ReLU nonlinearity</em><em>) </em><em>for</em>)</p></li>
-<li><p><strong>shape.</strong> (<em>- Input and output tensors have the same</em>)</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.NoisePredictor.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">t</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#NoisePredictor.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.NoisePredictor.forward" title="Link to this definition">#</a></dt>
-<dd><p>Predicts noise given input, time step, and optional text conditioning.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
-<li><p><strong>t</strong> (<em>torch.Tensor</em>) – Time steps, shape (batch_size,).</p></li>
-<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings for conditioning, shape (batch_size, seq_len, y_embed_dim)
-or (batch_size, y_embed_dim) (default: None).</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>output (torch.Tensor) - Predicted noise, same shape as input <cite>x</cite>.</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.NoisePredictor.initialize_weights">
-<span class="sig-name descname"><span class="pre">initialize_weights</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#NoisePredictor.initialize_weights"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.NoisePredictor.initialize_weights" title="Link to this definition">#</a></dt>
-<dd><p>Initializes model weights for training stability.</p>
-<p>Applies Kaiming normal initialization to convolutional and linear layers with
-Leaky ReLU nonlinearity (a=0.2), and zeros biases.</p>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.TextEncoder">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">TextEncoder</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">use_pretrained_model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">model_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'bert-base-uncased'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vocabulary_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">30522</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_layers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">6</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">input_dimension</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">768</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_dimension</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">768</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_heads</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">8</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">context_length</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">77</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">qkv_bias</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scaling_value</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">4</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">epsilon</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-05</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#TextEncoder"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.TextEncoder" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Transformer-based encoder for text prompts in conditional diffusion models.</p>
-<p>Encodes text prompts into embeddings using either a pre-trained BERT model or a
-custom transformer architecture. Used as the <cite>conditional_model</cite> in diffusion models
-(e.g., DDPM, DDIM, SDE, LDM) to provide conditional inputs for noise prediction.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>use_pretrained_model</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, uses a pre-trained BERT model; otherwise, builds a custom transformer
-(default: True).</p></li>
-<li><p><strong>model_name</strong> (<em>str</em><em>, </em><em>optional</em>) – Name of the pre-trained model to load (default: “bert-base-uncased”).</p></li>
-<li><p><strong>vocabulary_size</strong> (<em>int</em><em>, </em><em>optional</em>) – Size of the vocabulary for the custom transformer’s embedding layer
-(default: 30522).</p></li>
-<li><p><strong>num_layers</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of transformer encoder layers for the custom transformer (default: 6).</p></li>
-<li><p><strong>input_dimension</strong> (<em>int</em><em>, </em><em>optional</em>) – Input embedding dimension for the custom transformer (default: 768).</p></li>
-<li><p><strong>output_dimension</strong> (<em>int</em><em>, </em><em>optional</em>) – Output embedding dimension for both pre-trained and custom models
-(default: 768).</p></li>
-<li><p><strong>num_heads</strong> (<em>int</em><em>, </em><em>optional</em>) – Number of attention heads in the custom transformer (default: 8).</p></li>
-<li><p><strong>context_length</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum sequence length for text prompts (default: 77).</p></li>
-<li><p><strong>dropout_rate</strong> (<em>float</em><em>, </em><em>optional</em>) – Dropout rate for attention and feedforward layers (default: 0.1).</p></li>
-<li><p><strong>qkv_bias</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, includes bias in query, key, and value projections for the custom
-transformer (default: False).</p></li>
-<li><p><strong>scaling_value</strong> (<em>int</em><em>, </em><em>optional</em>) – Scaling factor for the feedforward layer’s hidden dimension in the custom
-transformer (default: 4).</p></li>
-<li><p><strong>epsilon</strong> (<em>float</em><em>, </em><em>optional</em>) – Epsilon for layer normalization in the custom transformer (default: 1e-5).</p></li>
-<li><p><strong>**Notes**</strong></p></li>
-<li><p><strong>True</strong> (<em>- When use_pretrained_model is</em>) – (<cite>requires_grad = False</cite>), and a projection layer maps outputs to
-<cite>output_dimension</cite>.</p></li>
-<li><p><strong>frozen</strong> (<em>the BERT model’s parameters are</em>) – (<cite>requires_grad = False</cite>), and a projection layer maps outputs to
-<cite>output_dimension</cite>.</p></li>
-<li><p><strong>and</strong> (<em>- The custom transformer uses EncoderLayer modules with multi-head attention</em>) – feedforward networks, supporting variable input/output dimensions.</p></li>
-<li><p><strong>(</strong><strong>batch_size</strong> (<em>- The output shape is</em>)</p></li>
-<li><p><strong>context_length</strong></p></li>
-<li><p><strong>output_dimension</strong><strong>)</strong><strong>.</strong></p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.TextEncoder.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">attention_mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#TextEncoder.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.TextEncoder.forward" title="Link to this definition">#</a></dt>
-<dd><p>Encodes text prompts into embeddings.</p>
-<p>Processes input token IDs and an optional attention mask to produce embeddings
-using either a pre-trained BERT model or a custom transformer.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Token IDs, shape (batch_size, seq_len).</p></li>
-<li><p><strong>attention_mask</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Attention mask, shape (batch_size, seq_len), where 0 indicates padding
-tokens to ignore (default: None).</p></li>
-</ul>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p><ul class="simple">
-<li><p><em>x (torch.Tensor) - Encoded embeddings, shape (batch_size, seq_len, output_dimension).</em></p></li>
-<li><p><em>**Notes**</em></p></li>
-<li><ul>
-<li><p>For pre-trained BERT, the <cite>last_hidden_state</cite> is projected to – <cite>output_dimension</cite>.</p></li>
-</ul>
-</li>
-<li><p><em>- For the custom transformer, token embeddings are processed through</em> – <cite>Embedding</cite> and <cite>EncoderLayer</cite> modules.</p></li>
-<li><p><em>- The attention mask should be 0 for padding tokens and 1 for valid tokens when</em> – using the custom transformer, or follow BERT’s convention for pre-trained
-models.</p></li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.TimeEmbedding">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">TimeEmbedding</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">output_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embed_dim</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#TimeEmbedding"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.TimeEmbedding" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Time embedding projection for conditioning NoisePredictor layers.</p>
-<p>Projects time embeddings to match the channel dimension of convolutional outputs.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>output_dim</strong> (<em>int</em>) – Output channel dimension (matches convolutional channels).</p></li>
-<li><p><strong>embed_dim</strong> (<em>int</em>) – Input time embedding dimension.</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.TimeEmbedding.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">batch</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#TimeEmbedding.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.TimeEmbedding.forward" title="Link to this definition">#</a></dt>
-<dd><p>Projects time embeddings to output dimension.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>batch</strong> (<em>torch.Tensor</em>) – Time embeddings, shape (batch_size, embed_dim).</p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>Projected embeddings, shape (batch_size, output_dim).</p>
-</dd>
-<dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>torch.Tensor</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.UpBlock">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">UpBlock</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">time_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_embed_dim</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_layers</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_sampling_factor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_sampling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dropout_rate</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y_to_all</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#UpBlock"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.UpBlock" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Upsampling block for NoisePredictor’s decoder.</p>
-<p>Applies upsampling (if enabled), concatenates skip connections, and processes through
-convolutional layers with residual connections, time embeddings, and optional
-text-conditioned attention.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels (before upsampling).</p></li>
-<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
-<li><p><strong>skip_channels</strong> (<em>int</em>) – Number of channels from skip connection.</p></li>
-<li><p><strong>time_embed_dim</strong> (<em>int</em>) – Dimensionality of time embeddings.</p></li>
-<li><p><strong>y_embed_dim</strong> (<em>int</em>) – Dimensionality of text embeddings.</p></li>
-<li><p><strong>num_layers</strong> (<em>int</em>) – Number of convolutional layer pairs (Conv3).</p></li>
-<li><p><strong>up_sampling_factor</strong> (<em>int</em>) – Factor for spatial upsampling.</p></li>
-<li><p><strong>up_sampling</strong> (<em>bool</em>) – If True, apply upsampling; if False, use identity (no upsampling).</p></li>
-<li><p><strong>dropout_rate</strong> (<em>float</em>) – Dropout rate for Conv3 and attention layers.</p></li>
-<li><p><strong>y_to_all</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, apply text-conditioned attention to all layers; if False, only first layer
-(default: False).</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.UpBlock.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_connection</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">embed_time</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#UpBlock.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.UpBlock.forward" title="Link to this definition">#</a></dt>
-<dd><p>Processes input through upsampling, skip connection, convolutions, time embeddings, and attention.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p></li>
-<li><p><strong>skip_connection</strong> (<em>torch.Tensor</em>) – Skip connection tensor, shape (batch_size, skip_channels,
-height*up_sampling_factor, width*up_sampling_factor).</p></li>
-<li><p><strong>embed_time</strong> (<em>torch.Tensor</em>) – Time embeddings, shape (batch_size, time_embed_dim).</p></li>
-<li><p><strong>y</strong> (<em>torch.Tensor</em><em>, </em><em>optional</em>) – Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
-(batch_size, y_embed_dim) (default: None).</p></li>
-</ul>
-</dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p>output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height*up_sampling_factor, width*up_sampling_factor) if upsampling; otherwise, same height/width as input (after skip connection).</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
-<dl class="py class">
-<dt class="sig sig-object py" id="torchdiff.utils.UpSampling">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchdiff.utils.</span></span><span class="sig-name descname"><span class="pre">UpSampling</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">in_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_channels</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_sampling_factor</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">conv_block</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_sampling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#UpSampling"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.UpSampling" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">Module</span></code></p>
-<p>Upsampling module for NoisePredictor’s UpBlock.</p>
-<p>Combines transposed convolution and nearest-neighbor upsampling (if enabled),
-concatenating outputs to preserve feature information, with interpolation to align
-spatial dimensions if needed.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>in_channels</strong> (<em>int</em>) – Number of input channels.</p></li>
-<li><p><strong>out_channels</strong> (<em>int</em>) – Number of output channels.</p></li>
-<li><p><strong>up_sampling_factor</strong> (<em>int</em>) – Factor for spatial upsampling.</p></li>
-<li><p><strong>conv_block</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, include transposed convolutional path (default: True).</p></li>
-<li><p><strong>up_sampling</strong> (<em>bool</em><em>, </em><em>optional</em>) – If True, include nearest-neighbor upsampling path (default: True).</p></li>
-</ul>
-</dd>
-</dl>
-<dl class="py method">
-<dt class="sig sig-object py" id="torchdiff.utils.UpSampling.forward">
-<span class="sig-name descname"><span class="pre">forward</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">batch</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="_modules/torchdiff/utils.html#UpSampling.forward"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#torchdiff.utils.UpSampling.forward" title="Link to this definition">#</a></dt>
-<dd><p>Upsamples input using convolutional and/or upsampling paths.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>batch</strong> (<em>torch.Tensor</em>) – Input tensor, shape (batch_size, in_channels, height, width).</p>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p><ul class="simple">
-<li><p><em>batch (torch.Tensor) - Upsampled tensor, shape (batch_size, out_channels, height*up_sampling_factor, width*up_sampling_factor).</em></p></li>
-<li><p><em>**Notes**</em></p></li>
-<li><p><em>- Interpolation is applied if the spatial dimensions of the convolutional and</em> – upsampling paths differ, using nearest-neighbor mode.</p></li>
-</ul>
-</p>
-</dd>
-</dl>
-</dd></dl>
-
-</dd></dl>
-
 </section>
 
 
@@ -1110,7 +1124,7 @@ spatial dimensions if needed.</p>
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">LDM</p>
+        <p class="prev-next-title">ldm</p>
       </div>
     </a>
 </div>
@@ -1132,24 +1146,8 @@ spatial dimensions if needed.</p>
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Attention"><code class="docutils literal notranslate"><span class="pre">Attention</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Attention.forward"><code class="docutils literal notranslate"><span class="pre">Attention.forward()</span></code></a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Conv3"><code class="docutils literal notranslate"><span class="pre">Conv3</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Conv3.forward"><code class="docutils literal notranslate"><span class="pre">Conv3.forward()</span></code></a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.DownBlock"><code class="docutils literal notranslate"><span class="pre">DownBlock</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.DownBlock.forward"><code class="docutils literal notranslate"><span class="pre">DownBlock.forward()</span></code></a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.DownSampling"><code class="docutils literal notranslate"><span class="pre">DownSampling</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.DownSampling.forward"><code class="docutils literal notranslate"><span class="pre">DownSampling.forward()</span></code></a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Embedding"><code class="docutils literal notranslate"><span class="pre">Embedding</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Embedding.forward"><code class="docutils literal notranslate"><span class="pre">Embedding.forward()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.TextEncoder"><code class="docutils literal notranslate"><span class="pre">TextEncoder</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.TextEncoder.forward"><code class="docutils literal notranslate"><span class="pre">TextEncoder.forward()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.EncoderLayer"><code class="docutils literal notranslate"><span class="pre">EncoderLayer</span></code></a><ul class="nav section-nav flex-column">
@@ -1160,40 +1158,56 @@ spatial dimensions if needed.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.FeedForward.forward"><code class="docutils literal notranslate"><span class="pre">FeedForward.forward()</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.GetEmbeddedTime"><code class="docutils literal notranslate"><span class="pre">GetEmbeddedTime</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.GetEmbeddedTime.forward"><code class="docutils literal notranslate"><span class="pre">GetEmbeddedTime.forward()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Embedding"><code class="docutils literal notranslate"><span class="pre">Embedding</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Embedding.forward"><code class="docutils literal notranslate"><span class="pre">Embedding.forward()</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics"><code class="docutils literal notranslate"><span class="pre">Metrics</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics.compute_fid"><code class="docutils literal notranslate"><span class="pre">Metrics.compute_fid()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics.compute_lpips"><code class="docutils literal notranslate"><span class="pre">Metrics.compute_lpips()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics.compute_metrics"><code class="docutils literal notranslate"><span class="pre">Metrics.compute_metrics()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics.forward"><code class="docutils literal notranslate"><span class="pre">Metrics.forward()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.NoisePredictor"><code class="docutils literal notranslate"><span class="pre">NoisePredictor</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.NoisePredictor.initialize_weights"><code class="docutils literal notranslate"><span class="pre">NoisePredictor.initialize_weights()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.NoisePredictor.forward"><code class="docutils literal notranslate"><span class="pre">NoisePredictor.forward()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.DownBlock"><code class="docutils literal notranslate"><span class="pre">DownBlock</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.DownBlock.forward"><code class="docutils literal notranslate"><span class="pre">DownBlock.forward()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.MiddleBlock"><code class="docutils literal notranslate"><span class="pre">MiddleBlock</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.MiddleBlock.forward"><code class="docutils literal notranslate"><span class="pre">MiddleBlock.forward()</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.NoisePredictor"><code class="docutils literal notranslate"><span class="pre">NoisePredictor</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.NoisePredictor.forward"><code class="docutils literal notranslate"><span class="pre">NoisePredictor.forward()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.NoisePredictor.initialize_weights"><code class="docutils literal notranslate"><span class="pre">NoisePredictor.initialize_weights()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.UpBlock"><code class="docutils literal notranslate"><span class="pre">UpBlock</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.UpBlock.forward"><code class="docutils literal notranslate"><span class="pre">UpBlock.forward()</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.TextEncoder"><code class="docutils literal notranslate"><span class="pre">TextEncoder</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.TextEncoder.forward"><code class="docutils literal notranslate"><span class="pre">TextEncoder.forward()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Conv3"><code class="docutils literal notranslate"><span class="pre">Conv3</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Conv3.forward"><code class="docutils literal notranslate"><span class="pre">Conv3.forward()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.TimeEmbedding"><code class="docutils literal notranslate"><span class="pre">TimeEmbedding</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.TimeEmbedding.forward"><code class="docutils literal notranslate"><span class="pre">TimeEmbedding.forward()</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.UpBlock"><code class="docutils literal notranslate"><span class="pre">UpBlock</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.UpBlock.forward"><code class="docutils literal notranslate"><span class="pre">UpBlock.forward()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.GetEmbeddedTime"><code class="docutils literal notranslate"><span class="pre">GetEmbeddedTime</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.GetEmbeddedTime.forward"><code class="docutils literal notranslate"><span class="pre">GetEmbeddedTime.forward()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Attention"><code class="docutils literal notranslate"><span class="pre">Attention</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Attention.forward"><code class="docutils literal notranslate"><span class="pre">Attention.forward()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.DownSampling"><code class="docutils literal notranslate"><span class="pre">DownSampling</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.DownSampling.forward"><code class="docutils literal notranslate"><span class="pre">DownSampling.forward()</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.UpSampling"><code class="docutils literal notranslate"><span class="pre">UpSampling</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.UpSampling.forward"><code class="docutils literal notranslate"><span class="pre">UpSampling.forward()</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics"><code class="docutils literal notranslate"><span class="pre">Metrics</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics.compute_fid"><code class="docutils literal notranslate"><span class="pre">Metrics.compute_fid()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics.compute_metrics"><code class="docutils literal notranslate"><span class="pre">Metrics.compute_metrics()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics.compute_lpips"><code class="docutils literal notranslate"><span class="pre">Metrics.compute_lpips()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchdiff.utils.Metrics.forward"><code class="docutils literal notranslate"><span class="pre">Metrics.forward()</span></code></a></li>
 </ul>
 </li>
 </ul>

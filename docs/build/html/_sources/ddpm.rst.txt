@@ -1,6 +1,6 @@
 .. _ddpm:
 
-DDPM
+ddpm
 =====
 
 .. automodule:: torchdiff.ddpm
