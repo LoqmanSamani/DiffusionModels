@@ -1,7 +1,7 @@
 lpips==0.1.4
 pytorch-fid==0.3.0
-torch==2.6.0+cu118
-torchvision==0.21.0+cu118
+torch==2.6.0
+torchvision==0.21.0
 tqdm==4.67.1
 transformers==4.44.2
 
