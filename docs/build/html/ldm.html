@@ -771,7 +771,7 @@ learning rate scheduling, with evaluation metrics (MSE, PSNR, SSIM, FID, LPIPS).
 <li><p><strong>data_loader</strong> (<em>torch.utils.data.DataLoader</em>) – DataLoader for training data.</p></li>
 <li><p><strong>val_loader</strong> (<em>torch.utils.data.DataLoader</em><em>, </em><em>optional</em>) – DataLoader for validation data (default: None).</p></li>
 <li><p><strong>max_epoch</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum number of training epochs (default: 100).</p></li>
-<li><p><strong>metrics</strong> (<a class="reference internal" href="utils.html#torchdiff.utils.Metrics" title="torchdiff.utils.Metrics"><em>Metrics</em></a><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
+<li><p><strong>metrics</strong> (<em>object</em><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
 <li><p><strong>device</strong> (<em>str</em><em>, </em><em>optional</em>) – Device for computation (e.g., ‘cuda’, ‘cpu’) (default: ‘cuda’).</p></li>
 <li><p><strong>save_path</strong> (<em>str</em><em>, </em><em>optional</em>) – Path to save model checkpoints (default: ‘vlc_model.pth’).</p></li>
 <li><p><strong>checkpoint</strong> (<em>int</em><em>, </em><em>optional</em>) – Frequency (in epochs) to save model checkpoints (default: 10).</p></li>
@@ -867,7 +867,7 @@ diffusion model.</p>
 <li><p><strong>val_loader</strong> (<em>torch.utils.data.DataLoader</em><em>, </em><em>optional</em>) – DataLoader for validation data (default: None).</p></li>
 <li><p><strong>conditional_model</strong> (<a class="reference internal" href="utils.html#torchdiff.utils.TextEncoder" title="torchdiff.utils.TextEncoder"><em>TextEncoder</em></a><em>, </em><em>optional</em>) – Text encoder with projection layers for conditional generation (default: None).</p></li>
 <li><p><strong>reverse_diffusion</strong> (<a class="reference internal" href="ddpm.html#torchdiff.ddpm.ReverseDDPM" title="torchdiff.ddpm.ReverseDDPM"><em>ReverseDDPM</em></a><em>, </em><a class="reference internal" href="ddim.html#torchdiff.ddim.ReverseDDIM" title="torchdiff.ddim.ReverseDDIM"><em>ReverseDDIM</em></a><em>, or </em><a class="reference internal" href="sde.html#torchdiff.sde.ReverseSDE" title="torchdiff.sde.ReverseSDE"><em>ReverseSDE</em></a><em>, </em><em>optional</em>) – Reverse diffusion model for sampling during validation (default: None).</p></li>
-<li><p><strong>metrics</strong> (<a class="reference internal" href="utils.html#torchdiff.utils.Metrics" title="torchdiff.utils.Metrics"><em>Metrics</em></a><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
+<li><p><strong>metrics</strong> (<em>object</em><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
 <li><p><strong>max_epoch</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum number of training epochs (default: 1000).</p></li>
 <li><p><strong>device</strong> (<em>str</em><em>, </em><em>optional</em>) – Device for computation (e.g., ‘cuda’, ‘cpu’) (default: None).</p></li>
 <li><p><strong>store_path</strong> (<em>str</em><em>, </em><em>optional</em>) – Path to save model checkpoints (default: None, uses ‘ldm_model.pth’).</p></li>

@@ -661,7 +661,7 @@ checkpointing, as inspired by Song et al. (2021).</p>
 <li><p><strong>max_epoch</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum number of training epochs (default: 1000).</p></li>
 <li><p><strong>device</strong> (<em>torch.device</em><em>, </em><em>optional</em>) – Device for computation (default: CUDA if available, else CPU).</p></li>
 <li><p><strong>conditional_model</strong> (<em>nn.Module</em><em>, </em><em>optional</em>) – Model for conditional generation (e.g., text embeddings), default None.</p></li>
-<li><p><strong>metrics_</strong> (<a class="reference internal" href="utils.html#torchdiff.utils.Metrics" title="torchdiff.utils.Metrics"><em>torchdiff.utils.Metrics</em></a><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
+<li><p><strong>metrics_</strong> (<em>object</em><em>, </em><em>optional</em>) – Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</p></li>
 <li><p><strong>tokenizer</strong> (<em>BertTokenizer</em><em>, </em><em>optional</em>) – Tokenizer for processing text prompts, default None (loads “bert-base-uncased”).</p></li>
 <li><p><strong>max_length</strong> (<em>int</em><em>, </em><em>optional</em>) – Maximum length for tokenized prompts (default: 77).</p></li>
 <li><p><strong>store_path</strong> (<em>str</em><em>, </em><em>optional</em>) – Path to save model checkpoints (default: “ddim_model.pth”).</p></li>

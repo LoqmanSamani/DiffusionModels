@@ -1,7 +1,7 @@
 .. _ddpm:
 
 DDPM
-====
+=====
 
 .. automodule:: torchdiff.ddpm
    :members:

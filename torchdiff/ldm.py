@@ -100,7 +100,7 @@ class TrainLDM(nn.Module):
         Text encoder with projection layers for conditional generation (default: None).
     reverse_diffusion : ReverseDDPM, ReverseDDIM, or ReverseSDE, optional
         Reverse diffusion model for sampling during validation (default: None).
-    metrics_ : Metrics, optional
+    metrics_ : object, optional
         Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
     max_epoch : int, optional
         Maximum number of training epochs (default: 1000).
@@ -1364,7 +1364,7 @@ class TrainAE(nn.Module):
         DataLoader for validation data (default: None).
     max_epoch : int, optional
         Maximum number of training epochs (default: 100).
-    metrics_ : Metrics, optional
+    metrics_ : object, optional
         Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
     device : str, optional
         Device for computation (e.g., 'cuda', 'cpu') (default: 'cuda').

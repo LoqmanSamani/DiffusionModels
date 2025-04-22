@@ -1,7 +1,7 @@
 .. _ddim:
 
 DDIM
-====
+=====
 
 .. automodule:: torchdiff.ddim
    :members:

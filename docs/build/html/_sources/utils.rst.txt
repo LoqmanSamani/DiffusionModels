@@ -1,7 +1,7 @@
 .. _utils:
 
 Utils
-====
+=====
 
 .. automodule:: torchdiff.utils
    :members:

@@ -5,8 +5,8 @@
 
 .. torchdiff documentation
 
-TorchDiff Documentation
-===================================
+Welcome to TorchDiff's Documentation
+======================================
 
 **TorchDiff** is a PyTorch-based library for diffusion models, including implementations of DDPM, DDIM, LDM, and SDE-based models.
 
@@ -21,7 +21,7 @@ TorchDiff Documentation
    utils
 
 Indices and tables
-==================
+===================
 
 * :ref:`genindex`
 * :ref:`modindex`

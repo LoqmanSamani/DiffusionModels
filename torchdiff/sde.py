@@ -376,7 +376,7 @@ class TrainSDE(nn.Module):
         Device for computation (default: CUDA if available, else CPU).
     conditional_model : nn.Module, optional
         Model for conditional generation (e.g., text embeddings), default None.
-    metrics_ : Metrics, optional
+    metrics_ : object, optional
         Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
     tokenizer : BertTokenizer, optional
         Tokenizer for processing text prompts, default None (loads "bert-base-uncased").

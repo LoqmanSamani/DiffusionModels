@@ -1,7 +1,7 @@
 .. _ldm:
 
 LDM
-====
+=====
 
 .. automodule:: torchdiff.ldm
    :members:

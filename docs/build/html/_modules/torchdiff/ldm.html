@@ -442,7 +442,7 @@
 <span class="sd">        Text encoder with projection layers for conditional generation (default: None).</span>
 <span class="sd">    reverse_diffusion : ReverseDDPM, ReverseDDIM, or ReverseSDE, optional</span>
 <span class="sd">        Reverse diffusion model for sampling during validation (default: None).</span>
-<span class="sd">    metrics_ : Metrics, optional</span>
+<span class="sd">    metrics_ : object, optional</span>
 <span class="sd">        Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</span>
 <span class="sd">    max_epoch : int, optional</span>
 <span class="sd">        Maximum number of training epochs (default: 1000).</span>
@@ -1790,7 +1790,7 @@
 <span class="sd">        DataLoader for validation data (default: None).</span>
 <span class="sd">    max_epoch : int, optional</span>
 <span class="sd">        Maximum number of training epochs (default: 100).</span>
-<span class="sd">    metrics_ : Metrics, optional</span>
+<span class="sd">    metrics_ : object, optional</span>
 <span class="sd">        Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).</span>
 <span class="sd">    device : str, optional</span>
 <span class="sd">        Device for computation (e.g., &#39;cuda&#39;, &#39;cpu&#39;) (default: &#39;cuda&#39;).</span>

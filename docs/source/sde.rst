@@ -1,7 +1,7 @@
 .. _sde:
 
 SDE
-====
+=====
 
 .. automodule:: torchdiff.sde
    :members:
