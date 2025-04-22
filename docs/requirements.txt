@@ -1,5 +1,5 @@
 sphinx
-sphinx-rtd-theme
+pydata_sphinx_theme
 
 lpips==0.1.4
 pytorch-fid==0.3.0
