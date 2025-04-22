@@ -11,8 +11,8 @@ build:
   tools:
     python: "3.12" 
     
-format:
-   - pdf
+#format:
+#   - pdf
 
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:
