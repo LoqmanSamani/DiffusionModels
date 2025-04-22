@@ -43,7 +43,7 @@ cd DiffusionModels
 # Install dependencies
 pip install -r requirements.txt
 
-# Install the package from the root where setup.py is
+# Install the package
 pip install .
 
 ```
