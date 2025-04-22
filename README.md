@@ -7,6 +7,7 @@
 ![Diffusion Model](imgs/img.png)  
 *Source: [High-Resolution Image Synthesis with Latent Diffusion Models](https://arxiv.org/abs/2112.10752)*
 
+
 ### Overview
 
 TorchDiff is a PyTorch-based library for building diffusion models, inspired by original research papers. The first release, **TorchDiff 1.0.0**, includes four model families: **DDPM**, **DDIM**, **SDE**, and **LDM**. These models support both **conditional** (e.g., text-prompt-based) and **unconditional** generation.
@@ -23,6 +24,11 @@ Additional utilities include:
 - **Text Encoder**: A transformer-based model (e.g., BERT) for text-conditioned generation (`TextEncoder`).
 - **Metrics**: Evaluates image quality with metrics like MSE, PSNR, SSIM, FID, and LPIPS (`Metrics`).
 
+---
+
+### Documentation
+
+- **Read the Docs**: [Official API Reference](https://torchdiff.readthedocs.io/en/latest/index.html)
 ---
 
 ### Installation
