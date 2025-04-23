@@ -18,6 +18,9 @@ sampling. Supports both unconditional and conditional generation with text promp
 
 - Ho, J., Jain, A., & Abbeel, P. (2020). Denoising Diffusion Probabilistic Models.
 
+- Salimans, Tim, et al. "Pixelcnn++: Improving the pixelcnn with discretized logistic mixture likelihood and other modifications."
+arXiv preprint arXiv:1701.05517 (2017).
+
 ---------------------------------------------------------------------------------
 """
 

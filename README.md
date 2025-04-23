@@ -37,7 +37,6 @@ TorchDiff is available on PyPI and can be installed using pip. Alternatively, yo
 
 #### Install via PyPI (Recommended)
 ```bash
-pip install -r requirements.txt
 pip install torchdiff
 ````
 #### Install via Repository (Optional)

@@ -19,8 +19,7 @@ generation with text prompts.
 
 **References**
 
-- Song, Y., Sohl-Dickstein, J., Kingma, D. P., Kumar, A., Ermon, S., & Poole, B. (2021).
-  Score-Based Generative Modeling through Stochastic Differential Equations.
+- Song, Yang, et al. "Score-based generative modeling through stochastic differential equations." arXiv preprint arXiv:2011.13456 (2020).
 
 ---------------------------------------------------------------------------------
 """

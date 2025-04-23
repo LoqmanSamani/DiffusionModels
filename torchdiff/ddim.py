@@ -22,7 +22,7 @@ subsampled time step schedule for faster sampling compared to DDPM.
 
 **References**:
 
-- Song, J., Meng, C., & Ermon, S. (2021). Denoising Diffusion Implicit Models.
+- Song, Jiaming, Chenlin Meng, and Stefano Ermon. "Denoising diffusion implicit models." arXiv preprint arXiv:2010.02502 (2020).
 
 -------------------------------------------------------------------------------
 """

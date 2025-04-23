@@ -44,12 +44,15 @@ conditional generation with text prompts.
 
 **References**
 
-Rombach, R., Blattmann, A., Lorenz, D., Esser, P., & Ommer, B. (2022).
-High-Resolution Image Synthesis with Latent Diffusion Models.
+- Rombach, Robin, et al. "High-resolution image synthesis with latent diffusion models."
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. 2022.
+
+
+- Esser, Patrick, Robin Rombach, and Bjorn Ommer. "Taming transformers for high-resolution image synthesis."
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. 2021.
 
 ---------------------------------------------------------------------------------
 """
-
 
 
 import torch
