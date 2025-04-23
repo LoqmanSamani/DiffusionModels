@@ -42,8 +42,8 @@ pip install torchdiff
 #### Install via Repository (Optional)
 ```bash
 # Clone the repository
-git clone https://github.com/LoqmanSamani/DiffusionModels.git
-cd DiffusionModels
+git clone https://github.com/LoqmanSamani/TorchDiff.git
+cd TorchDiff
 
 # Install dependencies
 pip install -r requirements.txt
