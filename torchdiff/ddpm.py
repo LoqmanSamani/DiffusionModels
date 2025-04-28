@@ -22,6 +22,8 @@ sampling. Supports both unconditional and conditional generation with text promp
 arXiv preprint arXiv:1701.05517 (2017).
 
 ---------------------------------------------------------------------------------
+TODO: if variance schedule (beta) is set to trainable, the algorithm should use
+      reparameterization trick in backward propagation to optimize beta. it is still not implemented!!!!.
 """
 
 import torch
