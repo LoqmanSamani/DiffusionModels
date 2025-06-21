@@ -1,16 +1,28 @@
 ## TorchDiff
 #### A Python Diffusion Library Built on PyTorch
 
+<div align="center">
+  <img src="imgs/torchdiff_logo.png" alt="TorchDiff Logo" width="300"/>
+</div>
+
+<div align="center">
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-red?style=plastic)](https://opensource.org/licenses/MIT)
 [![PyTorch](https://img.shields.io/badge/PyTorch-white?style=plastic&logo=pytorch&logoColor=red)](https://pytorch.org/)
 
-![Diffusion Model](imgs/img.png)  
-*Source: [High-Resolution Image Synthesis with Latent Diffusion Models](https://arxiv.org/abs/2112.10752)*
+</div>
 
+---
 
 ### Overview
 
 TorchDiff is a PyTorch-based library for building diffusion models, inspired by original research papers. The first release, **TorchDiff 1.0.0**, includes four model families: **DDPM**, **DDIM**, **SDE**, and **LDM**. These models support both **conditional** (e.g., text-prompt-based) and **unconditional** generation.
+
+<div align="center">
+  <img src="imgs/diffusion_diagram.png" alt="Diffusion Model Process" width="600"/>
+  <br>
+  <em>Source: <a href="https://arxiv.org/abs/2112.10752">High-Resolution Image Synthesis with Latent Diffusion Models</a></em>
+</div>
 
 Each model is organized into modular components:
 - **Forward Diffusion**: Adds noise to images (e.g., `ForwardDDPM` for DDPM).
@@ -29,6 +41,7 @@ Additional utilities include:
 ### Documentation
 
 - **Read the Docs**: [Official API Reference](https://torchdiff.readthedocs.io/en/latest/index.html)
+
 ---
 
 ### Installation
@@ -38,7 +51,8 @@ TorchDiff is available on PyPI and can be installed using pip. Alternatively, yo
 #### Install via PyPI (Recommended)
 ```bash
 pip install torchdiff
-````
+```
+
 #### Install via Repository (Optional)
 ```bash
 # Clone the repository
@@ -50,10 +64,11 @@ pip install -r requirements.txt
 
 # Install the package
 pip install .
-
 ```
+
 Ensure you have Python 3.8+ installed. For GPU acceleration, install a compatible CUDA version for PyTorch.
 
+---
 
 ### Implemented Models
 
@@ -207,7 +222,6 @@ Ensure you have Python 3.8+ installed. For GPU acceleration, install a compatibl
     image = sampler(conditions="nothing!!!")  # Generate one conditioned image
     ```
 
-
 4. **Latent Diffusion Models (LDM)**
 
     Paper: [Rombach et al., 2022](https://arxiv.org/abs/2112.10752)
@@ -248,8 +262,9 @@ Ensure you have Python 3.8+ installed. For GPU acceleration, install a compatibl
         batch_size=1, in_channels=3, device="cuda"
     )
     # Generate an image
-    imgs = sampler(conditions="nothing") #  # Generate one conditioned image
+    imgs = sampler(conditions="nothing") # Generate one conditioned image
     ```
+
 ---
 
 ### 🔐 License
@@ -276,11 +291,3 @@ Contributions are welcome! If you have ideas, spot a bug, or want to improve the
 - Open an issue or start a discussion in the GitHub [Issues](../../issues) section.
 
 Your feedback and suggestions help make TorchDiff better for everyone.
-
-
-
-
-
-
-
-
