@@ -22,9 +22,9 @@
 TorchDiff is a PyTorch-based library for building diffusion models, inspired by original research papers. The first release, **TorchDiff 1.0.0**, includes four model families: **DDPM**, **DDIM**, **SDE**, and **LDM**. These models support both **conditional** (e.g., text-prompt-based) and **unconditional** generation.
 
 <div align="center">
-  <img src="imgs/diffusion_diagram.png" alt="Diffusion Model Process" width="600"/>
+  <img src="imgs/mount.png" alt="Diffusion Model Process" width="1000"/>
   <br>
-  <em>Source: <a href="https://arxiv.org/abs/2112.10752">High-Resolution Image Synthesis with Latent Diffusion Models</a></em>
+  <em>Image generated using Sora</em>
 </div>
 
 Each model is organized into modular components:
