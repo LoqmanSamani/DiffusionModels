@@ -1,0 +1,637 @@
+\documentclass[12pt,twoside]{article}
+
+% Enhanced package imports with better organization
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+
+% Typography and fonts
+\usepackage{newtxtext,newtxmath} % Times for text and math
+\usepackage{newtxtt} % Modern typewriter for code
+
+% Mathematics and algorithms
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+% Graphics and figures
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes}
+
+% Tables
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+
+% Code listings
+\usepackage{listings}
+\usepackage{xcolor}
+
+% References and citations
+\usepackage{hyperref}
+\usepackage{refcount}
+\usepackage{cleveref}
+
+% Page layout
+\usepackage[margin=1in,headheight=14pt]{geometry}
+\usepackage{fancyhdr}
+
+% Bibliography
+\usepackage{natbib}
+
+% Miscellaneous
+\usepackage{datetime}
+\usepackage{enumitem}
+\usepackage{siunitx}
+
+% Define colors for code listings
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolor}{rgb}{0.97,0.97,0.97}
+\definecolor{framecolor}{rgb}{0.85,0.85,0.85}
+
+% Enhanced code listing style
+\lstdefinestyle{pythonstyle}{
+    language=Python,
+    backgroundcolor=\color{backcolor},   
+    commentstyle=\color{codegreen}\itshape,
+    keywordstyle=\color{blue}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    numbers=left,
+    numbersep=8pt,
+    showstringspaces=false,
+    tabsize=4,
+    frame=single,
+    framerule=0.5pt,
+    rulecolor=\color{framecolor},
+    captionpos=b,
+    xleftmargin=17pt,
+    framexleftmargin=17pt,
+    keywordstyle=\color{blue}\bfseries,
+    morekeywords={import,from,as,def,class,return,if,else,elif,for,while,try,except,with,lambda},
+    emphstyle=\color{red}\bfseries,
+    emph={True,False,None}
+}
+
+\lstset{style=pythonstyle}
+
+% Date formatting
+\newdateformat{monthdayyeardate}{\monthname[\THEMONTH]~\THEDAY, \THEYEAR}
+
+% Mathematical operators and commands
+\DeclareMathOperator{\argmin}{argmin}
+\DeclareMathOperator{\softmax}{softmax}
+\newcommand{\RR}{\mathbb{R}}
+\newcommand{\NN}{\mathbb{N}}
+\newcommand{\EE}{\mathbb{E}}
+\newcommand{\KL}{\text{KL}}
+\newcommand{\norm}[1]{\left\|#1\right\|}
+
+% Theorem environments
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+% Header and footer setup
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[LE,RO]{\thepage}
+\fancyhead[LO]{\rightmark}
+\fancyhead[RE]{\leftmark}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% Hyperref setup (should be last)
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=red,
+    urlcolor=blue,
+    bookmarksopen=true,
+    bookmarksnumbered=true,
+    pdftitle={Efficient Latent Diffusion Models: Implementation with TorchDiff},
+    pdfauthor={Loghman Samani},
+    pdfsubject={Machine Learning, Generative Models},
+    pdfkeywords={Diffusion Models, Latent Space, VAE, Deep Learning}
+}
+
+% Cleveref setup for automatic reference formatting
+\crefname{equation}{Eq.}{Eqs.}
+\crefname{figure}{Fig.}{Figs.}
+\crefname{table}{Tab.}{Tabs.}
+\crefname{section}{Sec.}{Secs.}
+
+\begin{document}
+
+% Title page
+\title{\textbf{\LARGE Latent Diffusion Models and Their Implementation in TorchDiff}}
+\author{
+    Loghman Samani\\
+    \href{mailto:samaniloqman91@gmail.com}{\texttt{samaniloqman91@gmail.com}}\\
+    \textit{Developer of TorchDiff}
+}
+\date{\monthdayyeardate\today}
+
+\maketitle
+\thispagestyle{empty}
+
+% Abstract
+\begin{abstract}
+This article introduces latent diffusion models (LDMs), a powerful approach to enhance the efficiency of conventional diffusion models by operating in a compressed latent space. We explore how LDMs, proposed by \cite{rombach2022high}, address the computational challenges of traditional models through a two-stage process: perceptual compression using a variational autoencoder (VAE) and semantic compression via a diffusion process. Implemented in the PyTorch library TorchDiff, we detail the training of a VAE to map high-dimensional data (e.g., $256 \times 256$ RGB images) into a lower-dimensional latent space, followed by training a conditional DDIM model for efficient sampling. The article highlights the benefits of reduced computational costs and improved scalability, supported by a cross-attention mechanism for conditional generation with text prompts. Practical examples using TorchDiff \cite{torchdiff} demonstrate the training and sampling processes, with results showcasing high-quality image generation. This work aims to make diffusion models more accessible and sustainable for real-world applications.\\[5px]
+
+\textbf{Keywords:} Diffusion models, TorchDiff, LDMs, latent space, variational autoencoders, generative modeling, deep learning
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+\section{Introduction}
+\label{sec:introduction}
+
+Diffusion models represent a class of likelihood-based generative models designed to capture every detail of the data distribution, including subtle and often imperceptible features to humans. This \textbf{mode-covering} behavior makes these models computationally intensive and challenging to train. The generation process typically requires multiple denoising steps, resulting in slow sampling procedures that significantly impact practical applications.
+
+These computational challenges, combined with the energy consumption and carbon footprint associated with training and inference, have motivated researchers to develop more efficient approaches. The method we explore in this article—operating in a compressed latent space during both training and sampling—represents a significant advancement in making diffusion models more practical and sustainable.
+
+Latent Diffusion Models (LDMs), as proposed by \cite{rombach2022high}, address these limitations by decomposing the generation process into two stages:
+\begin{enumerate}[itemsep=0pt]
+    \item \textbf{Perceptual compression}: Removing fine details while preserving overall structure
+    \item \textbf{Semantic compression}: Learning high-level patterns and features in the compressed space
+\end{enumerate}
+
+This decomposition raises fundamental questions that we address throughout this article: How much compression can we apply while maintaining generation quality? What are the optimal compression strategies? How can we effectively implement these models in practice?
+
+\subsection{Contributions}
+\label{subsec:contributions}
+
+This work makes the following contributions:
+\begin{itemize}[itemsep=0pt]
+    \item A comprehensive explanation of LDM architecture and training procedures
+    \item Detailed implementation guidelines using the TorchDiff library
+    \item Mathematical formalization of the two-stage training process
+    \item Practical code examples for both VAE and diffusion model training
+    \item Analysis of computational benefits and quality trade-offs
+\end{itemize}
+
+\section{Background and Related Work}
+\label{sec:background}
+
+\subsection{Diffusion Models}
+\label{subsec:diffusion_background}
+
+Diffusion models learn to reverse a gradual noising process applied to data. Given a data distribution $p(\mathbf{x})$, the forward process gradually adds Gaussian noise:
+\begin{equation}
+\label{eq:forward_process}
+q(\mathbf{x}_t | \mathbf{x}_{t-1}) = \mathcal{N}(\mathbf{x}_t; \sqrt{1-\beta_t}\mathbf{x}_{t-1}, \beta_t\mathbf{I})
+\end{equation}
+where $\beta_t$ is a noise schedule. The reverse process learns to denoise:
+\begin{equation}
+\label{eq:reverse_process}
+p_\theta(\mathbf{x}_{t-1} | \mathbf{x}_t) = \mathcal{N}(\mathbf{x}_{t-1}; \mu_\theta(\mathbf{x}_t, t), \Sigma_\theta(\mathbf{x}_t, t))
+\end{equation}
+
+\subsection{Variational Autoencoders}
+\label{subsec:vae_background}
+
+Variational Autoencoders \citep{kingma2013auto} learn to encode data into a latent space and reconstruct it with minimal loss. The VAE optimization objective combines reconstruction and regularization terms:
+\begin{equation}
+\label{eq:vae_objective}
+\mathcal{L}_{\text{VAE}} = \EE_{q_\phi(\mathbf{z}|\mathbf{x})}[\log p_\theta(\mathbf{x}|\mathbf{z})] - \KL(q_\phi(\mathbf{z}|\mathbf{x}) \| p(\mathbf{z}))
+\end{equation}
+
+\section{Latent Diffusion Models: Concept and Architecture}
+\label{sec:ldm_concept}
+
+\subsection{Core Concept}
+\label{subsec:core_concept}
+
+Latent diffusion models operate in a compressed \textbf{latent space} rather than directly with raw data, leading to substantially improved efficiency compared to traditional pixel-space diffusion models. The key insight is that much of the computational cost in conventional diffusion models stems from processing high-dimensional data that contains redundant information.
+
+\Cref{fig:compression_comparison} illustrates the fundamental trade-off between compression efficiency and reconstruction quality. This analysis guides our choice of compression strategy and helps determine optimal operating points for different applications.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1.0\textwidth]{ldm1.png}
+    \caption{Comparison of semantic and perceptual compression techniques. The graph illustrates the trade-off between compression rate (bits/dim) and distortion (RMSE). Semantic compression (left) achieves higher compression rates but with increased distortion, while perceptual compression (right) maintains visual quality at moderate compression levels. The sample images demonstrate quality degradation with increasing compression levels.}
+    \label{fig:compression_comparison}
+\end{figure}
+
+
+
+\subsection{Two-Stage Architecture}
+\label{subsec:two_stage_architecture}
+
+The LDM architecture consists of two main components that are trained sequentially:
+
+\subsubsection{Stage 1: Perceptual Compression}
+\label{subsubsec:perceptual_compression}
+
+A variational autoencoder transforms high-dimensional input data $\mathbf{x} \in \RR^{C \times H \times W}$ into a lower-dimensional latent representation $\mathbf{z} \in \RR^{C_z \times H_z \times W_z}$, where:
+\begin{align}
+\label{eq:compression_mapping}
+H_z &= H/f \nonumber \\
+W_z &= W/f \\
+C_z &\ll C \cdot f^2 \nonumber
+\end{align}
+with $f$ representing the spatial downsampling factor.
+
+\subsubsection{Stage 2: Latent Diffusion}
+\label{subsubsec:latent_diffusion}
+
+A diffusion model operates in the compressed latent space, learning the denoising objective:
+\begin{equation}
+\label{eq:ldm_objective}
+\mathcal{L}_{\text{LDM}} = \EE_{\mathbf{z}, \epsilon \sim \mathcal{N}(0,\mathbf{I}), t} \left[ \norm{\epsilon - \epsilon_\theta(\mathbf{z}_t, t)}^2_2 \right]
+\end{equation}
+where $\mathbf{z}_t$ represents the noisy latent at timestep $t$.\\[5px]
+
+
+\Cref{fig:ldm_architecture} offers a schematic overview of the LDM architecture, highlighting three main components: on the left (red background), the VAE maps input data into the latent space and reconstructs it back to the original data using the encoder and decoder, respectively; in the middle (green background), the main diffusion model operates in the latent space, which can be a DDPM, DDIM, or one of the SDEs available in TorchDiff (though theoretically, any diffusion model could be used); and on the right (light-gray background), conditionals are shown, which can be used to train a conditional LDM.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{ldm2.png}
+    \caption{Schematic overview of the latent diffusion model architecture. The framework consists of three main components: (left, red) the VAE for perceptual compression and reconstruction, (center, green) the diffusion model operating in latent space, and (right, gray) the conditioning mechanism for controllable generation.}
+    \label{fig:ldm_architecture}
+\end{figure}
+
+\section{Methodology}
+\label{sec:methodology}
+
+\subsection{Variational Autoencoder Design}
+\label{subsec:vae_design}
+
+The VAE component, implemented as \texttt{AutoencoderLDM} in TorchDiff, employs a U-Net-like convolutional architecture with the following key components:
+
+\subsubsection{Encoder Architecture}
+\label{subsubsec:encoder_architecture}
+
+The encoder $E_\phi: \RR^{C \times H \times W} \to \RR^{C_z \times H_z \times W_z}$ uses progressive downsampling:
+\begin{equation}
+\label{eq:encoder_mapping}
+\mathbf{z} = E_\phi(\mathbf{x})
+\end{equation}
+
+\subsubsection{Latent Space Regularization}
+\label{subsubsec:latent_regularization}
+
+The model supports two regularization approaches:
+
+\paragraph{KL-Divergence Regularization}
+For continuous latent representations, the encoder outputs parameters $\mu$ and $\log \sigma^2$, with latent sampling via the reparameterization trick:
+\begin{equation}
+\label{eq:reparameterization}
+\mathbf{z}_{\text{sample}} = \mu + \sigma \odot \epsilon, \quad \epsilon \sim \mathcal{N}(0, \mathbf{I}), \quad \sigma = \exp(0.5 \cdot \log \sigma^2)
+\end{equation}
+
+The KL-divergence regularization term is:
+\begin{equation}
+\label{eq:kl_regularization}
+\mathcal{L}_{\KL} = -\frac{1}{2B \cdot S} \sum_{i=1}^{B \cdot S} \left( 1 + \log \sigma_i^2 - \mu_i^2 - \sigma_i^2 \right) \cdot \beta
+\end{equation}
+where $B$ is batch size, $S$ is latent dimensionality, and $\beta$ is the regularization weight.
+
+\paragraph{Vector Quantization}
+For discrete latent representations, a codebook $\mathbf{E} \in \RR^{N \times C_z}$ quantizes encoder outputs:
+\begin{equation}
+\label{eq:vector_quantization}
+\mathbf{q}_i = \argmin_{\mathbf{e}_j \in \mathbf{E}} \norm{\mathbf{h}_i - \mathbf{e}_j}_2^2
+\end{equation}
+
+The VQ loss combines codebook and commitment terms:
+\begin{align}
+\label{eq:vq_loss}
+\mathcal{L}_{\text{codebook}} &= \frac{1}{M} \sum_{i=1}^M \norm{\text{sg}[\mathbf{h}_i] - \mathbf{q}_i}_2^2 \\
+\mathcal{L}_{\text{commitment}} &= \gamma \cdot \frac{1}{M} \sum_{i=1}^M \norm{\mathbf{h}_i - \text{sg}[\mathbf{q}_i]}_2^2 \nonumber
+\end{align}
+where $\text{sg}[\cdot]$ denotes stop-gradient and $\gamma$ is the commitment coefficient.
+
+\subsubsection{Decoder Architecture}
+\label{subsubsec:decoder_architecture}
+
+The decoder $D_\psi: \RR^{C_z \times H_z \times W_z} \to \RR^{C \times H \times W}$ reconstructs data from latent representations:
+\begin{equation}
+\label{eq:decoder_mapping}
+\hat{\mathbf{x}} = D_\psi(\mathbf{z})
+\end{equation}
+
+\subsubsection{Complete VAE Objective}
+\label{subsubsec:complete_vae_objective}
+
+The total VAE loss combines reconstruction and regularization:
+\begin{equation}
+\label{eq:total_vae_loss}
+\mathcal{L}_{\text{VAE}} = \mathcal{L}_{\text{recon}} + \mathcal{L}_{\text{reg}}
+\end{equation}
+where $\mathcal{L}_{\text{recon}} = \norm{\mathbf{x} - \hat{\mathbf{x}}}_2^2$ and $\mathcal{L}_{\text{reg}}$ is either $\mathcal{L}_{\KL}$ or $\mathcal{L}_{\text{codebook}} + \mathcal{L}_{\text{commitment}}$.
+
+\subsection{Conditional Generation with Cross-Attention}
+\label{subsec:conditional_generation}
+
+For conditional generation $p(\mathbf{z}|\mathbf{y})$, where $\mathbf{y}$ represents conditioning information (e.g., text prompts), we employ a cross-attention mechanism within the U-Net architecture.
+
+\subsubsection{Cross-Attention Mechanism}
+\label{subsubsec:cross_attention}
+
+Given an intermediate U-Net representation $\phi_i(\mathbf{z}_t) \in \RR^{N \times d_\epsilon}$ and conditional embedding $\tau_\theta(\mathbf{y}) \in \RR^{M \times d_\tau}$, the attention operation is:
+\begin{equation}
+\label{eq:cross_attention}
+\text{Attention}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \softmax\left( \frac{\mathbf{Q}\mathbf{K}^T}{\sqrt{d}} \right) \mathbf{V}
+\end{equation}
+where:
+\begin{align}
+\label{eq:attention_projections}
+\mathbf{Q} &= \mathbf{W}_Q^{(i)} \phi_i(\mathbf{z}_t) \nonumber \\
+\mathbf{K} &= \mathbf{W}_K^{(i)} \tau_\theta(\mathbf{y}) \\
+\mathbf{V} &= \mathbf{W}_V^{(i)} \tau_\theta(\mathbf{y}) \nonumber
+\end{align}
+
+\subsubsection{Conditional Training Objective}
+\label{subsubsec:conditional_objective}
+
+The conditional LDM is trained with:
+\begin{equation}
+\label{eq:conditional_ldm_loss}
+\mathcal{L}_{\text{cLDM}} = \EE_{\mathcal{E}(\mathbf{x}), \mathbf{y}, \epsilon \sim \mathcal{N}(0,\mathbf{I}), t} \left[ \norm{\epsilon - \epsilon_\theta(\mathbf{z}_t, t, \tau_\theta(\mathbf{y}))}_2^2 \right]
+\end{equation}
+
+\section{Implementation in TorchDiff}
+\label{sec:implementation}
+
+\subsection{VAE Training Implementation}
+\label{subsec:vae_training_implementation}
+
+\begin{lstlisting}[caption={Dataset preparation for VAE training}, label={lst:dataset_preparation}]
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+
+# Define preprocessing pipeline
+transform = transforms.Compose([
+    transforms.Resize(224),                    # Standardize image size
+    transforms.CenterCrop(224),                # Center crop to square
+    transforms.ToTensor(),                     # Convert to tensor
+    transforms.Normalize((0.5, 0.5, 0.5),     # Normalize to [-1, 1]
+                        (0.5, 0.5, 0.5))
+])
+
+# Load datasets
+train_dataset = datasets.ImageFolder(
+    root='./imagenet/train',
+    transform=transform
+)
+val_dataset = datasets.ImageFolder(
+    root='./imagenet/val', 
+    transform=transform
+)
+
+# Create data loaders
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=64,
+    shuffle=True,
+    num_workers=8,
+    pin_memory=True,
+    drop_last=True
+)
+val_loader = DataLoader(
+    val_dataset,
+    batch_size=64, 
+    shuffle=False,
+    num_workers=8,
+    pin_memory=True
+)
+\end{lstlisting}
+
+\begin{lstlisting}[caption={VAE model training with TorchDiff}, label={lst:vae_training}]
+import torch
+from torchdiff.utils import Metrics
+from torchdiff.ldm import AutoencoderLDM, TrainAE
+
+# Initialize VAE with optimized hyperparameters
+vae = AutoencoderLDM(
+    in_channels=3,                      # RGB input
+    down_channels=[64, 128, 256, 512],  # Encoder channel progression
+    up_channels=[512, 256, 128, 64],    # Decoder channel progression  
+    out_channels=3,                     # RGB output
+    dropout_rate=0.2,                   # Regularization
+    num_heads=8,                        # Multi-head attention
+    num_groups=32,                      # Group normalization
+    num_layers_per_block=2,            
+    total_down_sampling_factor=2,      
+    latent_channels=2,                  # Latent channel dimension
+    num_embeddings=8192,                # VQ codebook size
+    use_vq=False,                       # Use KL-divergence
+    beta=1e-6                           # KL weight
+)
+
+# Configure optimizer with weight decay
+optimizer = torch.optim.AdamW(
+    vae.parameters(),
+    lr=2e-4,
+    betas=(0.9, 0.999),
+    weight_decay=1e-4
+)
+
+# Initialize comprehensive metrics
+metrics = Metrics(
+    device="cuda",
+    fid=True,           # Fréchet Inception Distance
+    ssim=True,          # Structural Similarity Index
+    lpips_=True,        # Perceptual similarity
+    psnr=True          # Peak Signal-to-Noise Ratio
+)
+
+# Setup training configuration
+vae_trainer = TrainAE(
+    model=vae,
+    optimizer=optimizer,
+    data_loader=train_loader,
+    val_loader=val_loader,
+    max_epoch=500,
+    metrics_=metrics,
+    device="cuda",
+    save_path="models/vae_ldm.pth",
+    val_frequency=10,
+    save_frequency=50,
+    gradient_clip_norm=1.0
+)
+
+# Execute training
+vae_trainer()
+\end{lstlisting}
+
+\subsection{Conditional LDM Training}
+\label{subsec:conditional_ldm_training}
+
+\begin{lstlisting}[caption={Training a conditional DDIM-based LDM}, label={lst:ldm_training}]
+import torch
+import torch.nn as nn
+from torchdiff.ddim import HyperParamsDDIM, ReverseDDIM, ForwardDDIM
+from torchdiff.ldm import TrainLDM
+from torchdiff.utils import TextEncoder, NoisePredictor, Metrics
+
+# Initialize noise prediction U-Net
+noise_predictor = NoisePredictor(
+    in_channels=4,                          # Latent channels from VAE
+    down_channels=[128, 256, 512, 1024],    # Encoder progression
+    mid_channels=[1024, 1024, 1024],        # Middle layers
+    up_channels=[1024, 512, 256, 128],      # Decoder progression
+    time_embed_dim=512,                     # Time embedding dimension
+    y_embed_dim=768, 
+    num_down_blocks=2,
+    num_mid_blocks=2,
+    num_up_blocks=2                            
+)
+
+# Initialize text encoder for conditioning
+text_encoder = TextEncoder(
+    use_pretrained_model=True,
+    model_name="bert-base-uncased",
+    vocabulary_size=30522,
+    num_layers=6,
+    input_dimension=768,
+    output_dimension=768,
+    num_heads=8,
+    context_length=77,
+    dropout_rate=0.1,
+    qkv_bias=False,
+    scaling_value=4,
+    epsilon=1e-5
+)
+
+# Configure DDIM hyperparameters
+ddim_params = HyperParamsDDIM(
+    num_steps=1000,                         # Training timesteps
+    tau_num_steps=100,                       # Inference timesteps
+    beta_start=1e-4,                        # Noise schedule start
+    beta_end=2e-2,                          # Noise schedule end
+    beta_method="linear"         
+)
+
+# Initialize diffusion processes
+forward_ddim = ForwardDDIM(ddim_params)
+reverse_ddim = ReverseDDIM(ddim_params)
+
+# Configure optimizer 
+optimizer = torch.optim.AdamW([
+    {'params': noise_predictor.parameters(), 'lr': 1e-4},
+    {'params': text_encoder.parameters(), 'lr': 5e-5}
+], weight_decay=1e-4)
+
+
+# Setup LDM trainer
+ldm_trainer = TrainLDM(
+    model="ddim",
+    forward_model=forward_ddim,
+    noise_predictor=noise_predictor,
+    hyper_params=ddim_params,
+    compressor_model=vae,                   # Pre-trained VAE
+    conditional_model=text_encoder,
+    reverse_diffusion=reverse_ddim,
+    metrics_=metrics,
+    optimizer=optimizer,
+    objective=nn.MSELoss(),
+    data_loader=train_loader,
+    val_loader=val_loader,
+    max_epoch=1000,
+    device="cuda",
+    store_path="models/ldm_conditional.pth",
+    val_frequency=20
+)
+
+# Start training
+ldm_trainer()
+\end{lstlisting}
+
+\subsection{Sampling and Generation}
+\label{subsec:sampling_generation}
+
+\begin{lstlisting}[caption={Sampling from trained conditional LDM}, label={lst:sampling_generation}]
+from torchdiff.ldm import SampleLDM
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Initialize sampler with trained models
+sampler = SampleLDM(
+    model="ddim",
+    reverse_diffusion=reverse_ddim,
+    noise_predictor=noise_predictor,
+    compressor_model=vae,
+    image_shape=(224, 224),
+    conditional_model=text_encoder,
+    batch_size=4,
+    in_channels=3,
+    device="cuda"
+)
+
+# Define text prompts for generation
+prompts = [
+    "a serene mountain landscape at sunset",
+    "a futuristic city with flying cars",
+    "a detailed portrait of a wise old wizard",
+    "a vibrant underwater coral reef scene"
+]
+
+with torch.no_grad():
+    images = sampler(
+        conditions=prompts, 
+        save_images=True, 
+        save_path="ldm_generated"
+    )
+       
+# Visualize results
+fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+for i, (img, prompt) in enumerate(zip(images, prompts)):
+    row, col = i // 2, i % 2
+    axes[row, col].imshow(img.permute(1, 2, 0).cpu().numpy())
+    axes[row, col].set_title(prompt, fontsize=10)
+    axes[row, col].axis('off')
+
+plt.tight_layout()
+plt.savefig('generated_samples.png', dpi=300, bbox_inches='tight')
+plt.show()
+\end{lstlisting}
+
+
+\Cref{fig:compression} shows generated results from a conditional LDM, as presented in the original LDM paper.
+\label{subsec:generation_quality}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{ldm3.png}
+    \caption{Examples of images generated by a trained conditional LDM, demonstrating the quality of output based on text prompts.}
+    \label{fig:compression}
+\end{figure}
+
+
+\section{Conclusion}
+
+In this article, we have demonstrated how latent diffusion models (LDMs) offer a practical solution to the high computational demands of traditional diffusion models by leveraging a compressed latent space. We showed how to train and sample an LDM using TorchDiff library. The integration of a cross-attention mechanism enabled conditional generation, allowing the model to produce high-quality images based on text prompts, as evidenced by the generated results. By reducing dimensionality and focusing on semantic content, LDMs not only lower energy consumption but also enhance scalability for high-resolution images.
+
+
+
+
+
+\begin{thebibliography}{99}
+\bibitem{rombach2022high}
+Rombach, Robin, et al. "High-resolution image synthesis with latent diffusion models." Proceedings of the IEEE/CVF \textit{conference on computer vision and pattern recognition}. 2022.
+
+\bibitem{kingma2013auto}
+Kingma, Diederik P., and Max Welling. "Auto-encoding variational bayes." 20 Dec. 2013.
+
+\bibitem{torchdiff}
+https://github.com/LoqmanSamani/TorchDiff.
+\end{thebibliography}
+
+
+\end{document}
+
