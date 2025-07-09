@@ -41,9 +41,12 @@ Additional utilities include:
 
 ---
 
-### Documentation
 
-- **Read the Docs**: [Official API Reference](https://torchdiff.readthedocs.io/en/latest/index.html)
+
+### Resources
+
+- **Webpage**: [TorchDiff Webpage](https://loqmansamani.github.io/torchdiff/)
+- **API Reference**: [Official API Reference](https://torchdiff.readthedocs.io/en/latest/index.html)
 
 ---
 
