@@ -282,7 +282,7 @@ This project is licensed under the [MIT License](https://opensource.org/licenses
 ### 🚧 Future Work
 
 TorchDiff is under active development. Here's what's planned:
-- 📚 Full documentation website with API references and tutorials.
+
 - 🧠 Integration of new diffusion variants and improved training techniques.
 - 🎯 Additional utilities and tools to streamline experimentation.
 - 🛠️ Support for distributed training and mixed precision.
