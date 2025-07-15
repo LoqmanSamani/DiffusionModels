@@ -32,6 +32,9 @@ import os
 import lpips
 import math
 import shutil
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from torchmetrics.image.fid import FrechetInceptionDistance
+from torchvision.utils import save_image
 
 
 ###==================================================================================================================###
@@ -1325,7 +1328,10 @@ class Metrics:
         self.fid = fid
         self.metrics = metrics
         self.lpips = lpips_
-        self.lpips_model = lpips.LPIPS(net='vgg').to(device) if self.lpips else None
+        self.lpips_model = LearnedPerceptualImagePatchSimilarity(
+            net_type='vgg',
+            normalize=True  # This handles [0,1] -> [-1,1] conversion
+        ).to(device) if self.lpips else None
         self.temp_dir_real = "temp_real"
         self.temp_dir_fake = "temp_fake"
 
@@ -1441,6 +1447,13 @@ class Metrics:
 
         x = x.to(self.device)
         x_hat = x_hat.to(self.device)
+
+        # Convert grayscale to RGB if needed
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)  # Repeat grayscale channel 3 times
+        if x_hat.shape[1] == 1:
+            x_hat = x_hat.repeat(1, 3, 1, 1)
+
         return self.lpips_model(x, x_hat).mean().item()
 
     def forward(self, x, x_hat):

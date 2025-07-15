@@ -364,7 +364,7 @@ class TrainDDPM(nn.Module):
     def __init__(self, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, metrics_=None, tokenizer=None, max_length=77,
                  store_path=None, patience=100, warmup_epochs=100, val_frequency=10, output_range=(-1, 1),
-                 normalize_output=True, ddp=False, num_grad_accumulation=1):
+                 normalize_output=True, ddp=False, num_grad_accumulation=1, progress_frequency=1):
         super().__init__()
 
         # Initialize DDP settings first
@@ -398,6 +398,7 @@ class TrainDDPM(nn.Module):
         self.val_frequency = val_frequency
         self.output_range = output_range
         self.normalize_output = normalize_output
+        self.progress_frequency = progress_frequency
 
         # Learning rate scheduling
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -605,7 +606,7 @@ class TrainDDPM(nn.Module):
         self._wrap_models_for_ddp()
 
         # Initialize training components
-        scaler = GradScaler()
+        scaler = torch.GradScaler()
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
@@ -629,7 +630,7 @@ class TrainDDPM(nn.Module):
                     y_encoded = None
 
                 # Forward pass with mixed precision
-                with autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
+                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     # Generate noise and timesteps
                     noise = torch.randn_like(x).to(self.device)
                     t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
@@ -682,7 +683,8 @@ class TrainDDPM(nn.Module):
 
             # Print training progress (only master process)
             if self.master_process:
-                print(f"\nEpoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
+                if epoch % self.progress_frequency == 0:
+                    print(f"\nEpoch: {epoch + 1} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
 
             # Validation step
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
@@ -1063,3 +1065,5 @@ class SampleDDPM(nn.Module):
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)
+
+
