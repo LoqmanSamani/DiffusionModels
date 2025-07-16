@@ -595,3 +595,168 @@ class TrainDDPM(nn.Module):
             self.conditional_model.train()
 
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
+
+
+
+
+import os
+import torch
+import torch.multiprocessing as mp
+from torch.utils.data import DataLoader, DistributedSampler
+import tempfile
+import shutil
+
+
+def setup_cpu_ddp(rank, world_size, master_port=12355):
+    """Setup DDP for CPU testing"""
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = str(master_port)
+    os.environ['RANK'] = str(rank)
+    os.environ['LOCAL_RANK'] = str(rank)
+    os.environ['WORLD_SIZE'] = str(world_size)
+
+    # Initialize process group with gloo backend for CPU
+    torch.distributed.init_process_group(
+        backend='gloo',
+        init_method=f'tcp://localhost:{master_port}',
+        rank=rank,
+        world_size=world_size
+    )
+
+
+def create_dummy_components(device='cpu'):
+    """Create dummy components for testing"""
+    import torch.nn as nn
+
+    # Dummy noise predictor
+    class DummyNoisePredictor(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Conv2d(3, 3, 3, padding=1)
+            self.time_embed = nn.Linear(1, 32)
+            self.cond_embed = nn.Linear(768, 32)  # BERT embedding size
+
+        def forward(self, x, t, cond=None):
+            # Simple dummy forward pass
+            t_embed = self.time_embed(t.float().unsqueeze(-1))
+            out = self.conv(x)
+            return out
+
+    # Dummy conditional model (simulates BERT)
+    class DummyConditionalModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embedding = nn.Embedding(1000, 768)
+
+        def forward(self, input_ids, attention_mask):
+            return self.embedding(input_ids).mean(dim=1)
+
+    # Dummy hyperparameters
+    class DummyHyperParams(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.num_steps = 100
+            self.trainable_beta = False
+
+        def constrain_betas(self):
+            pass
+
+    # Create dummy dataset
+    class DummyDataset(torch.utils.data.Dataset):
+        def __init__(self, size=100):
+            self.size = size
+
+        def __len__(self):
+            return self.size
+
+        def __getitem__(self, idx):
+            return torch.randn(3, 32, 32), f"dummy prompt {idx}"
+
+    # Create components
+    noise_predictor = DummyNoisePredictor()
+    conditional_model = DummyConditionalModel()
+    hyper_params = DummyHyperParams()
+
+    dataset = DummyDataset(200)
+    val_dataset = DummyDataset(50)
+
+    return noise_predictor, conditional_model, hyper_params, dataset, val_dataset
+
+
+def test_ddp_process(rank, world_size, temp_dir):
+    """Test function that runs in each process"""
+    print(f"Process {rank} starting...")
+
+    # Setup DDP
+    setup_cpu_ddp(rank, world_size)
+
+    # Create dummy components
+    noise_predictor, conditional_model, hyper_params, dataset, val_dataset = create_dummy_components()
+
+    # Create distributed samplers
+    train_sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank)
+
+    # Create data loaders
+    train_loader = DataLoader(dataset, batch_size=8, sampler=train_sampler, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=8, sampler=val_sampler, num_workers=0)
+
+    # Create optimizer and loss
+    optimizer = torch.optim.Adam(list(noise_predictor.parameters()) + list(conditional_model.parameters()), lr=1e-4)
+    objective = torch.nn.MSELoss()
+
+
+
+    trainer = TrainDDPM(
+        noise_predictor=noise_predictor,
+        hyper_params=hyper_params,
+        data_loader=train_loader,
+        optimizer=optimizer,
+        objective=objective,
+        val_loader=val_loader,
+        max_epoch=3,  # Short test
+        device=torch.device('cpu'),
+        conditional_model=conditional_model,
+        store_path=os.path.join(temp_dir, f"test_model_rank_{rank}.pth"),
+        ddp=True,
+        num_grad_accumulation=2,
+        val_frequency=1,
+        progress_frequency=1
+    )
+
+    # Run training
+    train_losses, best_val_loss = trainer.forward()
+
+    print(f"Process {rank} completed. Best val loss: {best_val_loss:.4f}")
+
+    # Cleanup
+    torch.distributed.destroy_process_group()
+
+
+def test_ddp_cpu():
+    """Main test function for CPU-based DDP testing"""
+    world_size = 2  # Simulate 2 GPUs
+
+    # Create temporary directory for checkpoints
+    temp_dir = tempfile.mkdtemp()
+
+    try:
+        # Spawn processes
+        mp.spawn(
+            test_ddp_process,
+            args=(world_size, temp_dir),
+            nprocs=world_size,
+            join=True
+        )
+        print("CPU DDP test completed successfully!")
+
+    except Exception as e:
+        print(f"CPU DDP test failed: {e}")
+
+    finally:
+        # Clean up temporary directory
+        shutil.rmtree(temp_dir)
+
+
+if __name__ == "__main__":
+    test_ddp_cpu()
