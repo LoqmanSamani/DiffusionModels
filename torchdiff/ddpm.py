@@ -23,6 +23,9 @@ arXiv preprint arXiv:1701.05517 (2017).
 """
 
 
+
+
+
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Callable, List, Any, Union, Self
@@ -35,9 +38,8 @@ from tqdm import tqdm
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
-import os
 
-###==================================================================================================================###
+
 
 
 class ForwardDDPM(nn.Module):
@@ -834,7 +836,7 @@ class TrainDDPM(nn.Module):
                 'max_epoch': self.max_epoch,
             }
 
-            save_path = self.store_path + suffix + ".pth" if suffix else self.store_path
+            save_path = self.store_path + suffix + ".pth" if suffix else self.store_path + ".pth"
             torch.save(checkpoint, save_path)
             print(f"Model saved at epoch {epoch} to {save_path}")
 
