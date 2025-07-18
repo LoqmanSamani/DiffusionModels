@@ -82,18 +82,21 @@ class ForwardSDE(nn.Module):
         """
         dt = self.hyper_params.dt
         if self.method == "ve":
+            # Use property to get sigmas (handles trainable case)
             sigma_t = self.hyper_params.sigmas[time_steps]
             sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
             sigma_diff = torch.sqrt(torch.clamp(sigma_t ** 2 - sigma_t_prev ** 2, min=0))
             x0 = x0 + noise * sigma_diff.view(-1, 1, 1, 1)
 
         elif self.method == "vp":
+            # Use property to get betas (handles trainable case)
             betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
             drift = -0.5 * betas * x0 * dt
             diffusion = torch.sqrt(betas * dt) * noise
             x0 = x0 + drift + diffusion
 
         elif self.method == "sub-vp":
+            # Use properties to get betas and cum_betas (handles trainable case)
             betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
             cum_betas = self.hyper_params.cum_betas[time_steps].view(-1, 1, 1, 1)
             drift = -0.5 * betas * x0 * dt
@@ -101,9 +104,7 @@ class ForwardSDE(nn.Module):
             x0 = x0 + drift + diffusion
 
         elif self.method == "ode":
-            #if self.method == "ve":
-            #    x0 = x0
-            #else:
+            # Use property to get betas (handles trainable case)
             betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
             drift = -0.5 * betas * x0 * dt
             x0 = x0 + drift
@@ -165,9 +166,11 @@ class ReverseSDE(nn.Module):
         - Stochastic noise (`noise`) is only added if provided and the method supports it (not applicable for "ode" in non-VE cases).
         """
         dt = self.hyper_params.dt
+        # Use properties to get betas and cum_betas (handles trainable case)
         betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
         cum_betas = self.hyper_params.cum_betas[time_steps].view(-1, 1, 1, 1)
         if self.method == "ve":
+            # Use property to get sigmas (handles trainable case)
             sigma_t = self.hyper_params.sigmas[time_steps]
             sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
             sigma_diff = torch.sqrt(torch.clamp(sigma_t ** 2 - sigma_t_prev ** 2, min=0))
@@ -187,11 +190,6 @@ class ReverseSDE(nn.Module):
             xt = xt + drift + diffusion
 
         elif self.method == "ode":
-            #if self.method == "ve":
-            #    sigma_t = self.hyper_params.sigmas[time_steps]
-            #    sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
-            #    drift = -0.5 * (sigma_t ** 2 - sigma_t_prev ** 2).view(-1, 1, 1, 1) * predicted_noise * dt
-            #else:
             drift = -0.5 * betas * xt * dt - 0.5 * betas * predicted_noise * dt
             xt = xt + drift
             xt = torch.clamp(xt, -1e5, 1e5)
@@ -257,11 +255,40 @@ class HyperParamsSDE(nn.Module):
         self.dt = (self.end - self.start) / self.num_steps
 
         if trainable_beta:
-            self.betas = nn.Parameter(betas_init)
+            # Use reparameterization trick for trainable betas
+            # Initialize unconstrained parameters and transform them to valid beta range
+            self.beta_raw = nn.Parameter(torch.logit((betas_init - beta_start) / (beta_end - beta_start)))
         else:
             self.register_buffer('betas', betas_init)
             self.register_buffer('cum_betas', torch.cumsum(betas_init, dim=0) * self.dt)
             self.register_buffer("sigmas", self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time)
+
+    @property
+    def betas(self):
+        """Returns the beta values, applying reparameterization if trainable."""
+        if self.trainable_beta:
+            # Transform unconstrained parameters to valid beta range using sigmoid
+            return self.beta_start + (self.beta_end - self.beta_start) * torch.sigmoid(self.beta_raw)
+        else:
+            return self._buffers['betas']
+
+    @property
+    def cum_betas(self):
+        """Returns the cumulative beta values, computing dynamically if trainable."""
+        if self.trainable_beta:
+            return torch.cumsum(self.betas, dim=0) * self.dt
+        else:
+            return self._buffers['cum_betas']
+
+    @property
+    def sigmas(self):
+        """Returns the sigma values, computing dynamically if trainable."""
+        if self.trainable_beta:
+            # For trainable case, sigmas still use the fixed time schedule
+            # but could be modified if needed for trainable sigma schedules
+            return self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time
+        else:
+            return self._buffers['sigmas']
 
     def compute_beta_schedule(self, beta_range, num_steps, method):
         """Computes the beta schedule based on the specified method.
@@ -301,20 +328,6 @@ class HyperParamsSDE(nn.Module):
             raise ValueError(f"Unknown beta_method: {method}. Supported: linear, sigmoid, quadratic, constant, inverse_time")
         beta = torch.clamp(beta, min=beta_min, max=beta_max)
         return beta
-
-    def constrain_betas(self):
-        """Constrains trainable betas to a valid range during training.
-
-        Ensures that trainable beta values remain within the specified range
-        [beta_start, beta_end] by clamping them in-place.
-
-        **Notes**
-
-        This method only applies when `trainable_beta` is True.
-        """
-        if self.trainable_beta:
-            with torch.no_grad():
-                self.betas.clamp_(min=self.beta_start, max=self.beta_end)
 
     def get_variance(self, time_steps, method):
         """Computes the variance for the specified SDE method at given time steps.

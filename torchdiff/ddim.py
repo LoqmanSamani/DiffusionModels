@@ -34,13 +34,20 @@ subsampled time step schedule for faster sampling compared to DDPM.
 import torch
 import torch.nn as nn
 from torch.cuda.amp import GradScaler, autocast
+# multi-GPU processor module
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
 from tqdm import tqdm
-from torch.amp import GradScaler, autocast
+from torch.amp import autocast
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
 import os
+from typing import Optional, Tuple, Callable, List, Any, Union, Self
+
+
 
 
 
@@ -58,6 +65,7 @@ class ForwardDDIM(nn.Module):
         Expected to have attributes: `num_steps`, `trainable_beta`, `betas`, `sqrt_alpha_cumprod`,
         `sqrt_one_minus_alpha_cumprod`, `compute_schedule`
     """
+
     def __init__(self, hyper_params):
         super().__init__()
         self.hyper_params = hyper_params
@@ -87,10 +95,10 @@ class ForwardDDIM(nn.Module):
 
         if self.hyper_params.trainable_beta:
             _, _, _, sqrt_alpha_cumprod_t, sqrt_one_minus_alpha_cumprod_t = self.hyper_params.compute_schedule(
-                self.hyper_params.betas
+                time_steps
             )
-            sqrt_alpha_cumprod_t = sqrt_alpha_cumprod_t[time_steps].to(x0.device)
-            sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t[time_steps].to(x0.device)
+            sqrt_alpha_cumprod_t = sqrt_alpha_cumprod_t.to(x0.device)
+            sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t.to(x0.device)
         else:
             sqrt_alpha_cumprod_t = self.hyper_params.sqrt_alpha_cumprod[time_steps].to(x0.device)
             sqrt_one_minus_alpha_cumprod_t = self.hyper_params.sqrt_one_minus_alpha_cumprod[time_steps].to(x0.device)
@@ -99,7 +107,9 @@ class ForwardDDIM(nn.Module):
         sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t.view(-1, 1, 1, 1)
 
         xt = sqrt_alpha_cumprod_t * x0 + sqrt_one_minus_alpha_cumprod_t * noise
+
         return xt
+
 
 ###==================================================================================================================###
 
@@ -117,6 +127,7 @@ class ReverseDDIM(nn.Module):
         Hyperparameter object (HyperParamsDDIM) containing the noise schedule parameters.
         Expected to have attributes: `tau_num_steps`, `eta`, `get_tau_schedule`.
     """
+
     def __init__(self, hyper_params):
         super().__init__()
         self.hyper_params = hyper_params
@@ -168,6 +179,7 @@ class ReverseDDIM(nn.Module):
 
         return xt_prev, x0
 
+
 ###==================================================================================================================###
 
 class HyperParamsDDIM(nn.Module):
@@ -217,7 +229,9 @@ class HyperParamsDDIM(nn.Module):
         betas_init = self.compute_beta_schedule(beta_range, num_steps, beta_method)
 
         if trainable_beta:
-            self.betas = nn.Parameter(betas_init)
+            # Use reparameterization trick for trainable betas
+            # Initialize unconstrained parameters and transform them to valid beta range
+            self.beta_raw = nn.Parameter(torch.logit((betas_init - beta_start) / (beta_end - beta_start)))
         else:
             self.register_buffer('betas', betas_init)
             self.register_buffer('alphas', 1 - self.betas)
@@ -226,6 +240,16 @@ class HyperParamsDDIM(nn.Module):
             self.register_buffer('sqrt_one_minus_alpha_cumprod', torch.sqrt(1 - self.alpha_cumprod))
 
         self.register_buffer('tau_indices', torch.linspace(0, num_steps - 1, tau_num_steps, dtype=torch.long))
+
+    # FIX: Add property to get constrained betas when trainable
+    @property
+    def betas(self):
+        """Returns the beta values, applying reparameterization if trainable."""
+        if self.trainable_beta:
+            # Transform unconstrained parameters to valid beta range using sigmoid
+            return self.beta_start + (self.beta_end - self.beta_start) * torch.sigmoid(self.beta_raw)
+        else:
+            return self._buffers['betas']
 
     def compute_beta_schedule(self, beta_range, num_steps, method):
         """Computes the beta schedule based on the specified method.
@@ -288,7 +312,8 @@ class HyperParamsDDIM(nn.Module):
             Square root of (1 - alpha_cumprod) for subsampled steps, shape (tau_num_steps,).
         """
         if self.trainable_beta:
-            betas, alphas, alpha_cumprod, sqrt_alpha_cumprod, sqrt_one_minus_alpha_cumprod = self.compute_schedule(self.betas)
+            # Use the property to get constrained betas
+            betas, alphas, alpha_cumprod, sqrt_alpha_cumprod, sqrt_one_minus_alpha_cumprod = self.compute_schedule()
         else:
             betas = self.betas
             alphas = self.alphas
@@ -304,7 +329,7 @@ class HyperParamsDDIM(nn.Module):
 
         return tau_betas, tau_alphas, tau_alpha_cumprod, tau_sqrt_alpha_cumprod, tau_sqrt_one_minus_alpha_cumprod
 
-    def compute_schedule(self, betas):
+    def compute_schedule(self, time_steps=None):
         """Computes noise schedule parameters dynamically from betas.
 
         Calculates the derived noise schedule parameters (alphas, alpha_cumprod, etc.)
@@ -312,41 +337,39 @@ class HyperParamsDDIM(nn.Module):
 
         Parameters
         ----------
-        `betas` : torch.Tensor
-            Tensor of beta values, shape (num_steps,).
+        `time_steps` : torch.Tensor, optional
+            If provided, returns parameters only for specified time steps.
+            If None, returns parameters for all time steps.
 
         Returns
         -------
         betas : torch.Tensor
-             Input beta values, shape (num_steps,).
+             Beta values, shape (num_steps,) or (len(time_steps),).
         alphas : torch.Tensor
-             1 - betas, shape (num_steps,).
+             1 - betas, shape (num_steps,) or (len(time_steps),).
         alpha_cumprod : torch.Tensor
-             Cumulative product of alphas, shape (num_steps,).
+             Cumulative product of alphas, shape (num_steps,) or (len(time_steps),).
         sqrt_alpha_cumprod : torch.Tensor
-             Square root of alpha_cumprod, shape (num_steps,).
+             Square root of alpha_cumprod, shape (num_steps,) or (len(time_steps),).
         sqrt_one_minus_alpha_cumprod : torch.Tensor
-             Square root of (1 - alpha_cumprod), shape (num_steps,).
+             Square root of (1 - alpha_cumprod), shape (num_steps,) or (len(time_steps),).
         """
+        # Use the property to get constrained betas
+        betas = self.betas
         alphas = 1 - betas
         alpha_cumprod = torch.cumprod(alphas, dim=0)
-        return betas, alphas, alpha_cumprod, torch.sqrt(alpha_cumprod), torch.sqrt(1 - alpha_cumprod)
+        sqrt_alpha_cumprod = torch.sqrt(alpha_cumprod)
+        sqrt_one_minus_alpha_cumprod = torch.sqrt(1 - alpha_cumprod)
 
-    def constrain_betas(self):
-        """Constrains trainable betas to a valid range during training.
+        if time_steps is not None:
+            return (betas[time_steps], alphas[time_steps], alpha_cumprod[time_steps],
+                    sqrt_alpha_cumprod[time_steps], sqrt_one_minus_alpha_cumprod[time_steps])
+        else:
+            return betas, alphas, alpha_cumprod, sqrt_alpha_cumprod, sqrt_one_minus_alpha_cumprod
 
-        Ensures that trainable beta values remain within the specified range
-        [beta_start, beta_end] by clamping them in-place.
-
-        **Note**
-
-        This method only applies when `trainable_beta` is True.
-        """
-        if self.trainable_beta:
-            with torch.no_grad():
-                self.betas.clamp_(min=self.beta_start, max=self.beta_end)
 
 ###==================================================================================================================###
+
 
 class TrainDDIM(nn.Module):
     """Trainer for Denoising Diffusion Implicit Models (DDIM).
@@ -398,44 +421,110 @@ class TrainDDIM(nn.Module):
     def __init__(self, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, metrics_=None, tokenizer=None,
                  max_length=77, store_path=None, patience=100, warmup_epochs=100, val_frequency=10,
-                 output_range=(-1, 1), normalize_output=True):
+                 output_range=(-1, 1), normalize_output=True, ddp=False, num_grad_accumulation=1, progress_frequency=1):
         super().__init__()
+        # Initialize DDP settings first
+        self.ddp = ddp
+        self.num_grad_accumulation = num_grad_accumulation
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Setup distributed training if enabled
+        if self.ddp:
+            self._setup_ddp()
+        else:
+            self._setup_single_gpu()
+
+        # Move models to appropriate device
         self.noise_predictor = noise_predictor.to(self.device)
         self.hyper_params = hyper_params.to(self.device)
         self.forward_diffusion = ForwardDDIM(hyper_params=self.hyper_params).to(self.device)
         self.reverse_diffusion = ReverseDDIM(hyper_params=self.hyper_params).to(self.device)
         self.conditional_model = conditional_model.to(self.device) if conditional_model else None
+
+        # Training components
         self.metrics_ = metrics_
         self.optimizer = optimizer
         self.objective = objective
-        self.store_path = store_path or "ddim_model.pth"
+        self.store_path = store_path or "ddim_model"
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epoch = max_epoch
         self.max_length = max_length
         self.patience = patience
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=self.patience, factor=0.5)
-        self.forward_diffusion = ForwardDDIM(hyper_params=self.hyper_params).to(self.device)
-        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
         self.output_range = output_range
         self.normalize_output = normalize_output
+        self.progress_frequency = progress_frequency
+
+        # Learning rate scheduling
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            patience=self.patience,
+            factor=0.5
+        )
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
+
+        # Initialize tokenizer
         if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
             except Exception as e:
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
 
-    def load_checkpoint(self, checkpoint_path):
+    def _setup_ddp(self) -> None:
+        """Setup Distributed Data Parallel training configuration.
+
+        Initializes process group, determines rank information, and sets up
+        CUDA device for the current process.
+        """
+        # Check if DDP environment variables are set
+        if "RANK" not in os.environ:
+            raise ValueError("DDP enabled but RANK environment variable not set")
+        if "LOCAL_RANK" not in os.environ:
+            raise ValueError("DDP enabled but LOCAL_RANK environment variable not set")
+        if "WORLD_SIZE" not in os.environ:
+            raise ValueError("DDP enabled but WORLD_SIZE environment variable not set")
+
+        # Ensure CUDA is available for DDP
+        if not torch.cuda.is_available():
+            raise RuntimeError("DDP requires CUDA but CUDA is not available")
+
+        # Initialize process group only if not already initialized
+        if not torch.distributed.is_initialized():
+            init_process_group(backend="nccl")
+
+        # Get rank information
+        self.ddp_rank = int(os.environ["RANK"])  # Global rank across all nodes
+        self.ddp_local_rank = int(os.environ["LOCAL_RANK"])  # Local rank on current node
+        self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # Total number of processes
+
+        # Set device and make it current
+        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+        # self.device = f"cuda:{self.ddp_local_rank}"
+        torch.cuda.set_device(self.device)
+
+        # Master process handles logging, checkpointing, etc.
+        self.master_process = self.ddp_rank == 0
+
+        if self.master_process:
+            print(f"DDP initialized with world_size={self.ddp_world_size}")
+
+    def _setup_single_gpu(self) -> None:
+        """Setup single GPU or CPU training configuration."""
+        self.ddp_rank = 0
+        self.ddp_local_rank = 0
+        self.ddp_world_size = 1
+        self.master_process = True
+
+    def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, float]:
         """Loads a training checkpoint to resume training.
 
         Restores the state of the noise predictor, conditional model (if applicable),
-        and optimizer from a saved checkpoint.
+        and optimizer from a saved checkpoint. Handles DDP model state dict loading.
 
         Parameters
         ----------
-        `checkpoint_path` : str
+        checkpoint_path : str
             Path to the checkpoint file.
 
         Returns
@@ -446,24 +535,43 @@ class TrainDDIM(nn.Module):
              The loss at the checkpoint.
         """
         try:
+            # Load checkpoint with proper device mapping
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
 
+        # Load noise predictor state
         if 'model_state_dict_noise_predictor' not in checkpoint:
             raise KeyError("Checkpoint missing 'model_state_dict_noise_predictor' key")
-        self.noise_predictor.load_state_dict(checkpoint['model_state_dict_noise_predictor'])
 
+        # Handle DDP wrapped model state dict
+        state_dict = checkpoint['model_state_dict_noise_predictor']
+        if self.ddp and not any(key.startswith('module.') for key in state_dict.keys()):
+            # If loading non-DDP checkpoint into DDP model, add 'module.' prefix
+            state_dict = {f'module.{k}': v for k, v in state_dict.items()}
+        elif not self.ddp and any(key.startswith('module.') for key in state_dict.keys()):
+            # If loading DDP checkpoint into non-DDP model, remove 'module.' prefix
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+        self.noise_predictor.load_state_dict(state_dict)
+
+        # Load conditional model state if applicable
         if self.conditional_model is not None:
             if 'model_state_dict_conditional' in checkpoint and checkpoint['model_state_dict_conditional'] is not None:
-                self.conditional_model.load_state_dict(checkpoint['model_state_dict_conditional'])
+                cond_state_dict = checkpoint['model_state_dict_conditional']
+                # Handle DDP wrapping for conditional model
+                if self.ddp and not any(key.startswith('module.') for key in cond_state_dict.keys()):
+                    cond_state_dict = {f'module.{k}': v for k, v in cond_state_dict.items()}
+                elif not self.ddp and any(key.startswith('module.') for key in cond_state_dict.keys()):
+                    cond_state_dict = {k.replace('module.', ''): v for k, v in cond_state_dict.items()}
+                self.conditional_model.load_state_dict(cond_state_dict)
             else:
                 warnings.warn(
-                    "Checkpoint contains no 'model_state_dict_conditional' or it is None, skipping conditional model loading")
-        elif 'model_state_dict_conditional' in checkpoint and checkpoint['model_state_dict_conditional'] is not None:
-            warnings.warn(
-                "Checkpoint contains conditional model state, but no conditional model is defined in this instance")
+                    "Checkpoint contains no 'model_state_dict_conditional' or it is None, "
+                    "skipping conditional model loading"
+                )
 
+        # Load optimizer state
         if 'optimizer_state_dict' not in checkpoint:
             raise KeyError("Checkpoint missing 'optimizer_state_dict' key")
         try:
@@ -474,11 +582,8 @@ class TrainDDIM(nn.Module):
         epoch = checkpoint.get('epoch', -1)
         loss = checkpoint.get('loss', float('inf'))
 
-        self.noise_predictor.to(self.device)
-        if self.conditional_model is not None:
-            self.conditional_model.to(self.device)
-
-        print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
+        if self.master_process:
+            print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
         return epoch, loss
 
     @staticmethod
@@ -506,6 +611,24 @@ class TrainDDIM(nn.Module):
 
         return LambdaLR(optimizer, lr_lambda)
 
+    def _wrap_models_for_ddp(self) -> None:
+        """Wrap models with DistributedDataParallel for multi-GPU training."""
+        if self.ddp:
+            # Wrap noise predictor with DDP
+            self.noise_predictor = DDP(
+                self.noise_predictor,
+                device_ids=[self.ddp_local_rank],
+                find_unused_parameters=True
+            )
+
+            # Wrap conditional model with DDP if it exists
+            if self.conditional_model is not None:
+                self.conditional_model = DDP(
+                    self.conditional_model,
+                    device_ids=[self.ddp_local_rank],
+                    find_unused_parameters=True
+                )
+
     def forward(self):
         """Trains the DDIM model to predict noise added by the forward diffusion process.
 
@@ -520,114 +643,224 @@ class TrainDDIM(nn.Module):
         best_val_loss : float
              Best validation or training loss achieved.
         """
+
+        # Set models to training mode
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
 
-        scaler = GradScaler()
+        # Compile models for optimization (if supported)
+        """
+        try:
+            self.noise_predictor = torch.compile(self.noise_predictor)
+            if self.conditional_model is not None:
+                self.conditional_model = torch.compile(self.conditional_model)
+        except Exception as e:
+            if self.master_process:
+                print(f"Model compilation failed: {e}. Continuing without compilation.")
+        """
+
+        # Wrap models for DDP after compilation
+        self._wrap_models_for_ddp()
+
+        # Initialize training components
+        scaler = torch.GradScaler()
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
+
+        # Main training loop
         for epoch in range(self.max_epoch):
-            train_losses_ = []
-            for x, y in tqdm(self.data_loader):
+            # Set epoch for distributed sampler if using DDP
+            if self.ddp and hasattr(self.data_loader.sampler, 'set_epoch'):
+                self.data_loader.sampler.set_epoch(epoch)
+
+            train_losses_epoch = []
+
+            # Training step loop with gradient accumulation
+            for step, (x, y) in enumerate(tqdm(self.data_loader, disable=not self.master_process)):
                 x = x.to(self.device)
 
+                # Process conditional inputs if conditional model exists
                 if self.conditional_model is not None:
-                    y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
-                    y_list = [str(item) for item in y_list]
-                    y_encoded = self.tokenizer(
-                        y_list,
-                        padding="max_length",
-                        truncation=True,
-                        max_length=self.max_length,
-                        return_tensors="pt"
-                    ).to(self.device)
-                    input_ids = y_encoded["input_ids"]
-                    attention_mask = y_encoded["attention_mask"]
-                    y_encoded = self.conditional_model(input_ids, attention_mask)
+                    y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
 
-                self.optimizer.zero_grad()
+                # Forward pass with mixed precision
                 with autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+
+                    # Generate noise and timesteps
                     noise = torch.randn_like(x).to(self.device)
                     t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
                     assert x.device == noise.device == t.device, "Device mismatch detected"
                     assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
+
+                    # Apply forward diffusion
                     noisy_x = self.forward_diffusion(x, noise, t)
+
+                    # Predict noise
                     p_noise = self.noise_predictor(noisy_x, t, y_encoded)
-                    loss = self.objective(p_noise, noise)
+
+                    # Compute loss and scale for gradient accumulation
+                    loss = self.objective(p_noise, noise) / self.num_grad_accumulation
+
+                # Backward pass
                 scaler.scale(loss).backward()
-                nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), max_norm=1.0)
-                if self.conditional_model is not None:
-                    nn.utils.clip_grad_norm_(self.conditional_model.parameters(), max_norm=1.0)
-                scaler.step(self.optimizer)
-                scaler.update()
-                self.warmup_lr_scheduler.step()
-                train_losses_.append(loss.item())
 
-            if self.hyper_params.trainable_beta:
-                self.hyper_params.constrain_betas()
+                # Gradient accumulation and optimizer step
+                if (step + 1) % self.num_grad_accumulation == 0:
+                    # Clip gradients
+                    scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), max_norm=1.0)
+                    if self.conditional_model is not None:
+                        torch.nn.utils.clip_grad_norm_(self.conditional_model.parameters(), max_norm=1.0)
 
-            mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
+                    # Optimizer step
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                    self.optimizer.zero_grad()
+
+                    # Update learning rate (warmup scheduler)
+                    self.warmup_lr_scheduler.step()
+
+                # Record loss (unscaled)
+                train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
+
+            # Compute mean training loss
+            mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
+
+            # All-reduce loss across processes for DDP
+            if self.ddp:
+                loss_tensor = torch.tensor(mean_train_loss, device=self.device)
+                dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+                mean_train_loss = loss_tensor.item()
+
             train_losses.append(mean_train_loss)
-            print(f"\nEpoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
 
+            # Print training progress (only master process)
+            if self.master_process:
+                if (epoch + 1) % self.progress_frequency == 0:
+                    print(f"\nEpoch: {epoch + 1} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
+
+            # Validation step
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
-                val_loss, fid, mse, psnr, ssim, lpips_score = self.validate()
-                print(f" | Val Loss: {val_loss:.4f}", end="")
-                if self.metrics_ and self.metrics_.fid:
-                    print(f" | FID: {fid:.4f}", end="")
-                if self.metrics_ and self.metrics_.metrics:
-                    print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
-                if self.metrics_ and self.metrics_.lpips:
-                    print(f" | LPIPS: {lpips_score:.4f}", end="")
-                print()
+                val_metrics = self.validate()
+                val_loss, fid, mse, psnr, ssim, lpips_score = val_metrics
+
+                if self.master_process:
+                    print(f" | Val Loss: {val_loss:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'fid') and self.metrics_.fid:
+                        print(f" | FID: {fid:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
+                        print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
+                        print(f" | LPIPS: {lpips_score:.4f}", end="")
+                    print()
 
                 current_best = val_loss
                 self.scheduler.step(val_loss)
             else:
-                print()
+                if self.master_process:
+                    print()
                 current_best = mean_train_loss
                 self.scheduler.step(mean_train_loss)
 
-            if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
-                best_val_loss = current_best
-                wait = 0
-                try:
-                    torch.save({
-                        'epoch': epoch + 1,
-                        'model_state_dict_noise_predictor': self.noise_predictor.state_dict(),
-                        'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
-                        'optimizer_state_dict': self.optimizer.state_dict(),
-                        'loss': best_val_loss,
-                        'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
-                        'max_epoch': self.max_epoch,
-                    }, self.store_path)
-                    print(f"Model saved at epoch {epoch + 1}")
-                except Exception as e:
-                    print(f"Failed to save model: {e}")
-            else:
-                wait += 1
-                if wait >= self.patience:
-                    print("Early stopping triggered")
-                    try:
-                        torch.save({
-                            'epoch': epoch + 1,
-                            'model_state_dict_noise_predictor': self.noise_predictor.state_dict(),
-                            'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
-                            'optimizer_state_dict': self.optimizer.state_dict(),
-                            'loss': best_val_loss,
-                            'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
-                            'max_epoch': self.max_epoch,
-                        }, self.store_path + "_early_stop.pth")
-                        print(f"Final model saved at {self.store_path}_early_stop.pth")
-                    except Exception as e:
-                        print(f"Failed to save final model: {e}")
-                    break
+            # Save checkpoint and early stopping (only master process)
+            if self.master_process:
+                if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
+                    best_val_loss = current_best
+                    wait = 0
+                    self._save_checkpoint(epoch + 1, best_val_loss)
+                else:
+                    wait += 1
+                    if wait >= self.patience:
+                        print("Early stopping triggered")
+                        self._save_checkpoint(epoch + 1, best_val_loss, "_early_stop")
+                        break
+
+        # Clean up DDP
+        if self.ddp:
+            destroy_process_group()
 
         return train_losses, best_val_loss
+
+    def _process_conditional_input(self, y: Union[torch.Tensor, List]) -> torch.Tensor:
+        """Process conditional input for text-to-image generation.
+
+        Parameters
+        ----------
+        y : torch.Tensor or list
+            Conditional input (text prompts).
+
+        Returns
+        -------
+        torch.Tensor
+            Encoded conditional input.
+        """
+        # Convert to string list
+        y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
+        y_list = [str(item) for item in y_list]
+
+        # Tokenize
+        y_encoded = self.tokenizer(
+            y_list,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt"
+        ).to(self.device)
+
+        # Get embeddings
+        input_ids = y_encoded["input_ids"]
+        attention_mask = y_encoded["attention_mask"]
+        y_encoded = self.conditional_model(input_ids, attention_mask)
+
+        return y_encoded
+    def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "") -> None:
+        """Save model checkpoint (only called by master process).
+
+        Parameters
+        ----------
+        epoch : int
+            Current epoch number.
+        loss : float
+            Current loss value.
+        suffix : str, optional
+            Suffix to add to checkpoint filename.
+        """
+        try:
+            # Get state dicts, handling DDP wrapping
+            noise_predictor_state = (
+                self.noise_predictor.module.state_dict() if self.ddp
+                else self.noise_predictor.state_dict()
+            )
+            conditional_state = None
+            if self.conditional_model is not None:
+                conditional_state = (
+                    self.conditional_model.module.state_dict() if self.ddp
+                    else self.conditional_model.state_dict()
+                )
+
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict_noise_predictor': noise_predictor_state,
+                'model_state_dict_conditional': conditional_state,
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'loss': loss,
+                'hyper_params_model': (
+                    self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module)
+                    else self.hyper_params
+                ),
+                'max_epoch': self.max_epoch,
+            }
+
+            save_path = self.store_path + suffix + ".pth" if suffix else self.store_path + ".pth"
+            torch.save(checkpoint, save_path)
+            print(f"Model saved at epoch {epoch} to {save_path}")
+
+        except Exception as e:
+            print(f"Failed to save model: {e}")
 
     def validate(self):
         """Validates the noise predictor and computes evaluation Metrics.
@@ -652,77 +885,85 @@ class TrainDDIM(nn.Module):
         lpips_score :  float, or None if not computed
             Mean LPIPS score
         """
+
         self.noise_predictor.eval()
         if self.conditional_model is not None:
             self.conditional_model.eval()
 
         val_losses = []
-        fid_, mse_, psnr_, ssim_, lpips_score_ = [], [], [], [], []
+        fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
+
         with torch.no_grad():
             for x, y in self.val_loader:
                 x = x.to(self.device)
-                x_orig = x
+                x_orig = x.clone()
 
+                # Process conditional input
                 if self.conditional_model is not None:
-                    y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
-                    y_list = [str(item) for item in y_list]
-                    y_encoded = self.tokenizer(
-                        y_list,
-                        padding="max_length",
-                        truncation=True,
-                        max_length=self.max_length,
-                        return_tensors="pt"
-                    ).to(self.device)
-                    input_ids = y_encoded["input_ids"]
-                    attention_mask = y_encoded["attention_mask"]
-                    y_encoded = self.conditional_model(input_ids, attention_mask)
+                    y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
 
-                # validation loss
+                # Compute validation loss
                 noise = torch.randn_like(x).to(self.device)
                 t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
-                assert x.device == noise.device == t.device, "Device mismatch detected"
-                assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
+
                 noisy_x = self.forward_diffusion(x, noise, t)
-                p_noise = self.noise_predictor(noisy_x, t, y_encoded)
-                loss = self.objective(p_noise, noise)
+                predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
+                loss = self.objective(predicted_noise, noise)
                 val_losses.append(loss.item())
 
-                # generate samples for metrics
+                # Generate samples for metrics evaluation
                 if self.metrics_ is not None and self.reverse_diffusion is not None:
                     xt = torch.randn_like(x).to(self.device)
+
+                    # Reverse diffusion sampling
                     for t in reversed(range(self.hyper_params.tau_num_steps)):
                         time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
                         prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
                         predicted_noise = self.noise_predictor(xt, time_steps, y_encoded)
                         xt, _ = self.reverse_diffusion(xt, predicted_noise, time_steps, prev_time_steps)
 
+                    # Clamp and normalize generated samples
                     x_hat = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
                     if self.normalize_output:
                         x_hat = (x_hat - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
                         x_orig = (x_orig - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
-                    fid, mse, psnr, ssim, lpips_score = self.metrics_.forward(x_orig, x_hat)
-                    if self.metrics_.fid:
-                        fid_.append(fid)
-                    if self.metrics_.metrics:
-                        mse_.append(mse)
-                        psnr_.append(psnr)
-                        ssim_.append(ssim)
-                    if self.metrics_.lpips:
-                        lpips_score_.append(lpips_score)
 
-            val_loss = torch.mean(torch.tensor(val_losses)).item()
-            fid_ = torch.mean(torch.tensor(fid_)).item() if fid_ else float('inf')
-            mse_ = torch.mean(torch.tensor(mse_)).item() if mse_ else None
-            psnr_ = torch.mean(torch.tensor(psnr_)).item() if psnr_ else None
-            ssim_ = torch.mean(torch.tensor(ssim_)).item() if ssim_ else None
-            lpips_score_ = torch.mean(torch.tensor(lpips_score_)).item() if lpips_score_ else None
+                    # Compute metrics
+                    metrics_result = self.metrics_.forward(x_orig, x_hat)
+                    fid, mse, psnr, ssim, lpips_score = metrics_result
 
+                    if hasattr(self.metrics_, 'fid') and self.metrics_.fid:
+                        fid_scores.append(fid)
+                    if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
+                        mse_scores.append(mse)
+                        psnr_scores.append(psnr)
+                        ssim_scores.append(ssim)
+                    if hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
+                        lpips_scores.append(lpips_score)
+
+        # Compute average metrics
+        val_loss = torch.tensor(val_losses).mean().item()
+
+        # All-reduce validation metrics across processes for DDP
+        if self.ddp:
+            val_loss_tensor = torch.tensor(val_loss, device=self.device)
+            dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
+            val_loss = val_loss_tensor.item()
+
+        fid_avg = torch.tensor(fid_scores).mean().item() if fid_scores else float('inf')
+        mse_avg = torch.tensor(mse_scores).mean().item() if mse_scores else None
+        psnr_avg = torch.tensor(psnr_scores).mean().item() if psnr_scores else None
+        ssim_avg = torch.tensor(ssim_scores).mean().item() if ssim_scores else None
+        lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
+
+        # Return to training mode
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
-        return val_loss, fid_, mse_, psnr_, ssim_, lpips_score_
+
+        return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
 
 ###==================================================================================================================###
 
@@ -896,3 +1137,5 @@ class SampleDDIM(nn.Module):
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)
+
+

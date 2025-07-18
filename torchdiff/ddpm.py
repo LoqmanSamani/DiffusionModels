@@ -40,6 +40,7 @@ import warnings
 from torchvision.utils import save_image
 
 
+###==================================================================================================================###
 
 
 class ForwardDDPM(nn.Module):
@@ -303,20 +304,6 @@ class HyperParamsDDPM(nn.Module):
         return betas, alphas, alpha_bars, torch.sqrt(alpha_bars), torch.sqrt(1 - alpha_bars)
 
 
-    def constrain_betas(self) -> None:
-        """Constrains trainable betas to a valid range during training.
-
-        Ensures that trainable beta values remain within the specified range
-        [beta_start, beta_end] by clamping them in-place.
-
-        **Notes**
-
-        This method only applies when `trainable_beta` is True.
-        """
-        if self.trainable_beta:
-            pass
-
-
 ###==================================================================================================================###
 
 
@@ -403,7 +390,7 @@ class TrainDDPM(nn.Module):
         # Initialize DDP settings first
         self.ddp = ddp
         self.num_grad_accumulation = num_grad_accumulation
-        self.device = device
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Setup distributed training if enabled
         if self.ddp:
@@ -478,8 +465,8 @@ class TrainDDPM(nn.Module):
         self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # Total number of processes
 
         # Set device and make it current
-        # self.device = torch.device(f"cuda:{self.ddp_local_rank}")
-        self.device = f"cuda:{self.ddp_local_rank}"
+        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+        # self.device = f"cuda:{self.ddp_local_rank}"
         torch.cuda.set_device(self.device)
 
         # Master process handles logging, checkpointing, etc.
@@ -490,7 +477,6 @@ class TrainDDPM(nn.Module):
 
     def _setup_single_gpu(self) -> None:
         """Setup single GPU or CPU training configuration."""
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.ddp_rank = 0
         self.ddp_local_rank = 0
         self.ddp_world_size = 1
@@ -631,6 +617,7 @@ class TrainDDPM(nn.Module):
             self.conditional_model.train()
 
         # Compile models for optimization (if supported)
+        """
         try:
             self.noise_predictor = torch.compile(self.noise_predictor)
             if self.conditional_model is not None:
@@ -638,6 +625,7 @@ class TrainDDPM(nn.Module):
         except Exception as e:
             if self.master_process:
                 print(f"Model compilation failed: {e}. Continuing without compilation.")
+        """
 
         # Wrap models for DDP after compilation
         self._wrap_models_for_ddp()
@@ -702,10 +690,6 @@ class TrainDDPM(nn.Module):
 
                 # Record loss (unscaled)
                 train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
-
-            # Constrain betas if trainable
-            if hasattr(self.hyper_params, 'trainable_beta') and self.hyper_params.trainable_beta:
-                self.hyper_params.constrain_betas()
 
             # Compute mean training loss
             mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
@@ -1204,7 +1188,7 @@ hyperparams_ddpm = HyperParamsDDPM(
     num_steps=500,
     beta_start=1e-4,
     beta_end=0.02,
-    trainable_beta=False,
+    trainable_beta=True,
     beta_method="linear"
 )
 
@@ -1222,7 +1206,7 @@ train_ddpm = TrainDDPM(
     data_loader=train_loader,
     val_loader=val_loader,
     max_epoch=5,
-    device="cpu",
+    device=None, #"cpu",
     store_path="test_ddpm",
     val_frequency=3,
     ddp=False,
