@@ -27,6 +27,11 @@ generation with text prompts.
 
 import torch
 import torch.nn as nn
+from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
+import torch.distributed as dist
+from typing import Optional, Tuple, Callable, List, Any, Union, Self
 from tqdm import tqdm
 from torch.cuda.amp import GradScaler, autocast
 from torch.amp import GradScaler, autocast
@@ -98,7 +103,7 @@ class ForwardSDE(nn.Module):
         elif self.method == "sub-vp":
             # Use properties to get betas and cum_betas (handles trainable case)
             betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
-            cum_betas = self.hyper_params.cum_betas[time_steps].view(-1, 1, 1, 1)
+            cum_betas = self.hyper_params._cum_betas[time_steps].view(-1, 1, 1, 1)
             drift = -0.5 * betas * x0 * dt
             diffusion = torch.sqrt(betas * (1 - torch.exp(-2 * cum_betas)) * dt) * noise
             x0 = x0 + drift + diffusion
@@ -168,7 +173,7 @@ class ReverseSDE(nn.Module):
         dt = self.hyper_params.dt
         # Use properties to get betas and cum_betas (handles trainable case)
         betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
-        cum_betas = self.hyper_params.cum_betas[time_steps].view(-1, 1, 1, 1)
+        cum_betas = self.hyper_params._cum_betas[time_steps].view(-1, 1, 1, 1)
         if self.method == "ve":
             # Use property to get sigmas (handles trainable case)
             sigma_t = self.hyper_params.sigmas[time_steps]
@@ -259,7 +264,7 @@ class HyperParamsSDE(nn.Module):
             # Initialize unconstrained parameters and transform them to valid beta range
             self.beta_raw = nn.Parameter(torch.logit((betas_init - beta_start) / (beta_end - beta_start)))
         else:
-            self.register_buffer('betas', betas_init)
+            self.register_buffer('betas_buffer', betas_init)
             self.register_buffer('cum_betas', torch.cumsum(betas_init, dim=0) * self.dt)
             self.register_buffer("sigmas", self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time)
 
@@ -270,10 +275,10 @@ class HyperParamsSDE(nn.Module):
             # Transform unconstrained parameters to valid beta range using sigmoid
             return self.beta_start + (self.beta_end - self.beta_start) * torch.sigmoid(self.beta_raw)
         else:
-            return self._buffers['betas']
+            return self._buffers['betas_buffer']
 
     @property
-    def cum_betas(self):
+    def _cum_betas(self):
         """Returns the cumulative beta values, computing dynamically if trainable."""
         if self.trainable_beta:
             return torch.cumsum(self.betas, dim=0) * self.dt
@@ -409,40 +414,113 @@ class TrainSDE(nn.Module):
     """
     def __init__(self, method, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
                  max_epoch=1000, device=None, conditional_model=None, metrics_=None, tokenizer=None, max_length=77,
-                 store_path=None, patience=100, warmup_epochs=100, val_frequency=10, output_range=(-1, 1), normalize_output=True):
+                 store_path=None, patience=100, warmup_epochs=100, val_frequency=10, output_range=(-1, 1), normalize_output=True, ddp: bool = False,
+            num_grad_accumulation: int = 1,
+            progress_frequency: int = 1):
+
         super().__init__()
+        # Initialize DDP settings first
+        self.ddp = ddp
+        self.num_grad_accumulation = num_grad_accumulation
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Setup distributed training if enabled
+        if self.ddp:
+            self._setup_ddp()
+        else:
+            self._setup_single_gpu()
+
+        # Move models to appropriate device
         self.method = method
         self.noise_predictor = noise_predictor.to(self.device)
         self.hyper_params = hyper_params.to(self.device)
         self.forward_diffusion = ForwardSDE(hyper_params=self.hyper_params, method=self.method).to(self.device)
         self.reverse_diffusion = ReverseSDE(hyper_params=self.hyper_params, method=self.method).to(self.device)
         self.conditional_model = conditional_model.to(self.device) if conditional_model else None
+
+        # Training components
         self.metrics_ = metrics_
         self.optimizer = optimizer
         self.objective = objective
-        self.store_path = store_path or "sde_model.pth"
+        self.store_path = store_path or "ddpm_model"
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epoch = max_epoch
         self.max_length = max_length
         self.patience = patience
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=self.patience, factor=0.5)
-        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
         self.output_range = output_range
         self.normalize_output = normalize_output
+        self.progress_frequency = progress_frequency
+
+        # Learning rate scheduling
+        self.scheduler = ReduceLROnPlateau(
+            self.optimizer,
+            patience=self.patience,
+            factor=0.5
+        )
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
+
+        # Initialize tokenizer
         if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
             except Exception as e:
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
+        else:
+            self.tokenizer = tokenizer
 
-    def load_checkpoint(self, checkpoint_path):
+
+    def _setup_ddp(self) -> None:
+        """Setup Distributed Data Parallel training configuration.
+
+        Initializes process group, determines rank information, and sets up
+        CUDA device for the current process.
+        """
+        # Check if DDP environment variables are set
+        if "RANK" not in os.environ:
+            raise ValueError("DDP enabled but RANK environment variable not set")
+        if "LOCAL_RANK" not in os.environ:
+            raise ValueError("DDP enabled but LOCAL_RANK environment variable not set")
+        if "WORLD_SIZE" not in os.environ:
+            raise ValueError("DDP enabled but WORLD_SIZE environment variable not set")
+
+        # Ensure CUDA is available for DDP
+        if not torch.cuda.is_available():
+            raise RuntimeError("DDP requires CUDA but CUDA is not available")
+
+        # Initialize process group only if not already initialized
+        if not torch.distributed.is_initialized():
+            init_process_group(backend="nccl")
+
+        # Get rank information
+        self.ddp_rank = int(os.environ["RANK"])  # Global rank across all nodes
+        self.ddp_local_rank = int(os.environ["LOCAL_RANK"])  # Local rank on current node
+        self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # Total number of processes
+
+        # Set device and make it current
+        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+        # self.device = f"cuda:{self.ddp_local_rank}"
+        torch.cuda.set_device(self.device)
+
+        # Master process handles logging, checkpointing, etc.
+        self.master_process = self.ddp_rank == 0
+
+        if self.master_process:
+            print(f"DDP initialized with world_size={self.ddp_world_size}")
+
+    def _setup_single_gpu(self) -> None:
+        """Setup single GPU or CPU training configuration."""
+        self.ddp_rank = 0
+        self.ddp_local_rank = 0
+        self.ddp_world_size = 1
+        self.master_process = True
+
+    def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, float]:
         """Loads a training checkpoint to resume training.
 
         Restores the state of the noise predictor, conditional model (if applicable),
-        and optimizer from a saved checkpoint.
+        and optimizer from a saved checkpoint. Handles DDP model state dict loading.
 
         Parameters
         ----------
@@ -452,29 +530,48 @@ class TrainSDE(nn.Module):
         Returns
         -------
         epoch : int
-            The epoch at which the checkpoint was saved (int).
+            The epoch at which the checkpoint was saved.
         loss : float
-            The loss at the checkpoint (float).
+             The loss at the checkpoint.
         """
         try:
+            # Load checkpoint with proper device mapping
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
 
+        # Load noise predictor state
         if 'model_state_dict_noise_predictor' not in checkpoint:
             raise KeyError("Checkpoint missing 'model_state_dict_noise_predictor' key")
-        self.noise_predictor.load_state_dict(checkpoint['model_state_dict_noise_predictor'])
 
+        # Handle DDP wrapped model state dict
+        state_dict = checkpoint['model_state_dict_noise_predictor']
+        if self.ddp and not any(key.startswith('module.') for key in state_dict.keys()):
+            # If loading non-DDP checkpoint into DDP model, add 'module.' prefix
+            state_dict = {f'module.{k}': v for k, v in state_dict.items()}
+        elif not self.ddp and any(key.startswith('module.') for key in state_dict.keys()):
+            # If loading DDP checkpoint into non-DDP model, remove 'module.' prefix
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+        self.noise_predictor.load_state_dict(state_dict)
+
+        # Load conditional model state if applicable
         if self.conditional_model is not None:
             if 'model_state_dict_conditional' in checkpoint and checkpoint['model_state_dict_conditional'] is not None:
-                self.conditional_model.load_state_dict(checkpoint['model_state_dict_conditional'])
+                cond_state_dict = checkpoint['model_state_dict_conditional']
+                # Handle DDP wrapping for conditional model
+                if self.ddp and not any(key.startswith('module.') for key in cond_state_dict.keys()):
+                    cond_state_dict = {f'module.{k}': v for k, v in cond_state_dict.items()}
+                elif not self.ddp and any(key.startswith('module.') for key in cond_state_dict.keys()):
+                    cond_state_dict = {k.replace('module.', ''): v for k, v in cond_state_dict.items()}
+                self.conditional_model.load_state_dict(cond_state_dict)
             else:
                 warnings.warn(
-                    "Checkpoint contains no 'model_state_dict_conditional' or it is None, skipping conditional model loading")
-        elif 'model_state_dict_conditional' in checkpoint and checkpoint['model_state_dict_conditional'] is not None:
-            warnings.warn(
-                "Checkpoint contains conditional model state, but no conditional model is defined in this instance")
+                    "Checkpoint contains no 'model_state_dict_conditional' or it is None, "
+                    "skipping conditional model loading"
+                )
 
+        # Load optimizer state
         if 'optimizer_state_dict' not in checkpoint:
             raise KeyError("Checkpoint missing 'optimizer_state_dict' key")
         try:
@@ -485,15 +582,12 @@ class TrainSDE(nn.Module):
         epoch = checkpoint.get('epoch', -1)
         loss = checkpoint.get('loss', float('inf'))
 
-        self.noise_predictor.to(self.device)
-        if self.conditional_model is not None:
-            self.conditional_model.to(self.device)
-
-        print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
+        if self.master_process:
+            print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
         return epoch, loss
 
     @staticmethod
-    def warmup_scheduler(optimizer, warmup_epochs=10):
+    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
         """Creates a learning rate scheduler for warmup.
 
         Generates a scheduler that linearly increases the learning rate from 0 to the
@@ -503,19 +597,40 @@ class TrainSDE(nn.Module):
         ----------
         optimizer : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
-        warmup_epochs : int, optional
-            Number of epochs for the warmup phase (default: 10).
+        warmup_epochs : int
+            Number of epochs for the warmup phase.
 
         Returns
         -------
-        lr_scheduler (torch.optim.lr_scheduler.LambdaLR) - Learning rate scheduler for warmup.
+        torch.optim.lr_scheduler.LambdaLR
+            Learning rate scheduler for warmup.
         """
+
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
                 return epoch / warmup_epochs
             return 1.0
 
         return LambdaLR(optimizer, lr_lambda)
+
+    def _wrap_models_for_ddp(self) -> None:
+        """Wrap models with DistributedDataParallel for multi-GPU training."""
+        if self.ddp:
+            # Wrap noise predictor with DDP
+            self.noise_predictor = DDP(
+                self.noise_predictor,
+                device_ids=[self.ddp_local_rank],
+                find_unused_parameters=True
+            )
+
+            # Wrap conditional model with DDP if it exists
+            if self.conditional_model is not None:
+                self.conditional_model = DDP(
+                    self.conditional_model,
+                    device_ids=[self.ddp_local_rank],
+                    find_unused_parameters=True
+                )
+
 
     def forward(self):
         """Trains the SDE model to predict noise added by the forward diffusion process.
@@ -537,58 +652,100 @@ class TrainSDE(nn.Module):
         - Checkpoints are saved when the validation (or training) loss improves, and on early stopping.
         - Early stopping is triggered if no improvement occurs for `patience` epochs.
         """
+        # Set models to training mode
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
 
-        scaler = GradScaler()
+        # Compile models for optimization (if supported)
+        """
+        try:
+            self.noise_predictor = torch.compile(self.noise_predictor)
+            if self.conditional_model is not None:
+                self.conditional_model = torch.compile(self.conditional_model)
+        except Exception as e:
+            if self.master_process:
+                print(f"Model compilation failed: {e}. Continuing without compilation.")
+        """
+
+        # Wrap models for DDP after compilation
+        self._wrap_models_for_ddp()
+
+        # Initialize training components
+        scaler = torch.GradScaler()
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
+
+        # Main training loop
         for epoch in range(self.max_epoch):
-            train_losses_ = []
-            for x, y in tqdm(self.data_loader):
+            # Set epoch for distributed sampler if using DDP
+            if self.ddp and hasattr(self.data_loader.sampler, 'set_epoch'):
+                self.data_loader.sampler.set_epoch(epoch)
+
+            train_losses_epoch = []
+            # Training step loop with gradient accumulation
+            for step, (x, y) in enumerate(tqdm(self.data_loader, disable=not self.master_process)):
                 x = x.to(self.device)
+
+                # Process conditional inputs if conditional model exists
                 if self.conditional_model is not None:
-                    y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
-                    y_list = [str(item) for item in y_list]
-                    y_encoded = self.tokenizer(
-                        y_list,
-                        padding="max_length",
-                        truncation=True,
-                        max_length=self.max_length,
-                        return_tensors="pt"
-                    ).to(self.device)
-                    input_ids = y_encoded["input_ids"]
-                    attention_mask = y_encoded["attention_mask"]
-                    y_encoded = self.conditional_model(input_ids, attention_mask)
+                    y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
 
-                self.optimizer.zero_grad()
-                with autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                # Forward pass with mixed precision
+                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                    # Generate noise and timesteps
                     noise = torch.randn_like(x).to(self.device)
                     t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
-                    assert x.device == noise.device == t.device, "Device mismatch detected"
-                    assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
+
+                    # Apply forward diffusion
                     noisy_x = self.forward_diffusion(x, noise, t)
-                    p_noise = self.noise_predictor(noisy_x, t, y_encoded)
-                    loss = self.objective(p_noise, noise)
+
+                    # Predict noise
+                    predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
+
+                    # Compute loss and scale for gradient accumulation
+                    loss = self.objective(predicted_noise, noise) / self.num_grad_accumulation
+
+                # Backward pass
                 scaler.scale(loss).backward()
-                nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), max_norm=1.0)
-                if self.conditional_model is not None:
-                    nn.utils.clip_grad_norm_(self.conditional_model.parameters(), max_norm=1.0)
+
+                # Gradient accumulation and optimizer step
+                if (step + 1) % self.num_grad_accumulation == 0:
+                    # Clip gradients
+                    scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), max_norm=1.0)
+                    if self.conditional_model is not None:
+                        torch.nn.utils.clip_grad_norm_(self.conditional_model.parameters(), max_norm=1.0)
+
+                # Optimizer step
                 scaler.step(self.optimizer)
                 scaler.update()
+                self.optimizer.zero_grad()
+
+                # Update learning rate (warmup scheduler)
                 self.warmup_lr_scheduler.step()
-                train_losses_.append(loss.item())
 
-            if self.hyper_params.trainable_beta:
-                self.hyper_params.constrain_betas()
+            # Record loss (unscaled)
+            train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
 
-            mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
-            train_losses.append(mean_train_loss)
-            print(f"\nEpoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
+            # Compute mean training loss
+            mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
+
+            # All-reduce loss across processes for DDP
+            if self.ddp:
+                loss_tensor = torch.tensor(mean_train_loss, device=self.device)
+                dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+                mean_train_loss = loss_tensor.item()
+
+            # Print training progress (only master process)
+            if self.master_process:
+                if (epoch + 1) % self.progress_frequency == 0:
+                    print(f"\nEpoch: {epoch + 1} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
+
+            # TODO: worked on it until here
 
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
                 val_loss, fid, mse, psnr, ssim, lpips_score = self.validate()

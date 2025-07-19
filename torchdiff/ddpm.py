@@ -963,7 +963,7 @@ class SampleDDPM(nn.Module):
             in_channels: int = 3,
             device: Optional[str] = None,
             output_range: Tuple[float, float] = (-1.0, 1.0)
-    ):
+    ) -> None:
         super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.reverse = reverse_diffusion.to(self.device)

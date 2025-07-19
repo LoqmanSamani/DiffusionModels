@@ -33,18 +33,15 @@ subsampled time step schedule for faster sampling compared to DDPM.
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
 # multi-GPU processor module
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from tqdm import tqdm
-from torch.amp import autocast
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
-import os
 from typing import Optional, Tuple, Callable, List, Any, Union, Self
 
 
@@ -66,11 +63,11 @@ class ForwardDDIM(nn.Module):
         `sqrt_one_minus_alpha_cumprod`, `compute_schedule`
     """
 
-    def __init__(self, hyper_params):
+    def __init__(self, hyper_params: torch.nn.Module) -> None:
         super().__init__()
         self.hyper_params = hyper_params
 
-    def forward(self, x0, noise, time_steps):
+    def forward(self, x0: torch.Tensor, noise: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
         """Applies the forward diffusion process to the input data.
 
         Perturbs the input data `x0` by adding Gaussian noise according to the DDIM
@@ -128,11 +125,11 @@ class ReverseDDIM(nn.Module):
         Expected to have attributes: `tau_num_steps`, `eta`, `get_tau_schedule`.
     """
 
-    def __init__(self, hyper_params):
+    def __init__(self, hyper_params: torch.nn.Module):
         super().__init__()
         self.hyper_params = hyper_params
 
-    def forward(self, xt, predicted_noise, time_steps, prev_time_steps):
+    def forward(self, xt: torch.Tensor, predicted_noise: torch.Tensor, time_steps: torch.Tensor, prev_time_steps: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Applies the reverse diffusion process to the noisy input.
 
         Denoises the input `xt` at time step `t` to produce the previous step `xt_prev`
@@ -209,8 +206,16 @@ class HyperParamsDDIM(nn.Module):
         Supported methods: "linear", "sigmoid", "quadratic", "constant", "inverse_time".
     """
 
-    def __init__(self, eta=None, num_steps=1000, tau_num_steps=100, beta_start=1e-4, beta_end=0.02,
-                 trainable_beta=False, beta_method="linear"):
+    def __init__(
+            self,
+            eta: Optional[float] = None,
+            num_steps: int = 1000,
+            tau_num_steps: int = 100,
+            beta_start: float = 1e-4,
+            beta_end: float = 0.02,
+            trainable_beta: bool = False,
+            beta_method: str = "linear"
+    ):
         super().__init__()
         self.eta = eta or 0
         self.num_steps = num_steps
@@ -233,7 +238,7 @@ class HyperParamsDDIM(nn.Module):
             # Initialize unconstrained parameters and transform them to valid beta range
             self.beta_raw = nn.Parameter(torch.logit((betas_init - beta_start) / (beta_end - beta_start)))
         else:
-            self.register_buffer('betas', betas_init)
+            self.register_buffer('betas_buffer', betas_init)
             self.register_buffer('alphas', 1 - self.betas)
             self.register_buffer('alpha_cumprod', torch.cumprod(self.alphas, dim=0))
             self.register_buffer('sqrt_alpha_cumprod', torch.sqrt(self.alpha_cumprod))
@@ -241,17 +246,19 @@ class HyperParamsDDIM(nn.Module):
 
         self.register_buffer('tau_indices', torch.linspace(0, num_steps - 1, tau_num_steps, dtype=torch.long))
 
-    # FIX: Add property to get constrained betas when trainable
+
     @property
-    def betas(self):
+    def betas(self)-> torch.Tensor:
         """Returns the beta values, applying reparameterization if trainable."""
         if self.trainable_beta:
             # Transform unconstrained parameters to valid beta range using sigmoid
             return self.beta_start + (self.beta_end - self.beta_start) * torch.sigmoid(self.beta_raw)
-        else:
-            return self._buffers['betas']
+        # Return the registered buffer directly if it exists
+        #return getattr(self, '_buffers', {}).get('betas_buffer', None) or ValueError("Betas buffer not found")
+        return self._buffers['betas_buffer']
 
-    def compute_beta_schedule(self, beta_range, num_steps, method):
+
+    def compute_beta_schedule(self, beta_range: Tuple[float, float], num_steps: int, method: str) -> torch.Tensor:
         """Computes the beta schedule based on the specified method.
 
         Generates a sequence of beta values for the DDIM noise schedule using the
@@ -292,7 +299,7 @@ class HyperParamsDDIM(nn.Module):
         beta = torch.clamp(beta, min=beta_min, max=beta_max)
         return beta
 
-    def get_tau_schedule(self):
+    def get_tau_schedule(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Computes the subsampled (tau) noise schedule for DDIM.
 
         Returns the noise schedule parameters for the subsampled time steps used in
@@ -329,7 +336,7 @@ class HyperParamsDDIM(nn.Module):
 
         return tau_betas, tau_alphas, tau_alpha_cumprod, tau_sqrt_alpha_cumprod, tau_sqrt_one_minus_alpha_cumprod
 
-    def compute_schedule(self, time_steps=None):
+    def compute_schedule(self, time_steps: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Computes noise schedule parameters dynamically from betas.
 
         Calculates the derived noise schedule parameters (alphas, alpha_cumprod, etc.)
@@ -418,10 +425,30 @@ class TrainDDIM(nn.Module):
     `normalize_output` : bool, optional
         Whether to normalize generated images to [0, 1] for metrics (default: True).
     """
-    def __init__(self, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
-                 max_epoch=1000, device=None, conditional_model=None, metrics_=None, tokenizer=None,
-                 max_length=77, store_path=None, patience=100, warmup_epochs=100, val_frequency=10,
-                 output_range=(-1, 1), normalize_output=True, ddp=False, num_grad_accumulation=1, progress_frequency=1):
+    def __init__(
+            self,
+            noise_predictor: torch.nn.Module,
+            hyper_params: torch.nn.Module,
+            data_loader: torch.utils.data.DataLoader,
+            optimizer: torch.optim.Optimizer,
+            objective: Callable,
+            val_loader: Optional[torch.utils.data.DataLoader] = None,
+            max_epoch: int = 1000,
+            device: str = None,
+            conditional_model: torch.nn.Module = None,
+            metrics_: Optional[Any] = None,
+            tokenizer: Optional[BertTokenizer] = None,
+            max_length: int = 77,
+            store_path: Optional[str] = None,
+            patience: int = 100,
+            warmup_epochs: int = 100,
+            val_frequency: int = 10,
+            output_range: Tuple[float, float] = (-1, 1),
+            normalize_output: bool = True,
+            ddp: bool = False,
+            num_grad_accumulation: int = 1,
+            progress_frequency: int = 1
+    ) -> None:
         super().__init__()
         # Initialize DDP settings first
         self.ddp = ddp
@@ -457,7 +484,7 @@ class TrainDDIM(nn.Module):
         self.progress_frequency = progress_frequency
 
         # Learning rate scheduling
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        self.scheduler = ReduceLROnPlateau(
             self.optimizer,
             patience=self.patience,
             factor=0.5
@@ -587,7 +614,7 @@ class TrainDDIM(nn.Module):
         return epoch, loss
 
     @staticmethod
-    def warmup_scheduler(optimizer, warmup_epochs):
+    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
         """Creates a learning rate scheduler for warmup.
 
         Generates a scheduler that linearly increases the learning rate from 0 to the
@@ -597,14 +624,14 @@ class TrainDDIM(nn.Module):
         ----------
         `optimizer` : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
-        `warmup_epochs` : int, optional
+        `warmup_epochs` : int
             Number of epochs for the warmup phase.
 
         Returns
         -------
         lr_scheduler (torch.optim.lr_scheduler.LambdaLR) - Learning rate scheduler for warmup.
         """
-        def lr_lambda(epoch):
+        def lr_lambda(epoch: int) -> float:
             if epoch < warmup_epochs:
                 return epoch / warmup_epochs
             return 1.0
@@ -629,7 +656,7 @@ class TrainDDIM(nn.Module):
                     find_unused_parameters=True
                 )
 
-    def forward(self):
+    def forward(self) -> Tuple[List, float]:
         """Trains the DDIM model to predict noise added by the forward diffusion process.
 
         Executes the training loop, optimizing the noise predictor and conditional model
@@ -688,7 +715,7 @@ class TrainDDIM(nn.Module):
                     y_encoded = None
 
                 # Forward pass with mixed precision
-                with autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
 
                     # Generate noise and timesteps
                     noise = torch.randn_like(x).to(self.device)
@@ -862,7 +889,7 @@ class TrainDDIM(nn.Module):
         except Exception as e:
             print(f"Failed to save model: {e}")
 
-    def validate(self):
+    def validate(self) -> Tuple[float, float, float, float, float, float]:
         """Validates the noise predictor and computes evaluation Metrics.
 
         Computes validation loss (MSE between predicted and ground truth noise) and generates
@@ -998,9 +1025,19 @@ class SampleDDIM(nn.Module):
     `output_range` : tuple, optional
         Tuple of (min, max) for clamping generated images (default: (-1, 1)).
     """
-    def __init__(self, reverse_diffusion, noise_predictor, image_shape, conditional_model=None,
-                 tokenizer="bert-base-uncased",
-                 max_length=77, batch_size=1, in_channels=3, device=None, output_range=(-1, 1)):
+    def __init__(
+            self,
+            reverse_diffusion: torch.nn.Module,
+            noise_predictor: torch.nn.Module,
+            image_shape: Tuple[int, int],
+            conditional_model: Optional[torch.nn.Module] = None,
+            tokenizer: str = "bert-base-uncased",
+            max_length: int = 77,
+            batch_size: int = 1,
+            in_channels: int = 3,
+            device: Optional[str] = None,
+            output_range: Tuple[float, float] = (-1.0, 1.0)
+    ) -> None:
         super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.reverse = reverse_diffusion.to(self.device)
@@ -1022,7 +1059,7 @@ class SampleDDIM(nn.Module):
             raise ValueError("output_range must be a tuple (min, max) with min < max")
 
 
-    def tokenize(self, prompts):
+    def tokenize(self, prompts: Union[List, str]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Tokenizes text prompts for conditional generation.
 
         Converts input prompts into tokenized input IDs and attention masks using the
@@ -1053,7 +1090,7 @@ class SampleDDIM(nn.Module):
         )
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
 
-    def forward(self, conditions=None, normalize_output=True, save_images=True, save_path="ddim_generated"):
+    def forward(self, conditions: Optional[Union[str, List]] = None, normalize_output: bool = True, save_images: bool = True, save_path: str = "ddim_generated") -> torch.Tensor:
         """Generates images using the DDIM sampling process.
 
         Iteratively denoises random noise to generate images using the reverse diffusion
@@ -1116,7 +1153,7 @@ class SampleDDIM(nn.Module):
 
         return generated_imgs
 
-    def to(self, device):
+    def to(self, device: torch.device) -> Self:
         """Moves the module and its components to the specified device.
 
         Updates the device attribute and moves the reverse diffusion, noise predictor,
@@ -1137,5 +1174,130 @@ class SampleDDIM(nn.Module):
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)
+
+
+
+from utils import NoisePredictor, Metrics, TextEncoder
+import os
+import matplotlib.pyplot as plt
+from PIL import Image
+import numpy as np
+import torch
+import torch.nn as nn
+import torchvision
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, Subset
+
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
+
+# Load the FashionMNIST training dataset (28x28 grayscale images)
+train_dataset = datasets.FashionMNIST(
+    root='./data',
+    train=True,
+    download=True,
+    transform=transform
+)
+
+# Load the FashionMNIST test dataset (28x28 grayscale images)
+test_dataset = datasets.FashionMNIST(
+    root='./data',
+    train=False,
+    download=True,
+    transform=transform
+)
+
+# Define subset sizes for training (200 samples) and validation (20 samples)
+train_subset_indices = torch.randperm(len(train_dataset))[:100]
+test_subset_indices = torch.randperm(len(test_dataset))[:10]
+
+# Create subsets from the FashionMNIST training and test datasets
+train_subset = Subset(train_dataset, train_subset_indices)
+test_subset = Subset(test_dataset, test_subset_indices)
+
+# Create DataLoaders for the training and validation subsets
+train_loader = DataLoader(train_subset, batch_size=32, shuffle=True)
+val_loader = DataLoader(test_subset, batch_size=10, shuffle=False, drop_last=False)
+
+# Initialize the NoisePredictor for the DDPM model with parameters for grayscale images
+noise_predictor = NoisePredictor(
+        in_channels=1,  # Single channel for grayscale images in the training data
+        down_channels=[16, 32],
+        mid_channels=[32, 32],
+        up_channels=[32, 16],
+        down_sampling=[True, True],
+        time_embed_dim=32,
+        y_embed_dim=32,
+        num_down_blocks=2,
+        num_mid_blocks=2,
+        num_up_blocks=2,
+        down_sampling_factor=2
+)
+
+# label conditional model
+text_encoder = TextEncoder(
+    use_pretrained_model=True,
+    model_name="bert-base-uncased",
+    vocabulary_size=30522,
+    num_layers=2,
+    input_dimension=32,
+    output_dimension=32,
+    num_heads=2,
+    context_length=77
+)
+
+# Set up the AdamW optimizer for the NoisePredictor parameters with a learning rate of 1e-3
+optimizer = torch.optim.AdamW(
+    [p for p in noise_predictor.parameters() if p.requires_grad] +
+    [p for p in text_encoder.parameters() if p.requires_grad], lr=1e-3
+)
+
+# Initialize the Mean Squared Error (MSE) loss function
+loss = nn.MSELoss()
+
+# Configure the Metrics class for evaluation on CPU (GPUs are recommended for actual training)
+metrics = Metrics(
+    device="cpu",  # Using CPU for this tutorial, but GPUs are recommended for training diffusion models
+    fid=True,
+    metrics=True,
+    lpips_=True
+)
+
+
+# Initialize DDPM hyperparameters for the noise schedule
+hyperparams_ddim = HyperParamsDDIM(
+    num_steps=500,
+    beta_start=1e-4,
+    beta_end=0.02,
+    trainable_beta=False,
+    beta_method="linear"
+)
+
+# Set up the reverse diffusion process for sampling
+reverse_ddim = ReverseDDIM(hyperparams_ddim)
+
+# Configure the DDPM trainer for model training
+train_ddim = TrainDDIM(
+    noise_predictor=noise_predictor,
+    hyper_params=hyperparams_ddim,
+    conditional_model=text_encoder,
+    metrics_=metrics,
+    optimizer=optimizer,
+    objective=loss,
+    data_loader=train_loader,
+    val_loader=val_loader,
+    max_epoch=5,
+    device="cuda",
+    store_path="test_ddim",
+    val_frequency=3,
+    ddp=False,
+    num_grad_accumulation=3,
+    progress_frequency=3
+)
+
+train_losses, best_val_loss = train_ddim()
+
 
 
