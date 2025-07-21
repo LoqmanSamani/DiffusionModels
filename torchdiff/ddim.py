@@ -248,7 +248,7 @@ class HyperParamsDDIM(nn.Module):
 
 
     @property
-    def betas(self)-> torch.Tensor:
+    def betas(self) -> torch.Tensor:
         """Returns the beta values, applying reparameterization if trainable."""
         if self.trainable_beta:
             # Transform unconstrained parameters to valid beta range using sigmoid

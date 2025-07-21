@@ -24,22 +24,19 @@ generation with text prompts.
 ---------------------------------------------------------------------------------
 """
 
-
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import torch.distributed as dist
 from typing import Optional, Tuple, Callable, List, Any, Union, Self
 from tqdm import tqdm
-from torch.cuda.amp import GradScaler, autocast
-from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
-import os
+
 
 ###==================================================================================================================###
 
@@ -59,12 +56,12 @@ class ForwardSDE(nn.Module):
     method : str
         SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
     """
-    def __init__(self, hyper_params, method):
+    def __init__(self, hyper_params: torch.nn.Module, method: str) -> None:
         super().__init__()
         self.hyper_params = hyper_params
         self.method = method
 
-    def forward(self, x0, noise, time_steps):
+    def forward(self, x0: torch.Tensor, noise: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
         """Applies the forward SDE diffusion process to the input data.
 
         Perturbs the input data `x0` by adding noise according to the specified SDE
@@ -136,12 +133,12 @@ class ReverseSDE(nn.Module):
     method : str
         SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
     """
-    def __init__(self, hyper_params, method):
+    def __init__(self, hyper_params: torch.nn.Module, method: str) -> None:
         super().__init__()
         self.hyper_params = hyper_params
         self.method = method
 
-    def forward(self, xt, noise, predicted_noise, time_steps):
+    def forward(self, xt: torch.Tensor, noise: torch.Tensor, predicted_noise: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
         """Applies the reverse SDE diffusion process to the noisy input.
 
         Denoises the input `xt` by applying the reverse SDE process, using predicted
@@ -234,8 +231,18 @@ class HyperParamsSDE(nn.Module):
     end : float, optional
         End of the time interval for SDE integration (default: 1.0).
     """
-    def __init__(self, num_steps=1000, beta_start=1e-4, beta_end=0.02, trainable_beta=False, beta_method="linear",
-                 sigma_start=1e-3, sigma_end=10.0, start=0.0, end=1.0):
+    def __init__(
+            self,
+            num_steps: int = 1000,
+            beta_start: float = 1e-4,
+            beta_end: float = 0.02,
+            trainable_beta: bool = False,
+            beta_method: str = "linear",
+            sigma_start: float = 1e-3,
+            sigma_end: float = 10.0,
+            start: float = 0.0,
+            end: float = 1.0
+    ) -> None:
         super().__init__()
         self.num_steps = num_steps
         self.beta_start = beta_start
@@ -266,10 +273,10 @@ class HyperParamsSDE(nn.Module):
         else:
             self.register_buffer('betas_buffer', betas_init)
             self.register_buffer('cum_betas', torch.cumsum(betas_init, dim=0) * self.dt)
-            self.register_buffer("sigmas", self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time)
+            self.register_buffer("sigmas_buffer", self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time)
 
     @property
-    def betas(self):
+    def betas(self) -> torch.Tensor:
         """Returns the beta values, applying reparameterization if trainable."""
         if self.trainable_beta:
             # Transform unconstrained parameters to valid beta range using sigmoid
@@ -278,7 +285,7 @@ class HyperParamsSDE(nn.Module):
             return self._buffers['betas_buffer']
 
     @property
-    def _cum_betas(self):
+    def _cum_betas(self) -> torch.Tensor:
         """Returns the cumulative beta values, computing dynamically if trainable."""
         if self.trainable_beta:
             return torch.cumsum(self.betas, dim=0) * self.dt
@@ -286,16 +293,16 @@ class HyperParamsSDE(nn.Module):
             return self._buffers['cum_betas']
 
     @property
-    def sigmas(self):
+    def sigmas(self) -> torch.Tensor:
         """Returns the sigma values, computing dynamically if trainable."""
         if self.trainable_beta:
             # For trainable case, sigmas still use the fixed time schedule
             # but could be modified if needed for trainable sigma schedules
             return self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time
         else:
-            return self._buffers['sigmas']
+            return self._buffers['sigmas_buffer']
 
-    def compute_beta_schedule(self, beta_range, num_steps, method):
+    def compute_beta_schedule(self, beta_range: Tuple[float, float], num_steps: int, method: str) -> torch.Tensor:
         """Computes the beta schedule based on the specified method.
 
         Generates a sequence of beta values for the SDE noise schedule using the chosen
@@ -334,7 +341,7 @@ class HyperParamsSDE(nn.Module):
         beta = torch.clamp(beta, min=beta_min, max=beta_max)
         return beta
 
-    def get_variance(self, time_steps, method):
+    def get_variance(self, time_steps: torch.Tensor, method: str) -> torch.Tensor:
         """Computes the variance for the specified SDE method at given time steps.
 
         Calculates the variance used in SDE diffusion processes based on the method
@@ -412,11 +419,31 @@ class TrainSDE(nn.Module):
     normalize_output : bool, optional
         Whether to normalize generated images to [0, 1] for metrics (default: True).
     """
-    def __init__(self, method, noise_predictor, hyper_params, data_loader, optimizer, objective, val_loader=None,
-                 max_epoch=1000, device=None, conditional_model=None, metrics_=None, tokenizer=None, max_length=77,
-                 store_path=None, patience=100, warmup_epochs=100, val_frequency=10, output_range=(-1, 1), normalize_output=True, ddp: bool = False,
+    def __init__(
+            self,
+            method: str,
+            noise_predictor: torch.nn.Module,
+            hyper_params: torch.nn.Module,
+            data_loader: torch.utils.data.DataLoader,
+            optimizer: torch.optim.Optimizer,
+            objective: Callable,
+            val_loader: Optional[torch.utils.data.DataLoader] = None,
+            max_epoch: int = 1000,
+            device: Optional[Union[str, torch.device]] = None,
+            conditional_model: Optional[torch.nn.Module] = None,
+            metrics_: Optional[Any] = None,
+            tokenizer: Optional[BertTokenizer] = None,
+            max_length: int = 77,
+            store_path: Optional[str] = None,
+            patience: int = 100,
+            warmup_epochs: int = 100,
+            val_frequency: int = 10,
+            output_range: Tuple[float, float] = (-1.0, 1.0),
+            normalize_output: bool = True,
+            ddp: bool = False,
             num_grad_accumulation: int = 1,
-            progress_frequency: int = 1):
+            progress_frequency: int = 1
+    ) -> None:
 
         super().__init__()
         # Initialize DDP settings first
@@ -632,7 +659,7 @@ class TrainSDE(nn.Module):
                 )
 
 
-    def forward(self):
+    def forward(self) -> Tuple[List, float]:
         """Trains the SDE model to predict noise added by the forward diffusion process.
 
         Executes the training loop, optimizing the noise predictor and conditional model
@@ -745,64 +772,129 @@ class TrainSDE(nn.Module):
                 if (epoch + 1) % self.progress_frequency == 0:
                     print(f"\nEpoch: {epoch + 1} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
 
-            # TODO: worked on it until here
-
+            # Validation step
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
-                val_loss, fid, mse, psnr, ssim, lpips_score = self.validate()
-                print(f" | Val Loss: {val_loss:.4f}", end="")
-                if self.metrics_ and self.metrics_.fid:
-                    print(f" | FID: {fid:.4f}", end="")
-                if self.metrics_ and self.metrics_.metrics:
-                    print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
-                if self.metrics_ and self.metrics_.lpips:
-                    print(f" | LPIPS: {lpips_score:.4f}", end="")
-                print()
+                val_metrics = self.validate()
+                val_loss, fid, mse, psnr, ssim, lpips_score = val_metrics
+
+                if self.master_process:
+                    print(f" | Val Loss: {val_loss:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'fid') and self.metrics_.fid:
+                        print(f" | FID: {fid:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
+                        print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
+                        print(f" | LPIPS: {lpips_score:.4f}", end="")
+                    print()
 
                 current_best = val_loss
                 self.scheduler.step(val_loss)
             else:
-                print()
+                if self.master_process:
+                    print()
                 current_best = mean_train_loss
                 self.scheduler.step(mean_train_loss)
 
-            if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
-                best_val_loss = current_best
-                wait = 0
-                try:
-                    torch.save({
-                        'epoch': epoch+1,
-                        'model_state_dict_noise_predictor': self.noise_predictor.state_dict(),
-                        'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
-                        'optimizer_state_dict': self.optimizer.state_dict(),
-                        'loss': best_val_loss,
-                        'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
-                        'max_epoch': self.max_epoch,
-                    }, self.store_path)
-                    print(f"Model saved at epoch {epoch + 1}")
-                except Exception as e:
-                    print(f"Failed to save model: {e}")
-            else:
-                wait += 1
-                if wait >= self.patience:
-                    print("Early stopping triggered")
-                    try:
-                        torch.save({
-                            'epoch': epoch+1,
-                            'model_state_dict_noise_predictor': self.noise_predictor.state_dict(),
-                            'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
-                            'optimizer_state_dict': self.optimizer.state_dict(),
-                            'loss': best_val_loss,
-                            'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
-                            'max_epoch': self.max_epoch,
-                        }, self.store_path + "_early_stop.pth")
-                        print(f"Final model saved at {self.store_path}_early_stop.pth")
-                    except Exception as e:
-                        print(f"Failed to save final model: {e}")
-                    break
+            # Save checkpoint and early stopping (only master process)
+            if self.master_process:
+                if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
+                    best_val_loss = current_best
+                    wait = 0
+                    self._save_checkpoint(epoch + 1, best_val_loss)
+                else:
+                    wait += 1
+                    if wait >= self.patience:
+                        print("Early stopping triggered")
+                        self._save_checkpoint(epoch + 1, best_val_loss, "_early_stop")
+                        break
+
+        # Clean up DDP
+        if self.ddp:
+            destroy_process_group()
 
         return train_losses, best_val_loss
 
-    def validate(self):
+    def _process_conditional_input(self, y: Union[torch.Tensor, List]) -> torch.Tensor:
+        """Process conditional input for text-to-image generation.
+
+        Parameters
+        ----------
+        y : torch.Tensor or list
+            Conditional input (text prompts).
+
+        Returns
+        -------
+        torch.Tensor
+            Encoded conditional input.
+        """
+        # Convert to string list
+        y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
+        y_list = [str(item) for item in y_list]
+
+        # Tokenize
+        y_encoded = self.tokenizer(
+            y_list,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt"
+        ).to(self.device)
+
+        # Get embeddings
+        input_ids = y_encoded["input_ids"]
+        attention_mask = y_encoded["attention_mask"]
+        y_encoded = self.conditional_model(input_ids, attention_mask)
+
+        return y_encoded
+
+
+    def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "") -> None:
+        """Save model checkpoint (only called by master process).
+
+        Parameters
+        ----------
+        epoch : int
+            Current epoch number.
+        loss : float
+            Current loss value.
+        suffix : str, optional
+            Suffix to add to checkpoint filename.
+        """
+        try:
+            # Get state dicts, handling DDP wrapping
+            noise_predictor_state = (
+                self.noise_predictor.module.state_dict() if self.ddp
+                else self.noise_predictor.state_dict()
+            )
+            conditional_state = None
+            if self.conditional_model is not None:
+                conditional_state = (
+                    self.conditional_model.module.state_dict() if self.ddp
+                    else self.conditional_model.state_dict()
+                )
+
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict_noise_predictor': noise_predictor_state,
+                'model_state_dict_conditional': conditional_state,
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'loss': loss,
+                'hyper_params_model': (
+                    self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module)
+                    else self.hyper_params
+                ),
+                'max_epoch': self.max_epoch,
+            }
+
+            save_path = self.store_path + suffix + ".pth" if suffix else self.store_path + ".pth"
+            torch.save(checkpoint, save_path)
+            print(f"Model saved at epoch {epoch} to {save_path}")
+
+        except Exception as e:
+            print(f"Failed to save model: {e}")
+
+
+    def validate(self) -> Tuple[float, float, float, float, float, float]:
         """Validates the noise predictor and computes evaluation Metrics.
 
         Computes validation loss (MSE between predicted and ground truth noise) and generates
@@ -830,72 +922,80 @@ class TrainSDE(nn.Module):
             self.conditional_model.eval()
 
         val_losses = []
-        fid_, mse_, psnr_, ssim_, lpips_score_ = [], [], [], [], []
+        fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
+
         with torch.no_grad():
             for x, y in self.val_loader:
                 x = x.to(self.device)
-                x_orig = x
+                x_orig = x.clone()
 
+                # Process conditional input
                 if self.conditional_model is not None:
-                    y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
-                    y_list = [str(item) for item in y_list]
-                    y_encoded = self.tokenizer(
-                        y_list,
-                        padding="max_length",
-                        truncation=True,
-                        max_length=self.max_length,
-                        return_tensors="pt"
-                    ).to(self.device)
-                    input_ids = y_encoded["input_ids"]
-                    attention_mask = y_encoded["attention_mask"]
-                    y_encoded = self.conditional_model(input_ids, attention_mask)
+                    y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
 
-                # validation loss
+                # Compute validation loss
                 noise = torch.randn_like(x).to(self.device)
                 t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
-                assert x.device == noise.device == t.device, "Device mismatch detected"
-                assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
+
                 noisy_x = self.forward_diffusion(x, noise, t)
-                p_noise = self.noise_predictor(noisy_x, t, y_encoded)
-                loss = self.objective(p_noise, noise)
+                predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
+                loss = self.objective(predicted_noise, noise)
                 val_losses.append(loss.item())
 
-                # generate samples for metrics
+                # Generate samples for metrics evaluation
                 if self.metrics_ is not None and self.reverse_diffusion is not None:
                     xt = torch.randn_like(x).to(self.device)
+
+                    # Reverse diffusion sampling
                     for t in reversed(range(self.hyper_params.num_steps)):
                         time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
                         predicted_noise = self.noise_predictor(xt, time_steps, y_encoded)
                         noise = torch.randn_like(xt) if getattr(self.reverse_diffusion, "method", None) != "ode" else None
                         xt = self.reverse_diffusion(xt, noise, predicted_noise, time_steps)
 
+                    # Clamp and normalize generated samples
                     x_hat = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
                     if self.normalize_output:
                         x_hat = (x_hat - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
                         x_orig = (x_orig - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
-                    fid, mse, psnr, ssim, lpips_score = self.metrics_.forward(x_orig, x_hat)
-                    if self.metrics_.fid:
-                        fid_.append(fid)
-                    if self.metrics_.metrics:
-                        mse_.append(mse)
-                        psnr_.append(psnr)
-                        ssim_.append(ssim)
-                    if self.metrics_.lpips:
-                        lpips_score_.append(lpips_score)
 
-        val_loss = torch.mean(torch.tensor(val_losses)).item()
-        fid_ = torch.mean(torch.tensor(fid_)).item() if fid_ else float('inf')
-        mse_ = torch.mean(torch.tensor(mse_)).item() if mse_ else None
-        psnr_ = torch.mean(torch.tensor(psnr_)).item() if psnr_ else None
-        ssim_ = torch.mean(torch.tensor(ssim_)).item() if ssim_ else None
-        lpips_score_ = torch.mean(torch.tensor(lpips_score_)).item() if lpips_score_ else None
+                    # Compute metrics
+                    metrics_result = self.metrics_.forward(x_orig, x_hat)
+                    fid, mse, psnr, ssim, lpips_score = metrics_result
 
+                    if hasattr(self.metrics_, 'fid') and self.metrics_.fid:
+                        fid_scores.append(fid)
+                    if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
+                        mse_scores.append(mse)
+                        psnr_scores.append(psnr)
+                        ssim_scores.append(ssim)
+                    if hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
+                        lpips_scores.append(lpips_score)
+
+        # Compute average metrics
+        val_loss = torch.tensor(val_losses).mean().item()
+
+        # All-reduce validation metrics across processes for DDP
+        if self.ddp:
+            val_loss_tensor = torch.tensor(val_loss, device=self.device)
+            dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
+            val_loss = val_loss_tensor.item()
+
+        fid_avg = torch.tensor(fid_scores).mean().item() if fid_scores else float('inf')
+        mse_avg = torch.tensor(mse_scores).mean().item() if mse_scores else None
+        psnr_avg = torch.tensor(psnr_scores).mean().item() if psnr_scores else None
+        ssim_avg = torch.tensor(ssim_scores).mean().item() if ssim_scores else None
+        lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
+
+        # Return to training mode
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
-        return val_loss, fid_, mse_, psnr_, ssim_, lpips_score_
+
+        return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
+
 
 ###==================================================================================================================###
 
@@ -929,8 +1029,19 @@ class SampleSDE(nn.Module):
     output_range : tuple, optional
         Range for clamping generated images (min, max), default (-1, 1).
     """
-    def __init__(self, reverse_diffusion, noise_predictor, image_shape, conditional_model=None,
-                 tokenizer="bert-base-uncased", max_length=77, batch_size=1, in_channels=3, device=None, output_range=(-1, 1)):
+    def __init__(
+            self,
+            reverse_diffusion: torch.nn.Module,
+            noise_predictor: torch.nn.Module,
+            image_shape: Tuple[int, int],
+            conditional_model: Optional[torch.nn.Module] = None,
+            tokenizer: str = "bert-base-uncased",
+            max_length: int = 77,
+            batch_size: int = 1,
+            in_channels: int = 3,
+            device: Optional[Union[str, torch.device]] = None,
+            output_range: Tuple[float, float] = (-1.0, 1.0)
+    ) -> None:
         super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.reverse = reverse_diffusion.to(self.device)
@@ -950,7 +1061,7 @@ class SampleSDE(nn.Module):
         if not isinstance(output_range, (tuple, list)) or len(output_range) != 2 or output_range[0] >= output_range[1]:
             raise ValueError("output_range must be a tuple (min, max) with min < max")
 
-    def tokenize(self, prompts):
+    def tokenize(self, prompts: Union[str, List]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Tokenizes text prompts for conditional generation.
 
         Converts input prompts into tokenized tensors using the specified tokenizer.
@@ -981,7 +1092,13 @@ class SampleSDE(nn.Module):
         )
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
 
-    def forward(self, conditions=None, normalize_output=True, save_images=True, save_path="sde_generated"):
+    def forward(
+            self,
+            conditions: Optional[Union[str, List]] = None,
+            normalize_output: bool = True,
+            save_images: bool = True,
+            save_path: str = "sde_generated"
+    ) -> torch.Tensor:
         """Generates images using the reverse SDE sampling process.
 
         Iteratively denoises random noise to generate images using the reverse SDE process
@@ -1043,7 +1160,7 @@ class SampleSDE(nn.Module):
 
         return generated_imgs
 
-    def to(self, device):
+    def to(self, device: torch.device) -> Self:
         """Moves the module and its components to the specified device.
 
         Updates the device attribute and moves the reverse diffusion, noise predictor,
@@ -1064,3 +1181,126 @@ class SampleSDE(nn.Module):
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)
+
+
+from utils import NoisePredictor, Metrics, TextEncoder
+import os
+import matplotlib.pyplot as plt
+from PIL import Image
+import numpy as np
+import torch
+import torch.nn as nn
+import torchvision
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, Subset
+
+
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # For RGB
+])
+
+train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+
+# Use small subset
+train_subset = Subset(train_dataset, torch.randperm(len(train_dataset))[:100])
+test_subset = Subset(test_dataset, torch.randperm(len(test_dataset))[:10])
+
+train_loader = DataLoader(train_subset, batch_size=32, shuffle=True)
+val_loader = DataLoader(test_subset, batch_size=10, shuffle=False)
+
+# Initialize the NoisePredictor for the SDE model with parameters for RGB images
+noise_predictor = NoisePredictor(
+        in_channels=3,  # RGB images
+        down_channels=[16, 32],
+        mid_channels=[32, 32],
+        up_channels=[32, 16],
+        down_sampling=[True, True],
+        time_embed_dim=64,
+        y_embed_dim=64,
+        num_down_blocks=2,
+        num_mid_blocks=2,
+        num_up_blocks=2,
+        down_sampling_factor=2
+)
+
+# label conditional model
+text_encoder = TextEncoder(
+        use_pretrained_model=True,
+        model_name="bert-base-uncased",
+        vocabulary_size=30522,
+        num_layers=2,
+        input_dimension=64,
+        output_dimension=64,
+        num_heads=2,
+        context_length=77
+)
+
+# Set up the AdamW optimizer for the NoisePredictor parameters plus TextEncoder trainable parameters with a learning rate of 1e-3
+optimizer = torch.optim.Adam(
+    [p for p in noise_predictor.parameters() if p.requires_grad] +
+    [p for p in text_encoder.parameters() if p.requires_grad], lr=1e-3
+)
+
+# Initialize the Mean Squared Error (MSE) loss function
+loss = nn.MSELoss()
+
+# Configure the Metrics class for evaluation on CPU (GPUs are recommended for actual training)
+metrics = Metrics(
+    device="cuda", #"cpu",  # Using CPU for this tutorial, but GPUs are recommended for training diffusion models
+    fid=True,
+    metrics=True,
+    lpips_=True
+)
+
+
+# Initialize SDE hyperparameters for the noise schedule
+hyperparams_sde = HyperParamsSDE(
+    num_steps=500,
+    beta_start=1e-4,
+    beta_end=0.02,
+    trainable_beta=False,
+    sigma_start=1e-3,
+    sigma_end=10.0,
+    start=0.0,
+    end=1.0,
+    beta_method="linear"
+)
+
+# Set up the reverse diffusion process for sampling
+reverse_sde = ReverseSDE(
+    hyper_params=hyperparams_sde,
+    method="ode" # there are three stochastic methods and one deterministic method available ("ve", "vp", "sub-vp", "ode"). Here we will use a stochastic method
+)
+
+
+# Configure the SDE trainer for model training
+trainer = TrainSDE(
+    method="ode", # "ve", "vp", "sub-vp", "ode"
+    noise_predictor=noise_predictor,
+    hyper_params=hyperparams_sde,
+    conditional_model=text_encoder,
+    metrics_=metrics,
+    optimizer=optimizer,
+    objective=loss,
+    data_loader=train_loader,
+    val_loader=val_loader,
+    max_epoch=5,
+    device=torch.device("cuda"),
+    store_path="test_sde",
+    val_frequency=3,
+    ddp=False,
+    num_grad_accumulation=1,
+    progress_frequency=1
+)
+
+train_losses, best_val_loss = trainer()
+
+
+
+
+
+
+
+

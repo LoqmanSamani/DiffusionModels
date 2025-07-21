@@ -370,7 +370,7 @@ class TrainDDPM(nn.Module):
             objective: Callable,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epoch: int = 1000,
-            device: str = None,
+            device: Optional[Union[str, torch.device]] = None,
             conditional_model: torch.nn.Module = None,
             metrics_: Optional[Any] = None,
             tokenizer: Optional[BertTokenizer] = None,
@@ -1021,7 +1021,7 @@ class SampleDDPM(nn.Module):
             normalize_output: bool = True,
             save_images: bool = True,
             save_path: str = "ddpm_generated"
-    ):
+    ) -> torch.Tensor:
         """Generates images using the DDPM sampling process.
 
         Iteratively denoises random noise to generate images using the reverse diffusion
