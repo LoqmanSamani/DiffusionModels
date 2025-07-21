@@ -2,13 +2,18 @@ from setuptools import setup, find_packages
 
 setup(
     name="TorchDiff",
-    version="1.0.0",
+    version="2.0.0",
     description="A PyTorch-based library for diffusion models",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Loghman Samani",
     author_email="samaniloqman91@gmail.com",
     url="https://github.com/LoqmanSamani/TorchDiff",
+    project_urls={
+        "Homepage": "https://loqmansamani.github.io/torchdiff",
+        "Documentation": "https://torchdiff.readthedocs.io/en/latest/index.html",
+        "Source": "https://github.com/LoqmanSamani/TorchDiff",
+    },
     packages=find_packages(),
     install_requires=[
         "lpips>=0.1.4",
@@ -23,5 +28,5 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.12",
+    python_requires=">=3.8",
 )

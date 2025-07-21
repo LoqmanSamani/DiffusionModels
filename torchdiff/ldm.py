@@ -58,6 +58,13 @@ Proceedings of the IEEE/CVF conference on computer vision and pattern recognitio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, Tuple, Callable, List, Any, Union, Self
+from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
+# multi-GPU processor module
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
+
 from torch.cuda.amp import GradScaler, autocast
 from torch.amp import GradScaler, autocast
 from torch.optim.lr_scheduler import LambdaLR
@@ -138,7 +145,7 @@ class TrainLDM(nn.Module):
         self.model = model
         self.forward_model = forward_model.to(self.device)
         self.reverse_diffusion = reverse_diffusion.to(self.device) if reverse_diffusion else None
-        self.hyper_params = hyper_params.to(self.device)  # nn.Module, move to device
+        self.hyper_params = hyper_params.to(self.device)
         self.noise_predictor = noise_predictor.to(self.device)
         self.compressor_model = compressor_model.to(self.device)
         self.optimizer = optimizer
