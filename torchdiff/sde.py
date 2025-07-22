@@ -418,6 +418,12 @@ class TrainSDE(nn.Module):
         Range for clamping generated images (default: (-1, 1)).
     normalize_output : bool, optional
         Whether to normalize generated images to [0, 1] for metrics (default: True).
+    ddp : bool, optional
+        Whether to use Distributed Data Parallel training (default: False).
+    num_grad_accumulation : int, optional
+        Number of gradient accumulation steps before optimizer update (default: 1).
+    progress_frequency : int, optional
+        Number of epochs before printing loss.
     """
     def __init__(
             self,

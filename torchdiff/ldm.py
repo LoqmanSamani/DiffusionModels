@@ -100,7 +100,7 @@ class TrainLDM(nn.Module):
         Variational autoencoder for encoding/decoding latents.
     optimizer : torch.optim.Optimizer
         Optimizer for the noise predictor and conditional model (e.g., Adam).
-    objective : torch.nn.Module
+    objective : Callable
         Loss function for noise prediction (e.g., MSELoss).
     data_loader : torch.utils.data.DataLoader
         DataLoader for training data.
@@ -131,47 +131,148 @@ class TrainLDM(nn.Module):
         Range for clamping generated images (default: (-1, 1)).
     normalize_output : bool, optional
         Whether to normalize generated images to [0, 1] for metrics (default: True).
+    ddp : bool, optional
+        Whether to use Distributed Data Parallel training (default: False).
+    num_grad_accumulation : int, optional
+        Number of gradient accumulation steps before optimizer update (default: 1).
+    progress_frequency : int, optional
+        Number of epochs before printing loss.
     """
 
-    def __init__(self, model, forward_model, hyper_params, noise_predictor, compressor_model,
-                 optimizer, objective, data_loader, val_loader=None, conditional_model=None,
-                 reverse_diffusion=None, metrics_=None, max_epoch=1000, device=None,
-                 store_path=None, patience=100, warmup_epochs=100, tokenizer=None, max_length=77,
-                 val_frequency=10, output_range=(-1, 1), normalize_output=True):
+    def __init__(
+            self,
+            model: str,
+            forward_model: torch.nn.Module,
+            hyper_params: torch.nn.Module,
+            noise_predictor: torch.nn.Module,
+            compressor_model: torch.nn.Module,
+            optimizer: torch.optim.Optimizer,
+            objective: Callable,
+            data_loader: torch.utils.data.DataLoader,
+            val_loader: Optional[torch.utils.data.DataLoader] = None,
+            conditional_model: Optional[torch.nn.Module] = None,
+            reverse_diffusion: Optional[torch.nn.Module] = None,
+            metrics_: Optional[Callable] = None,
+            max_epoch: int = 1000,
+            device: Optional[Union[str, torch.device]] = None,
+            store_path: Optional[str] = None,
+            patience: int = 100,
+            warmup_epochs: int = 100,
+            tokenizer: Optional[BertTokenizer] = None,
+            max_length: int = 77,
+            val_frequency: int = 10,
+            output_range: Tuple[float, float] = (-1.0, 1.0),
+            normalize_output: bool = True,
+            ddp: bool = False,
+            num_grad_accumulation: int = 1,
+            progress_frequency: int = 1
+    ) -> None:
         super().__init__()
         if model not in ["ddpm", "ddim", "sde"]:
             raise ValueError(f"Unknown model: {model}. Supported: ddpm, ddim, sde")
-        self.device = torch.device(device if device else "cuda" if torch.cuda.is_available() else "cpu")
         self.model = model
+
+        # Initialize DDP settings first
+        self.ddp = ddp
+        self.num_grad_accumulation = num_grad_accumulation
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Setup distributed training if enabled
+        if self.ddp:
+            self._setup_ddp()
+        else:
+            self._setup_single_gpu()
+
+        # Move models to appropriate device
         self.forward_model = forward_model.to(self.device)
-        self.reverse_diffusion = reverse_diffusion.to(self.device) if reverse_diffusion else None
         self.hyper_params = hyper_params.to(self.device)
         self.noise_predictor = noise_predictor.to(self.device)
         self.compressor_model = compressor_model.to(self.device)
+        self.conditional_model = conditional_model.to(self.device) if conditional_model else None
+        self.reverse_diffusion = reverse_diffusion.to(self.device) if reverse_diffusion else None
+
+        # Training components
+        self.metrics_ = metrics_
         self.optimizer = optimizer
         self.objective = objective
+        self.store_path = store_path or "ldm_model"
         self.data_loader = data_loader
         self.val_loader = val_loader
-        self.conditional_model = conditional_model.to(self.device) if conditional_model else None
-        self.metrics_ = metrics_
         self.max_epoch = max_epoch
-        self.store_path = store_path or "ldm_model.pth"
-        self.patience = patience
-        self.warmup_epochs = warmup_epochs
         self.max_length = max_length
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=patience, factor=0.5)
-        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
+        self.patience = patience
         self.val_frequency = val_frequency
         self.output_range = output_range
         self.normalize_output = normalize_output
+        self.progress_frequency = progress_frequency
+
+        # Learning rate scheduling
+        self.scheduler = ReduceLROnPlateau(
+            self.optimizer,
+            patience=self.patience,
+            factor=0.5
+        )
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
+
+        # Initialize tokenizer
         if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
             except Exception as e:
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
+        else:
+            self.tokenizer = tokenizer
 
-    def load_checkpoint(self, checkpoint_path):
-        """Loads a checkpoint for the noise predictor and optional conditional model.
+    def _setup_ddp(self) -> None:
+        """Setup Distributed Data Parallel training configuration.
+
+        Initializes process group, determines rank information, and sets up
+        CUDA device for the current process.
+        """
+        # Check if DDP environment variables are set
+        if "RANK" not in os.environ:
+            raise ValueError("DDP enabled but RANK environment variable not set")
+        if "LOCAL_RANK" not in os.environ:
+            raise ValueError("DDP enabled but LOCAL_RANK environment variable not set")
+        if "WORLD_SIZE" not in os.environ:
+            raise ValueError("DDP enabled but WORLD_SIZE environment variable not set")
+
+        # Ensure CUDA is available for DDP
+        if not torch.cuda.is_available():
+            raise RuntimeError("DDP requires CUDA but CUDA is not available")
+
+        # Initialize process group only if not already initialized
+        if not torch.distributed.is_initialized():
+            init_process_group(backend="nccl")
+
+        # Get rank information
+        self.ddp_rank = int(os.environ["RANK"])  # Global rank across all nodes
+        self.ddp_local_rank = int(os.environ["LOCAL_RANK"])  # Local rank on current node
+        self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # Total number of processes
+
+        # Set device and make it current
+        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+        # self.device = f"cuda:{self.ddp_local_rank}"
+        torch.cuda.set_device(self.device)
+
+        # Master process handles logging, checkpointing, etc.
+        self.master_process = self.ddp_rank == 0
+
+        if self.master_process:
+            print(f"DDP initialized with world_size={self.ddp_world_size}")
+
+    def _setup_single_gpu(self) -> None:
+        """Setup single GPU or CPU training configuration."""
+        self.ddp_rank = 0
+        self.ddp_local_rank = 0
+        self.ddp_world_size = 1
+        self.master_process = True
+
+    def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, float]:
+        """Loads a training checkpoint to resume training.
+
+        Restores the state of the noise predictor, conditional model (if applicable),
+        and optimizer from a saved checkpoint. Handles DDP model state dict loading.
 
         Parameters
         ----------
@@ -186,24 +287,43 @@ class TrainLDM(nn.Module):
              The loss at the checkpoint.
         """
         try:
+            # Load checkpoint with proper device mapping
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
 
+        # Load noise predictor state
         if 'model_state_dict_noise_predictor' not in checkpoint:
             raise KeyError("Checkpoint missing 'model_state_dict_noise_predictor' key")
-        self.noise_predictor.load_state_dict(checkpoint['model_state_dict_noise_predictor'])
 
+        # Handle DDP wrapped model state dict
+        state_dict = checkpoint['model_state_dict_noise_predictor']
+        if self.ddp and not any(key.startswith('module.') for key in state_dict.keys()):
+            # If loading non-DDP checkpoint into DDP model, add 'module.' prefix
+            state_dict = {f'module.{k}': v for k, v in state_dict.items()}
+        elif not self.ddp and any(key.startswith('module.') for key in state_dict.keys()):
+            # If loading DDP checkpoint into non-DDP model, remove 'module.' prefix
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
+        self.noise_predictor.load_state_dict(state_dict)
+
+        # Load conditional model state if applicable
         if self.conditional_model is not None:
             if 'model_state_dict_conditional' in checkpoint and checkpoint['model_state_dict_conditional'] is not None:
-                self.conditional_model.load_state_dict(checkpoint['model_state_dict_conditional'])
+                cond_state_dict = checkpoint['model_state_dict_conditional']
+                # Handle DDP wrapping for conditional model
+                if self.ddp and not any(key.startswith('module.') for key in cond_state_dict.keys()):
+                    cond_state_dict = {f'module.{k}': v for k, v in cond_state_dict.items()}
+                elif not self.ddp and any(key.startswith('module.') for key in cond_state_dict.keys()):
+                    cond_state_dict = {k.replace('module.', ''): v for k, v in cond_state_dict.items()}
+                self.conditional_model.load_state_dict(cond_state_dict)
             else:
                 warnings.warn(
-                    "Checkpoint contains no 'model_state_dict_conditional' or it is None, skipping conditional model loading")
-        elif 'model_state_dict_conditional' in checkpoint and checkpoint['model_state_dict_conditional'] is not None:
-            warnings.warn(
-                "Checkpoint contains conditional model state, but no conditional model is defined in this instance")
+                    "Checkpoint contains no 'model_state_dict_conditional' or it is None, "
+                    "skipping conditional model loading"
+                )
 
+        # Load optimizer state
         if 'optimizer_state_dict' not in checkpoint:
             raise KeyError("Checkpoint missing 'optimizer_state_dict' key")
         try:
@@ -214,35 +334,56 @@ class TrainLDM(nn.Module):
         epoch = checkpoint.get('epoch', -1)
         loss = checkpoint.get('loss', float('inf'))
 
-        self.noise_predictor.to(self.device)
-        if self.conditional_model is not None:
-            self.conditional_model.to(self.device)
-
-        print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
+        if self.master_process:
+            print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
         return epoch, loss
 
     @staticmethod
-    def warmup_scheduler(optimizer, warmup_epochs):
+    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
         """Creates a learning rate scheduler for warmup.
+
+        Generates a scheduler that linearly increases the learning rate from 0 to the
+        optimizer's initial value over the specified warmup epochs, then maintains it.
 
         Parameters
         ----------
         optimizer : torch.optim.Optimizer
-            The optimizer to schedule.
+            Optimizer to apply the scheduler to.
         warmup_epochs : int
-            Number of epochs for warmup.
+            Number of epochs for the warmup phase.
 
         Returns
         -------
-        torch.optim.lr_scheduler.LambdaLR - Scheduler that scales learning rate linearly during warmup.
+        torch.optim.lr_scheduler.LambdaLR
+            Learning rate scheduler for warmup.
         """
+
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
                 return epoch / warmup_epochs
             return 1.0
+
         return LambdaLR(optimizer, lr_lambda)
 
-    def forward(self):
+    def _wrap_models_for_ddp(self) -> None:
+        """Wrap models with DistributedDataParallel for multi-GPU training."""
+        if self.ddp:
+            # Wrap noise predictor with DDP
+            self.noise_predictor = DDP(
+                self.noise_predictor,
+                device_ids=[self.ddp_local_rank],
+                find_unused_parameters=True
+            )
+
+            # Wrap conditional model with DDP if it exists
+            if self.conditional_model is not None:
+                self.conditional_model = DDP(
+                    self.conditional_model,
+                    device_ids=[self.ddp_local_rank],
+                    find_unused_parameters=True
+                )
+
+    def forward(self) -> Tuple[List, float]:
         """Trains the noise predictor and conditional model with mixed precision and evaluation metrics.
 
         Optimizes the noise predictor and conditional model (e.g., TextEncoder with projection layers)
@@ -257,182 +398,279 @@ class TrainLDM(nn.Module):
         best_val_loss : float
             Best validation loss achieved (or best training loss if no validation).
         """
+        # Set models to training mode
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
         self.compressor_model.eval()  # pre-trained, not trained here
 
-        scaler = GradScaler()
+        # Compile models for optimization (if supported)
+        """
+        try:
+            self.noise_predictor = torch.compile(self.noise_predictor)
+            if self.conditional_model is not None:
+                self.conditional_model = torch.compile(self.conditional_model)
+            self.compressor_model = torch.compile(self.compressor_model)
+        except Exception as e:
+            if self.master_process:
+                print(f"Model compilation failed: {e}. Continuing without compilation.")
+        """
+
+        # Wrap models for DDP after compilation
+        self._wrap_models_for_ddp()
+
+        # Initialize training components
+        scaler = torch.GradScaler()
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
+
+        # Main training loop
         for epoch in range(self.max_epoch):
-            train_losses_ = []
-            for x, y in tqdm(self.data_loader):
+            # Set epoch for distributed sampler if using DDP
+            if self.ddp and hasattr(self.data_loader.sampler, 'set_epoch'):
+                self.data_loader.sampler.set_epoch(epoch)
+
+            train_losses_epoch = []
+
+            # Training step loop with gradient accumulation
+            for step, (x, y) in enumerate(tqdm(self.data_loader, disable=not self.master_process)):
                 x = x.to(self.device)
+
                 with torch.no_grad():
                     x, _ = self.compressor_model.encode(x)
+
+                # Process conditional inputs if conditional model exists
                 if self.conditional_model is not None:
-                    y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
-                    y_list = [str(item) for item in y_list]
-                    y_encoded = self.tokenizer(
-                        y_list,
-                        padding="max_length",
-                        truncation=True,
-                        max_length=self.max_length,
-                        return_tensors="pt"
-                    ).to(self.device)
-                    input_ids = y_encoded["input_ids"]
-                    attention_mask = y_encoded["attention_mask"]
-                    y_encoded = self.conditional_model(input_ids, attention_mask)
+                    y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
 
-                self.optimizer.zero_grad()
-                with autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                # Forward pass with mixed precision
+                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                    # Generate noise and timesteps
                     noise = torch.randn_like(x).to(self.device)
-                    t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],), device=self.device)
-                    assert x.device == noise.device == t.device, "Device mismatch detected"
-                    assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
-                    noisy_x = self.forward_model(x, noise, t)
-                    p_noise = self.noise_predictor(noisy_x, t, y_encoded)
-                    loss = self.objective(p_noise, noise)
+                    t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
+
+                    # Apply forward diffusion
+                    noisy_x = self.forward_diffusion(x, noise, t)
+
+                    # Predict noise
+                    predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
+
+                    # Compute loss and scale for gradient accumulation
+                    loss = self.objective(predicted_noise, noise) / self.num_grad_accumulation
+
+                # Backward pass
                 scaler.scale(loss).backward()
-                nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), max_norm=1.0)
-                if self.conditional_model is not None:
-                    nn.utils.clip_grad_norm_(self.conditional_model.parameters(), max_norm=1.0)
-                scaler.step(self.optimizer)
-                scaler.update()
-                self.warmup_lr_scheduler.step()
-                train_losses_.append(loss.item())
 
-            if self.hyper_params.trainable_beta:
-                self.hyper_params.constrain_betas()
+                # Gradient accumulation and optimizer step
+                if (step + 1) % self.num_grad_accumulation == 0:
+                    # Clip gradients
+                    scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), max_norm=1.0)
+                    if self.conditional_model is not None:
+                        torch.nn.utils.clip_grad_norm_(self.conditional_model.parameters(), max_norm=1.0)
 
-            mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
+                    # Optimizer step
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                    self.optimizer.zero_grad()
+
+                    # Update learning rate (warmup scheduler)
+                    self.warmup_lr_scheduler.step()
+
+                # Record loss (unscaled)
+                train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
+
+                # Compute mean training loss
+            mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
+
+            # All-reduce loss across processes for DDP
+            if self.ddp:
+                loss_tensor = torch.tensor(mean_train_loss, device=self.device)
+                dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+                mean_train_loss = loss_tensor.item()
+
             train_losses.append(mean_train_loss)
-            print(f"Epoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
 
+            # Print training progress (only master process)
+            if self.master_process:
+                if (epoch + 1) % self.progress_frequency == 0:
+                    print(f"\nEpoch: {epoch + 1} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
+
+            # Validation step
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
-                val_loss, fid, mse, psnr, ssim, lpips_score = self.validate()
-                print(f" | Val Loss: {val_loss:.4f}", end="")
-                if self.metrics_ and self.metrics_.fid:
-                    print(f" | FID: {fid:.4f}", end="")
-                if self.metrics_ and self.metrics_.metrics:
-                    print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
-                if self.metrics_ and self.metrics_.lpips:
-                    print(f" | LPIPS: {lpips_score:.4f}", end="")
-                print()
+                val_metrics = self.validate()
+                val_loss, fid, mse, psnr, ssim, lpips_score = val_metrics
+
+                if self.master_process:
+                    print(f" | Val Loss: {val_loss:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'fid') and self.metrics_.fid:
+                        print(f" | FID: {fid:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
+                        print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
+                        print(f" | LPIPS: {lpips_score:.4f}", end="")
+                    print()
 
                 current_best = val_loss
                 self.scheduler.step(val_loss)
             else:
-                print()
+                if self.master_process:
+                    print()
                 current_best = mean_train_loss
                 self.scheduler.step(mean_train_loss)
 
-            if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
-                best_val_loss = current_best
-                wait = 0
-                try:
-                    torch.save({
-                        'epoch': epoch + 1,
-                        'model_state_dict_noise_predictor': self.noise_predictor.state_dict(),
-                        'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
-                        'optimizer_state_dict': self.optimizer.state_dict(),
-                        'loss': best_val_loss,
-                        'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
-                    }, self.store_path)
-                    print(f"Model saved at epoch {epoch + 1}")
-                except Exception as e:
-                    print(f"Failed to save model: {e}")
-            else:
-                wait += 1
-                if wait >= self.patience:
-                    print("Early stopping triggered")
-                    try:
-                        torch.save({
-                            'epoch': epoch + 1,
-                            'model_state_dict_noise_predictor': self.noise_predictor.state_dict(),
-                            'model_state_dict_conditional': self.conditional_model.state_dict() if self.conditional_model is not None else None,
-                            'optimizer_state_dict': self.optimizer.state_dict(),
-                            'loss': best_val_loss,
-                            'hyper_params_model': self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module) else self.hyper_params,
-                        }, self.store_path + "_early_stop.pth")
-                        print(f"Final model saved at {self.store_path}_early_stop.pth")
-                    except Exception as e:
-                        print(f"Failed to save final model: {e}")
-                    break
+            # Save checkpoint and early stopping (only master process)
+            if self.master_process:
+                if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
+                    best_val_loss = current_best
+                    wait = 0
+                    self._save_checkpoint(epoch + 1, best_val_loss)
+                else:
+                    wait += 1
+                    if wait >= self.patience:
+                        print("Early stopping triggered")
+                        self._save_checkpoint(epoch + 1, best_val_loss, "_early_stop")
+                        break
+
+        # Clean up DDP
+        if self.ddp:
+            destroy_process_group()
 
         return train_losses, best_val_loss
 
-    def validate(self):
-        """Validates the noise predictor and computes evaluation Metrics.
+    def _process_conditional_input(self, y: Union[torch.Tensor, List]) -> torch.Tensor:
+        """Process conditional input for text-to-image generation.
 
-        Computes validation loss (MSE between predicted and ground truth noise) and generates
-        samples using the reverse diffusion model by manually iterating over timesteps.
-        Decodes samples to images and computes image-domain Metrics (MSE, PSNR, SSIM, FID, LPIPS)
-        if metrics_ is provided.
+        Parameters
+        ----------
+        y : torch.Tensor or list
+            Conditional input (text prompts).
 
         Returns
         -------
-        val_loss : float
-            Mean validation loss.
-        fid : float, or `float('inf')` if not computed
-            Mean FID score.
-        mse : float, or None if not computed
-            Mean MSE
-        psnr : float, or None if not computed
-             Mean PSNR
-        ssim : float, or None if not computed
-            Mean SSIM
-        lpips_score :  float, or None if not computed
-            Mean LPIPS score
+        torch.Tensor
+            Encoded conditional input.
+        """
+        # Convert to string list
+        y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
+        y_list = [str(item) for item in y_list]
+
+        # Tokenize
+        y_encoded = self.tokenizer(
+            y_list,
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt"
+        ).to(self.device)
+
+        # Get embeddings
+        input_ids = y_encoded["input_ids"]
+        attention_mask = y_encoded["attention_mask"]
+        y_encoded = self.conditional_model(input_ids, attention_mask)
+
+        return y_encoded
+
+    def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "") -> None:
+        """Save model checkpoint (only called by master process).
+
+        Parameters
+        ----------
+        epoch : int
+            Current epoch number.
+        loss : float
+            Current loss value.
+        suffix : str, optional
+            Suffix to add to checkpoint filename.
+        """
+        try:
+            # Get state dicts, handling DDP wrapping
+            noise_predictor_state = (
+                self.noise_predictor.module.state_dict() if self.ddp
+                else self.noise_predictor.state_dict()
+            )
+            conditional_state = None
+            if self.conditional_model is not None:
+                conditional_state = (
+                    self.conditional_model.module.state_dict() if self.ddp
+                    else self.conditional_model.state_dict()
+                )
+
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict_noise_predictor': noise_predictor_state,
+                'model_state_dict_conditional': conditional_state,
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'loss': loss,
+                'hyper_params_model': (
+                    self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module)
+                    else self.hyper_params
+                ),
+                'max_epoch': self.max_epoch,
+            }
+
+            save_path = self.store_path + suffix + ".pth" if suffix else self.store_path + ".pth"
+            torch.save(checkpoint, save_path)
+            print(f"Model saved at epoch {epoch} to {save_path}")
+
+        except Exception as e:
+            print(f"Failed to save model: {e}")
+
+
+    def validate(self) -> Tuple[float, float, float, float, float, float]:
+        """Validates the noise predictor and computes evaluation metrics.
+
+        Computes validation loss (MSE between predicted and ground truth noise) and generates
+        samples using the reverse diffusion model. Evaluates image quality metrics if available.
+
+        Returns
+        -------
+        tuple
+            (val_loss, fid, mse, psnr, ssim, lpips_score) where metrics may be None if not computed.
         """
         self.noise_predictor.eval()
         if self.conditional_model is not None:
             self.conditional_model.eval()
+
         val_losses = []
-        fid_, mse_, psnr_, ssim_, lpips_score_ = [], [], [], [], []
+        fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
+
         num_steps = self.hyper_params.tau_num_steps if self.model == "ddim" else self.hyper_params.num_steps
+
         with torch.no_grad():
             for x, y in self.val_loader:
                 x = x.to(self.device)
-                x_orig = x  # store original images for metrics
+                x_orig = x.clone()
                 x, _ = self.compressor_model.encode(x)
+
+                # Process conditional input
                 if self.conditional_model is not None:
-                    y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
-                    y_list = [str(item) for item in y_list]
-                    y_encoded = self.tokenizer(
-                        y_list,
-                        padding="max_length",
-                        truncation=True,
-                        max_length=self.max_length,
-                        return_tensors="pt"
-                    ).to(self.device)
-                    input_ids = y_encoded["input_ids"]
-                    attention_mask = y_encoded["attention_mask"]
-                    y_encoded = self.conditional_model(input_ids, attention_mask)
+                    y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
 
-                # validation loss
+                # Compute validation loss
                 noise = torch.randn_like(x).to(self.device)
-                t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],), device=self.device)
-                assert x.device == noise.device == t.device, "Device mismatch detected"
-                assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
+                t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
+
                 noisy_x = self.forward_model(x, noise, t)
-                p_noise = self.noise_predictor(noisy_x, t, y_encoded)
-                loss = self.objective(p_noise, noise)
+                predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
+                loss = self.objective(predicted_noise, noise)
                 val_losses.append(loss.item())
 
-                # generate samples for metrics
+                # Generate samples for metrics evaluation
                 if self.metrics_ is not None and self.reverse_diffusion is not None:
                     xt = torch.randn_like(x).to(self.device)
+
+                    # Reverse diffusion sampling
                     for t in reversed(range(num_steps)):
                         time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
                         prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
                         predicted_noise = self.noise_predictor(xt, time_steps, y_encoded)
+
                         if self.model == "sde":
                             noise = torch.randn_like(xt) if getattr(self.reverse_diffusion, "method", None) != "ode" else None
                             xt = self.reverse_diffusion(xt, noise, predicted_noise, time_steps)
@@ -443,34 +681,50 @@ class TrainLDM(nn.Module):
                         else:
                             raise ValueError(f"Unknown model: {self.model}. Supported: ddpm, ddim, sde")
 
-                    x_hat = self.compressor_model.decode(xt)
-                    x_hat = torch.clamp(x_hat, min=self.output_range[0], max=self.output_range[1])
+                    # Clamp and normalize generated samples
+                    x_hat = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
                     if self.normalize_output:
                         x_hat = (x_hat - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
                         x_orig = (x_orig - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
-                    fid, mse, psnr, ssim, lpips_score = self.metrics_.forward(x_orig, x_hat)
-                    if self.metrics_.fid:
-                        fid_.append(fid)
-                    if self.metrics_.metrics:
-                        mse_.append(mse)
-                        psnr_.append(psnr)
-                        ssim_.append(ssim)
-                    if self.metrics_.lpips:
-                        lpips_score_.append(lpips_score)
 
-        val_loss = torch.mean(torch.tensor(val_losses)).item()
-        fid_ = torch.mean(torch.tensor(fid_)).item() if fid_ else float('inf')
-        mse_ = torch.mean(torch.tensor(mse_)).item() if mse_ else None
-        psnr_ = torch.mean(torch.tensor(psnr_)).item() if psnr_ else None
-        ssim_ = torch.mean(torch.tensor(ssim_)).item() if ssim_ else None
-        lpips_score_ = torch.mean(torch.tensor(lpips_score_)).item() if lpips_score_ else None
+                    # Compute metrics
+                    metrics_result = self.metrics_.forward(x_orig, x_hat)
+                    fid, mse, psnr, ssim, lpips_score = metrics_result
 
+                    if hasattr(self.metrics_, 'fid') and self.metrics_.fid:
+                        fid_scores.append(fid)
+                    if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
+                        mse_scores.append(mse)
+                        psnr_scores.append(psnr)
+                        ssim_scores.append(ssim)
+                    if hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
+                        lpips_scores.append(lpips_score)
+
+        # Compute average metrics
+        val_loss = torch.tensor(val_losses).mean().item()
+
+        # All-reduce validation metrics across processes for DDP
+        if self.ddp:
+            val_loss_tensor = torch.tensor(val_loss, device=self.device)
+            dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
+            val_loss = val_loss_tensor.item()
+
+        fid_avg = torch.tensor(fid_scores).mean().item() if fid_scores else float('inf')
+        mse_avg = torch.tensor(mse_scores).mean().item() if mse_scores else None
+        psnr_avg = torch.tensor(psnr_scores).mean().item() if psnr_scores else None
+        ssim_avg = torch.tensor(ssim_scores).mean().item() if ssim_scores else None
+        lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
+
+        # Return to training mode
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
-        return val_loss, fid_, mse_, psnr_, ssim_, lpips_score_
+
+        return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
+
 
 ###==================================================================================================================###
+
 
 class SampleLDM(nn.Module):
     """Sampler for generating images using Latent Diffusion Models (LDM).
@@ -507,8 +761,21 @@ class SampleLDM(nn.Module):
     output_range : tuple, optional
         Range for clamping generated images (min, max), default (-1, 1).
     """
-    def __init__(self, model, reverse_diffusion, noise_predictor, compressor_model, image_shape, conditional_model=None,
-                 tokenizer="bert-base-uncased", batch_size=1, in_channels=3, device=None, max_length=77, output_range=(-1, 1)):
+    def __init__(
+            self,
+            model: str,
+            reverse_diffusion: torch.nn.Module,
+            noise_predictor: torch.nn.Module,
+            compressor_model: torch.nn.Module,
+            image_shape: Tuple[float, float],
+            conditional_model: Optional[torch.nn.Module] = None,
+            tokenizer: str = "bert-base-uncased",
+            batch_size: int = 1,
+            in_channels: int = 3,
+            device: Optional[Union[str, torch.device]] = None,
+            max_length: int = 77,
+            output_range: Tuple[float, float] = (-1.0, 1.0)
+    ) -> None:
         super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model
@@ -532,7 +799,7 @@ class SampleLDM(nn.Module):
         if not isinstance(output_range, (tuple, list)) or len(output_range) != 2 or output_range[0] >= output_range[1]:
             raise ValueError("output_range must be a tuple (min, max) with min < max")
 
-    def tokenize(self, prompts):
+    def tokenize(self, prompts: Union[List, str]):
         """Tokenizes text prompts for conditional generation.
 
         Converts input prompts into tokenized tensors using the specified tokenizer.
@@ -562,6 +829,8 @@ class SampleLDM(nn.Module):
             return_tensors="pt"
         )
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
+
+    # TODO: reviewed till here
 
     def forward(self, conditions=None, normalize_output=True, save_images=True, save_path="ldm_generated"):
         """Generates images using the reverse diffusion process in the latent space.
@@ -717,7 +986,6 @@ class AutoencoderLDM(nn.Module):
             num_embeddings,
             use_vq=False,
             beta=1.0
-
     ):
         super().__init__()
         assert in_channels == out_channels, "Input and output channels must match for auto-encoding"
@@ -1376,8 +1644,8 @@ class TrainAE(nn.Module):
         Maximum number of training epochs (default: 100).
     metrics_ : object, optional
         Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
-    device : str, optional
-        Device for computation (e.g., 'cuda', 'cpu') (default: 'cuda').
+    device : None, optional
+        Device for computation (e.g., 'cuda', 'cpu').
     save_path : str, optional
         Path to save model checkpoints (default: 'vlc_model.pth').
     checkpoint : int, optional
@@ -1392,10 +1660,23 @@ class TrainAE(nn.Module):
     """
 
     def __init__(self, model, optimizer, data_loader, val_loader=None, max_epoch=100, metrics_=None,
-                 device="cuda", save_path="vlc_model.pth", checkpoint=10, kl_warmup_epochs=10,
-                 patience=10, val_frequency=5):
+                 device=None, save_path="vlc_model", checkpoint=10, kl_warmup_epochs=10,
+                 patience=10, val_frequency=5, warmup_epochs: int = 100, ddp: bool = False,
+            num_grad_accumulation: int = 1,
+            progress_frequency: int = 1):
         super().__init__()
+
+        # Initialize DDP settings first
+        self.ddp = ddp
+        self.num_grad_accumulation = num_grad_accumulation
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Setup distributed training if enabled
+        if self.ddp:
+            self._setup_ddp()
+        else:
+            self._setup_single_gpu()
+
         self.model = model.to(self.device)
         self.optimizer = optimizer
         self.data_loader = data_loader
@@ -1406,8 +1687,61 @@ class TrainAE(nn.Module):
         self.checkpoint = checkpoint
         self.kl_warmup_epochs = kl_warmup_epochs
         self.patience = patience
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, patience=5, factor=0.5)
+
+        # Learning rate scheduling
+        self.scheduler = ReduceLROnPlateau(
+            self.optimizer,
+            patience=self.patience,
+            factor=0.5
+        )
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
+
+    def _setup_ddp(self) -> None:
+        """Setup Distributed Data Parallel training configuration.
+
+        Initializes process group, determines rank information, and sets up
+        CUDA device for the current process.
+        """
+        # Check if DDP environment variables are set
+        if "RANK" not in os.environ:
+            raise ValueError("DDP enabled but RANK environment variable not set")
+        if "LOCAL_RANK" not in os.environ:
+            raise ValueError("DDP enabled but LOCAL_RANK environment variable not set")
+        if "WORLD_SIZE" not in os.environ:
+            raise ValueError("DDP enabled but WORLD_SIZE environment variable not set")
+
+        # Ensure CUDA is available for DDP
+        if not torch.cuda.is_available():
+            raise RuntimeError("DDP requires CUDA but CUDA is not available")
+
+        # Initialize process group only if not already initialized
+        if not torch.distributed.is_initialized():
+            init_process_group(backend="nccl")
+
+        # Get rank information
+        self.ddp_rank = int(os.environ["RANK"])  # Global rank across all nodes
+        self.ddp_local_rank = int(os.environ["LOCAL_RANK"])  # Local rank on current node
+        self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # Total number of processes
+
+        # Set device and make it current
+        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+        # self.device = f"cuda:{self.ddp_local_rank}"
+        torch.cuda.set_device(self.device)
+
+        # Master process handles logging, checkpointing, etc.
+        self.master_process = self.ddp_rank == 0
+
+        if self.master_process:
+            print(f"DDP initialized with world_size={self.ddp_world_size}")
+
+    def _setup_single_gpu(self) -> None:
+        """Setup single GPU or CPU training configuration."""
+        self.ddp_rank = 0
+        self.ddp_local_rank = 0
+        self.ddp_world_size = 1
+        self.master_process = True
+
 
     def load_checkpoint(self, checkpoint_path):
         """Loads a training checkpoint to resume training.
@@ -1428,13 +1762,24 @@ class TrainAE(nn.Module):
             The loss at the checkpoint (float).
         """
         try:
+            # Load checkpoint with proper device mapping
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
 
+
         if 'model_state_dict' not in checkpoint:
             raise KeyError("Checkpoint missing 'model_state_dict' key")
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+
+        # Handle DDP wrapped model state dict
+        state_dict = checkpoint['model_state_dict']
+        if self.ddp and not any(key.startswith('module.') for key in state_dict.keys()):
+            # If loading non-DDP checkpoint into DDP model, add 'module.' prefix
+            state_dict = {f'module.{k}': v for k, v in state_dict.items()}
+        elif not self.ddp and any(key.startswith('module.') for key in state_dict.keys()):
+            # If loading DDP checkpoint into non-DDP model, remove 'module.' prefix
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        self.model.load_state_dict(state_dict)
 
         if 'optimizer_state_dict' not in checkpoint:
             raise KeyError("Checkpoint missing 'optimizer_state_dict' key")
@@ -1450,8 +1795,56 @@ class TrainAE(nn.Module):
         if self.conditional_model is not None:
             self.conditional_model.to(self.device)
 
-        print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
+        if self.master_process:
+            print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
+
         return epoch, loss
+
+    @staticmethod
+    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
+        """Creates a learning rate scheduler for warmup.
+
+        Generates a scheduler that linearly increases the learning rate from 0 to the
+        optimizer's initial value over the specified warmup epochs, then maintains it.
+
+        Parameters
+        ----------
+        optimizer : torch.optim.Optimizer
+            Optimizer to apply the scheduler to.
+        warmup_epochs : int
+            Number of epochs for the warmup phase.
+
+        Returns
+        -------
+        torch.optim.lr_scheduler.LambdaLR
+            Learning rate scheduler for warmup.
+        """
+
+        def lr_lambda(epoch):
+            if epoch < warmup_epochs:
+                return epoch / warmup_epochs
+            return 1.0
+
+        return LambdaLR(optimizer, lr_lambda)
+
+    def _wrap_models_for_ddp(self) -> None:
+        """Wrap models with DistributedDataParallel for multi-GPU training."""
+        if self.ddp:
+            # Wrap noise predictor with DDP
+            self.noise_predictor = DDP(
+                self.noise_predictor,
+                device_ids=[self.ddp_local_rank],
+                find_unused_parameters=True
+            )
+
+            # Wrap conditional model with DDP if it exists
+            if self.conditional_model is not None:
+                self.conditional_model = DDP(
+                    self.conditional_model,
+                    device_ids=[self.ddp_local_rank],
+                    find_unused_parameters=True
+                )
+
 
     def forward(self):
         """Trains the AutoencoderLDM model with mixed precision and evaluation metrics.
@@ -1467,68 +1860,159 @@ class TrainAE(nn.Module):
         best_val_loss :  float
             Best validation loss achieved (or best training loss if no validation).
         """
-        scaler = GradScaler()
-        self.model.train()
+
+        # Compile models for optimization (if supported)
+        """
+        try:
+            self.model = torch.compile(self.model)
+        except Exception as e:
+            if self.master_process:
+                print(f"Model compilation failed: {e}. Continuing without compilation.")
+        """
+
+        # Wrap models for DDP after compilation
+        self._wrap_models_for_ddp()
+
+        # Initialize training components
+        scaler = torch.GradScaler()
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
 
+        # Main training loop
         for epoch in range(self.max_epoch):
+            # Set epoch for distributed sampler if using DDP
+            if self.ddp and hasattr(self.data_loader.sampler, 'set_epoch'):
+                self.data_loader.sampler.set_epoch(epoch)
+
             if self.model.use_vq:
                 beta = 1.0  # no warmup for VQ
             else:
                 beta = min(1.0, epoch / self.kl_warmup_epochs) * self.model.beta
                 self.model.current_beta = beta
 
-            train_losses_ = []
-            for x, _ in tqdm(self.data_loader):
+            train_losses_epoch = []
+
+            # Training step loop with gradient accumulation
+            for step, (x, y) in enumerate(tqdm(self.data_loader, disable=not self.master_process)):
                 x = x.to(self.device)
-                self.optimizer.zero_grad()
-                with autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+
+                # Forward pass with mixed precision
+                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     x_hat, loss, reg_loss, z = self.model(x)
+                    # Compute loss and scale for gradient accumulation
+                    loss = loss / self.num_grad_accumulation
+
+                # Backward pass
                 scaler.scale(loss).backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                scaler.step(self.optimizer)
-                scaler.update()
-                train_losses_.append(loss.item())
 
-            mean_train_loss = torch.mean(torch.tensor(train_losses_)).item()
+                # Gradient accumulation and optimizer step
+                if (step + 1) % self.num_grad_accumulation == 0:
+                    # Clip gradients
+                    scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+                    # Optimizer step
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                    self.optimizer.zero_grad()
+
+                    # Update learning rate (warmup scheduler)
+                    self.warmup_lr_scheduler.step()
+
+                # Record loss (unscaled)
+                train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
+
+            # Compute mean training loss
+            mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
+
+            # All-reduce loss across processes for DDP
+            if self.ddp:
+                loss_tensor = torch.tensor(mean_train_loss, device=self.device)
+                dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+                mean_train_loss = loss_tensor.item()
+
             train_losses.append(mean_train_loss)
-            print(f"Epoch: {epoch + 1} | Train Loss: {mean_train_loss:.4f}", end="")
 
+            # Print training progress (only master process)
+            if self.master_process:
+                if (epoch + 1) % self.progress_frequency == 0:
+                    print(f"\nEpoch: {epoch + 1} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
+
+            # Validation step
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
-                val_loss, fid, mse, psnr, ssim, lpips_score = self.validate()
-                print(f" | Val Loss: {val_loss:.4f}", end="")
-                if self.metrics_ and self.metrics_.fid:
-                    print(f" | FID: {fid:.4f}", end="")
-                if self.metrics_ and self.metrics_.metrics:
-                    print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
-                if self.metrics_ and self.metrics_.lpips:
-                    print(f" | LPIPS: {lpips_score:.4f}", end="")
-                print()
+                val_metrics = self.validate()
+                val_loss, fid, mse, psnr, ssim, lpips_score = val_metrics
+
+                if self.master_process:
+                    print(f" | Val Loss: {val_loss:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'fid') and self.metrics_.fid:
+                        print(f" | FID: {fid:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
+                        print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
+                    if self.metrics_ and hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
+                        print(f" | LPIPS: {lpips_score:.4f}", end="")
+                    print()
 
                 current_best = val_loss
                 self.scheduler.step(val_loss)
             else:
+                if self.master_process:
+                    print()
                 current_best = mean_train_loss
+                self.scheduler.step(mean_train_loss)
 
-            if current_best < best_val_loss:
-                best_val_loss = current_best
-                wait = 0
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
-                    'optimizer_state_dict': self.optimizer.state_dict(),
-                    'loss': best_val_loss,
-                }, self.save_path)
-                print(f" | Model saved at epoch {epoch + 1}")
-            else:
-                wait += 1
-                if wait >= self.patience:
-                    print("Early stopping triggered")
-                    break
+            # Save checkpoint and early stopping (only master process)
+            if self.master_process:
+                if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
+                    best_val_loss = current_best
+                    wait = 0
+                    self._save_checkpoint(epoch + 1, best_val_loss)
+                else:
+                    wait += 1
+                    if wait >= self.patience:
+                        print("Early stopping triggered")
+                        self._save_checkpoint(epoch + 1, best_val_loss, "_early_stop")
+                        break
+
+        # Clean up DDP
+        if self.ddp:
+            destroy_process_group()
 
         return train_losses, best_val_loss
+
+    def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "") -> None:
+        """Save model checkpoint (only called by master process).
+
+        Parameters
+        ----------
+        epoch : int
+            Current epoch number.
+        loss : float
+            Current loss value.
+        suffix : str, optional
+            Suffix to add to checkpoint filename.
+        """
+        try:
+            # Get state dicts, handling DDP wrapping
+            model_state = (
+                self.model.module.state_dict() if self.ddp else self.model.state_dict()
+            )
+
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model_state,
+                'optimizer_state_dict': self.optimizer.state_dict(),
+                'loss': loss,
+                'max_epoch': self.max_epoch,
+            }
+
+            save_path = self.store_path + suffix + ".pth" if suffix else self.store_path + ".pth"
+            torch.save(checkpoint, save_path)
+            print(f"Model saved at epoch {epoch} to {save_path}")
+
+        except Exception as e:
+            print(f"Failed to save model: {e}")
 
     def validate(self):
         """Validates the AutoencoderLDM model and computes evaluation Metrics.
@@ -1552,31 +2036,45 @@ class TrainAE(nn.Module):
             Mean LPIPS score
         """
         self.model.eval()
+
         val_losses = []
-        fid_, mse_, psnr_, ssim_, lpips_score_ = [], [], [], [], []
+        fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
 
         with torch.no_grad():
             for x, _ in self.val_loader:
                 x = x.to(self.device)
                 x_hat, loss, reg_loss, z = self.model(x)
                 val_losses.append(loss.item())
-                if self.metrics_ is not None:
-                    fid, mse, psnr, ssim, lpips_score = self.metrics_.forward(x, x_hat)
-                    if self.metrics_.fid:
-                        fid_.append(fid)
-                    if self.metrics_.metrics:
-                        mse_.append(mse)
-                        psnr_.append(psnr)
-                        ssim_.append(ssim)
-                    if self.metrics_.lpips:
-                        lpips_score_.append(lpips_score)
 
-        val_loss = torch.mean(torch.tensor(val_losses)).item()
-        fid_ = torch.mean(torch.tensor(fid_)).item() if fid_ else float('inf')
-        mse_ = torch.mean(torch.tensor(mse_)).item() if mse_ else None
-        psnr_ = torch.mean(torch.tensor(psnr_)).item() if psnr_ else None
-        ssim_ = torch.mean(torch.tensor(ssim_)).item() if ssim_ else None
-        lpips_score_ = torch.mean(torch.tensor(lpips_score_)).item() if lpips_score_ else None
+                # Compute metrics
+                if self.metrics_ is not None:
+                    metrics_result = self.metrics_.forward(x, x_hat)
+                    fid, mse, psnr, ssim, lpips_score = metrics_result
+
+                    if hasattr(self.metrics_, 'fid') and self.metrics_.fid:
+                        fid_scores.append(fid)
+                    if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
+                        mse_scores.append(mse)
+                        psnr_scores.append(psnr)
+                        ssim_scores.append(ssim)
+                    if hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
+                        lpips_scores.append(lpips_score)
+
+        # Compute average metrics
+        val_loss = torch.tensor(val_losses).mean().item()
+
+        # All-reduce validation metrics across processes for DDP
+        if self.ddp:
+            val_loss_tensor = torch.tensor(val_loss, device=self.device)
+            dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
+            val_loss = val_loss_tensor.item()
+
+        fid_avg = torch.tensor(fid_scores).mean().item() if fid_scores else float('inf')
+        mse_avg = torch.tensor(mse_scores).mean().item() if mse_scores else None
+        psnr_avg = torch.tensor(psnr_scores).mean().item() if psnr_scores else None
+        ssim_avg = torch.tensor(ssim_scores).mean().item() if ssim_scores else None
+        lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
 
         self.model.train()
-        return val_loss, fid_, mse_, psnr_, ssim_, lpips_score_
+
+        return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
