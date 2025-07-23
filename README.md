@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="imgs/td-logo.png" alt="TorchDiff Logo" width="300"/>
+  <img src="imgs/logo_.png" alt="TorchDiff Logo" width="300"/>
 </div>
 
 <div align="center">
