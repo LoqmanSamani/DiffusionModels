@@ -1445,6 +1445,12 @@ class Metrics:
         if x.shape != x_hat.shape:
             raise ValueError(f"Shape mismatch: x {x.shape}, x_hat {x_hat.shape}")
 
+        # Normalize inputs to [0, 1] range
+        x = (x + 1) / 2  # Convert from [-1, 1] to [0, 1]
+        x_hat = (x_hat + 1) / 2
+        x = x.clamp(0, 1)  # Ensure values are in [0, 1]
+        x_hat = x_hat.clamp(0, 1)
+
         x = x.to(self.device)
         x_hat = x_hat.to(self.device)
 
