@@ -830,9 +830,14 @@ class SampleLDM(nn.Module):
         )
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
 
-    # TODO: reviewed till here
 
-    def forward(self, conditions=None, normalize_output=True, save_images=True, save_path="ldm_generated"):
+    def forward(
+            self,
+            conditions: Optional[Union[List, str]] = None,
+            normalize_output: bool = True,
+            save_images: bool = True,
+            save_path: str = "ldm_generated"
+    ) -> torch.Tensor:
         """Generates images using the reverse diffusion process in the latent space.
 
         Iteratively denoises random noise in the latent space using the specified reverse
@@ -912,7 +917,7 @@ class SampleLDM(nn.Module):
 
         return generated_imgs
 
-    def to(self, device):
+    def to(self, device: torch.device) -> Self:
         """Moves the module and its components to the specified device.
 
         Parameters
@@ -973,20 +978,20 @@ class AutoencoderLDM(nn.Module):
     """
     def __init__(
             self,
-            in_channels,
-            down_channels,
-            up_channels,
-            out_channels,
-            dropout_rate,
-            num_heads,
-            num_groups,
-            num_layers_per_block,
-            total_down_sampling_factor,
-            latent_channels,
-            num_embeddings,
-            use_vq=False,
-            beta=1.0
-    ):
+            in_channels: int,
+            down_channels: List[int],
+            up_channels: List[int],
+            out_channels: List[int],
+            dropout_rate: float,
+            num_heads: int,
+            num_groups: int,
+            num_layers_per_block: int,
+            total_down_sampling_factor: int,
+            latent_channels: int,
+            num_embeddings: int,
+            use_vq: bool = False,
+            beta: float = 1.0
+    ) -> None:
         super().__init__()
         assert in_channels == out_channels, "Input and output channels must match for auto-encoding"
         self.use_vq = use_vq
@@ -1031,7 +1036,7 @@ class AutoencoderLDM(nn.Module):
         ])
         self.conv3 = Conv3(up_channels[-1], out_channels, dropout_rate)
 
-    def reparameterize(self, mu, logvar):
+    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """Applies reparameterization trick for variational autoencoding.
 
         Samples from a Gaussian distribution using the mean and log-variance to enable
@@ -1052,7 +1057,7 @@ class AutoencoderLDM(nn.Module):
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def encode(self, x):
+    def encode(self, x: torch.Tensor) -> Tuple[torch.Tensor, float]:
         """Encodes images into a latent representation.
 
         Processes input images through the encoder, applying convolutions, downsampling,
@@ -1097,7 +1102,7 @@ class AutoencoderLDM(nn.Module):
             kl_loss = kl_unnormalized / (batch_size * latent_size) * self.current_beta
             return z, kl_loss
 
-    def decode(self, z):
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
         """Decodes latent representations back to images.
 
         Processes latent representations through the decoder, applying convolutions,
@@ -1122,7 +1127,7 @@ class AutoencoderLDM(nn.Module):
         x = self.conv3(x)
         return x
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, float, float, torch.Tensor]:
         """Encodes images to latent space and decodes them, computing reconstruction and regularization losses.
 
         Performs a full autoencoding pass, encoding images to the latent space, decoding
@@ -1183,7 +1188,7 @@ class VectorQuantizer(nn.Module):
     - The commitment loss encourages input latents to be close to their quantized versions, while the codebook loss updates embeddings to match inputs.
     - A straight-through estimator is used to pass gradients from the quantized output to the input.
     """
-    def __init__(self, num_embeddings, embedding_dim, commitment_cost=0.25):
+    def __init__(self, num_embeddings: int, embedding_dim: int, commitment_cost: float = 0.25) -> None:
         super().__init__()
         self.embedding_dim = embedding_dim
         self.num_embeddings = num_embeddings
@@ -1191,7 +1196,7 @@ class VectorQuantizer(nn.Module):
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         self.embedding.weight.data.uniform_(-1.0 / num_embeddings, 1.0 / num_embeddings)
 
-    def forward(self, z):
+    def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Quantizes latent representations to the nearest codebook embedding.
 
         Computes the closest embedding for each input vector, applies quantization,
@@ -1257,7 +1262,7 @@ class DownBlock(nn.Module):
     - Each layer pair consists of two Conv3 modules with a residual connection using a 1x1 convolution to match dimensions.
     - The downsampling is applied after all convolutional layers, reducing spatial dimensions by `down_sampling_factor`.
     """
-    def __init__(self, in_channels, out_channels, num_layers, down_sampling_factor, dropout_rate):
+    def __init__(self, in_channels: int, out_channels: int, num_layers: int, down_sampling_factor: int, dropout_rate: float) -> None:
         super().__init__()
         self.num_layers = num_layers
         self.conv1 = nn.ModuleList([
@@ -1289,7 +1294,7 @@ class DownBlock(nn.Module):
 
         ])
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Processes input through convolutional layers and downsampling.
 
         Parameters
@@ -1332,14 +1337,14 @@ class Conv3(nn.Module):
     - The layer applies group normalization, SiLU activation, dropout, and a 3x3 convolution in sequence.
     - Spatial dimensions are preserved due to padding=1 in the convolution.
     """
-    def __init__(self, in_channels, out_channels, dropout_rate):
+    def __init__(self, in_channels: int, out_channels: int, dropout_rate: float) -> None:
         super().__init__()
         self.group_norm = nn.GroupNorm(num_groups=8, num_channels=in_channels)
         self.activation = nn.SiLU()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
         self.dropout = nn.Dropout(p=dropout_rate)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Processes input through group normalization, activation, dropout, and convolution.
 
         Parameters
@@ -1379,7 +1384,7 @@ class DownSampling(nn.Module):
     - The module splits the output channels evenly between convolutional and pooling paths, concatenating them along the channel dimension.
     - The convolutional path uses a stride equal to `down_sampling_factor`, while the pooling path uses max pooling with the same factor.
     """
-    def __init__(self, in_channels, out_channels, down_sampling_factor):
+    def __init__(self, in_channels: int, out_channels: int, down_sampling_factor: int) -> None:
         super().__init__()
         self.down_sampling_factor = down_sampling_factor
         self.conv = nn.Sequential(
@@ -1393,7 +1398,7 @@ class DownSampling(nn.Module):
                       kernel_size=1, stride=1, padding=0)
         )
 
-    def forward(self, batch):
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
         """Downsamples input by combining convolutional and pooling paths.
 
         Parameters
@@ -1431,13 +1436,13 @@ class Attention(nn.Module):
     - The input is reshaped to (batch_size, height * width, num_channels) for attention processing, then restored to (batch_size, num_channels, height, width).
     - Group normalization is applied before attention to stabilize training.
     """
-    def __init__(self, num_channels, num_heads, num_groups, dropout_rate):
+    def __init__(self, num_channels: int, num_heads: int, num_groups: int, dropout_rate: float) -> None:
         super().__init__()
         self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels)
         self.attention = nn.MultiheadAttention(embed_dim=num_channels, num_heads=num_heads, batch_first=True)
         self.dropout = nn.Dropout(p=dropout_rate)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Applies self-attention to input features.
 
         Parameters
@@ -1485,7 +1490,7 @@ class UpBlock(nn.Module):
     - Upsampling is applied first, followed by convolutional layer pairs with residual connections using 1x1 convolutions.
     - Each layer pair consists of two Conv3 modules.
     """
-    def __init__(self, in_channels, out_channels, num_layers, up_sampling_factor, dropout_rate):
+    def __init__(self, in_channels: int, out_channels: int, num_layers: int, up_sampling_factor: int, dropout_rate: float) -> None:
         super().__init__()
         self.num_layers = num_layers
         effective_in_channels = in_channels
@@ -1518,7 +1523,7 @@ class UpBlock(nn.Module):
             ) for i in range(self.num_layers)
         ])
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Processes input through upsampling and convolutional layers.
 
         Parameters
@@ -1561,7 +1566,7 @@ class UpSampling(nn.Module):
     - The module splits the output channels evenly between transposed convolution and upsampling paths, concatenating them along the channel dimension.
     - If the spatial dimensions of the two paths differ, the upsampling path is interpolated to match the convolutional path’s size.
     """
-    def __init__(self, in_channels, out_channels, up_sampling_factor):
+    def __init__(self, in_channels: int, out_channels: int, up_sampling_factor: int) -> None:
         super().__init__()
         half_out_channels = out_channels // 2
         self.up_sampling_factor = up_sampling_factor
@@ -1593,7 +1598,7 @@ class UpSampling(nn.Module):
             )
         )
 
-    def forward(self, batch):
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
         """Upsamples input by combining transposed convolution and upsampling paths.
 
         Parameters
@@ -1659,11 +1664,25 @@ class TrainAE(nn.Module):
         Frequency (in epochs) for validation and metric computation (default: 5).
     """
 
-    def __init__(self, model, optimizer, data_loader, val_loader=None, max_epoch=100, metrics_=None,
-                 device=None, save_path="vlc_model", checkpoint=10, kl_warmup_epochs=10,
-                 patience=10, val_frequency=5, warmup_epochs: int = 100, ddp: bool = False,
+    def __init__(
+            self,
+            model: torch.nn.Module,
+            optimizer: torch.optim.Optimizer,
+            data_loader: torch.utils.data.DataLoader,
+            val_loader: Optional[torch.utils.data.DataLoader] = None,
+            max_epoch: int = 100,
+            metrics_: Optional[Callable] = None,
+            device: Optional[Union[str, torch.device]] = None,
+            save_path: str = "vlc_model",
+            checkpoint: int = 10,
+            kl_warmup_epochs: int = 10,
+            patience: int = 10,
+            val_frequency: int = 5,
+            warmup_epochs: int = 100,
+            ddp: bool = False,
             num_grad_accumulation: int = 1,
-            progress_frequency: int = 1):
+            progress_frequency: int = 1
+    ) -> None:
         super().__init__()
 
         # Initialize DDP settings first
@@ -1696,6 +1715,7 @@ class TrainAE(nn.Module):
         )
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
         self.val_frequency = val_frequency
+        self.progress_frequency = progress_frequency
 
     def _setup_ddp(self) -> None:
         """Setup Distributed Data Parallel training configuration.
@@ -1743,7 +1763,7 @@ class TrainAE(nn.Module):
         self.master_process = True
 
 
-    def load_checkpoint(self, checkpoint_path):
+    def load_checkpoint(self, checkpoint_path: str) -> Tuple[float, float]:
         """Loads a training checkpoint to resume training.
 
         Restores the state of the noise predictor, conditional model (if applicable),
@@ -1846,7 +1866,7 @@ class TrainAE(nn.Module):
                 )
 
 
-    def forward(self):
+    def forward(self) -> Tuple[List[float], float]:
         """Trains the AutoencoderLDM model with mixed precision and evaluation metrics.
 
         Performs training with reconstruction and regularization losses, KL warmup, gradient
@@ -2014,7 +2034,7 @@ class TrainAE(nn.Module):
         except Exception as e:
             print(f"Failed to save model: {e}")
 
-    def validate(self):
+    def validate(self) -> Tuple[float, float, float, float, float, float]:
         """Validates the AutoencoderLDM model and computes evaluation Metrics.
 
         Computes validation loss and optional Metrics (MSE, PSNR, SSIM, FID, LPIPS) using
@@ -2078,3 +2098,6 @@ class TrainAE(nn.Module):
         self.model.train()
 
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
+
+
+
