@@ -430,6 +430,8 @@ class TrainDDIM(nn.Module):
         Number of gradient accumulation steps before optimizer update (default: 1).
     `progress_frequency` : int, optional
         Number of epochs before printing loss.
+    compilation : bool, optional
+        whether the model is internally compiled using torch.compile (default: false)
     """
     def __init__(
             self,
@@ -453,7 +455,8 @@ class TrainDDIM(nn.Module):
             normalize_output: bool = True,
             ddp: bool = False,
             num_grad_accumulation: int = 1,
-            progress_frequency: int = 1
+            progress_frequency: int = 1,
+            compilation: bool = False
     ) -> None:
         super().__init__()
         # Initialize DDP settings first
@@ -488,6 +491,7 @@ class TrainDDIM(nn.Module):
         self.output_range = output_range
         self.normalize_output = normalize_output
         self.progress_frequency = progress_frequency
+        self.compilation = compilation
 
         # Learning rate scheduling
         self.scheduler = ReduceLROnPlateau(
@@ -683,15 +687,14 @@ class TrainDDIM(nn.Module):
             self.conditional_model.train()
 
         # Compile models for optimization (if supported)
-        """
-        try:
-            self.noise_predictor = torch.compile(self.noise_predictor)
-            if self.conditional_model is not None:
-                self.conditional_model = torch.compile(self.conditional_model)
-        except Exception as e:
-            if self.master_process:
-                print(f"Model compilation failed: {e}. Continuing without compilation.")
-        """
+        if self.compilation:
+            try:
+                self.noise_predictor = torch.compile(self.noise_predictor)
+                if self.conditional_model is not None:
+                    self.conditional_model = torch.compile(self.conditional_model)
+            except Exception as e:
+                if self.master_process:
+                    print(f"Model compilation failed: {e}. Continuing without compilation.")
 
         # Wrap models for DDP after compilation
         self._wrap_models_for_ddp()
@@ -1194,6 +1197,8 @@ import torchvision
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
 
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,))
@@ -1240,7 +1245,7 @@ noise_predictor = NoisePredictor(
         num_mid_blocks=2,
         num_up_blocks=2,
         down_sampling_factor=2
-)
+).to(device)
 
 # label conditional model
 text_encoder = TextEncoder(
@@ -1252,7 +1257,7 @@ text_encoder = TextEncoder(
     output_dimension=32,
     num_heads=2,
     context_length=77
-)
+).to(device)
 
 # Set up the AdamW optimizer for the NoisePredictor parameters with a learning rate of 1e-3
 optimizer = torch.optim.AdamW(
@@ -1300,7 +1305,8 @@ train_ddim = TrainDDIM(
     val_frequency=3,
     ddp=False,
     num_grad_accumulation=3,
-    progress_frequency=3
+    progress_frequency=3,
+    compilation=True
 )
 
 train_losses, best_val_loss = train_ddim()

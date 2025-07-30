@@ -134,6 +134,8 @@ class TrainLDM(nn.Module):
         Number of gradient accumulation steps before optimizer update (default: 1).
     progress_frequency : int, optional
         Number of epochs before printing loss.
+    compilation : bool, optional
+        whether the model is internally compiled using torch.compile (default: false)
     """
 
     def __init__(
@@ -162,7 +164,8 @@ class TrainLDM(nn.Module):
             normalize_output: bool = True,
             ddp: bool = False,
             num_grad_accumulation: int = 1,
-            progress_frequency: int = 1
+            progress_frequency: int = 1,
+            compilation: bool = False
     ) -> None:
         super().__init__()
         if model not in ["ddpm", "ddim", "sde"]:
@@ -202,6 +205,7 @@ class TrainLDM(nn.Module):
         self.output_range = output_range
         self.normalize_output = normalize_output
         self.progress_frequency = progress_frequency
+        self.compilation = compilation
 
         # Learning rate scheduling
         self.scheduler = ReduceLROnPlateau(
@@ -402,16 +406,16 @@ class TrainLDM(nn.Module):
         self.compressor_model.eval()  # pre-trained, not trained here
 
         # Compile models for optimization (if supported)
-        """
-        try:
-            self.noise_predictor = torch.compile(self.noise_predictor)
-            if self.conditional_model is not None:
-                self.conditional_model = torch.compile(self.conditional_model)
-            self.compressor_model = torch.compile(self.compressor_model)
-        except Exception as e:
-            if self.master_process:
-                print(f"Model compilation failed: {e}. Continuing without compilation.")
-        """
+        if self.compilation:
+            try:
+                self.noise_predictor = torch.compile(self.noise_predictor)
+                if self.conditional_model is not None:
+                    self.conditional_model = torch.compile(self.conditional_model)
+                self.compressor_model = torch.compile(self.compressor_model)
+            except Exception as e:
+                if self.master_process:
+                    print(f"Model compilation failed: {e}. Continuing without compilation.")
+
 
         # Wrap models for DDP after compilation
         self._wrap_models_for_ddp()
@@ -2453,6 +2457,8 @@ from torch.utils.data import DataLoader, Subset
 # Import utility functions from the TorchDiff utils module
 from utils import TextEncoder, NoisePredictor, Metrics
 
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 transform = transforms.Compose([
     transforms.Resize(96),
     transforms.CenterCrop(96),
@@ -2488,7 +2494,7 @@ compressor_model = AutoencoderLDM(
     num_layers_per_block=3,
     total_down_sampling_factor=3,
     num_embeddings=32
-)
+).to(device)
 
 compressor_metrics = Metrics(device="cpu", fid=True, metrics=True, lpips_=True)
 
@@ -2512,7 +2518,7 @@ autoencoder_trainer = TrainAE(
     ddp=False,
     num_grad_accumulation=2,
     progress_frequency=3
-)
+).to(device)
 
 
 #train_losses, best_val_loss = autoencoder_trainer()
@@ -2529,7 +2535,7 @@ noise_predictor = NoisePredictor(
     num_mid_blocks=2,
     num_up_blocks=2,
     down_sampling_factor=2
-)
+).to(device)
 
 # label conditional model
 text_encoder = TextEncoder(
@@ -2541,7 +2547,7 @@ text_encoder = TextEncoder(
     output_dimension=32,
     num_heads=2,
     context_length=77
-)
+).to(device)
 
 # Set up the AdamW optimizer for the NoisePredictor parameters plus TextEncoder trainable parameters with a learning rate of 1e-3
 optimizer = torch.optim.Adam(
@@ -2596,10 +2602,11 @@ ldm_trainer = TrainLDM(
     val_frequency=5,
     ddp=False,
     num_grad_accumulation=1,
-    progress_frequency=1
+    progress_frequency=1,
+    compilation=False
 )
 
-# train_losses, best_val_loss = ldm_trainer()
+train_losses, best_val_loss = ldm_trainer()
 
 sampler = SampleLDM(
     model="sde",

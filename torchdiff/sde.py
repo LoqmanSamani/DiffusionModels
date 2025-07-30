@@ -424,6 +424,8 @@ class TrainSDE(nn.Module):
         Number of gradient accumulation steps before optimizer update (default: 1).
     progress_frequency : int, optional
         Number of epochs before printing loss.
+    compilation : bool, optional
+        whether the model is internally compiled using torch.compile (default: false)
     """
     def __init__(
             self,
@@ -448,7 +450,8 @@ class TrainSDE(nn.Module):
             normalize_output: bool = True,
             ddp: bool = False,
             num_grad_accumulation: int = 1,
-            progress_frequency: int = 1
+            progress_frequency: int = 1,
+            compilation: bool = False
     ) -> None:
 
         super().__init__()
@@ -485,6 +488,7 @@ class TrainSDE(nn.Module):
         self.output_range = output_range
         self.normalize_output = normalize_output
         self.progress_frequency = progress_frequency
+        self.compilation = compilation
 
         # Learning rate scheduling
         self.scheduler = ReduceLROnPlateau(
@@ -691,15 +695,15 @@ class TrainSDE(nn.Module):
             self.conditional_model.train()
 
         # Compile models for optimization (if supported)
-        """
-        try:
-            self.noise_predictor = torch.compile(self.noise_predictor)
-            if self.conditional_model is not None:
-                self.conditional_model = torch.compile(self.conditional_model)
-        except Exception as e:
-            if self.master_process:
-                print(f"Model compilation failed: {e}. Continuing without compilation.")
-        """
+        if self.compilation:
+            try:
+                self.noise_predictor = torch.compile(self.noise_predictor)
+                if self.conditional_model is not None:
+                    self.conditional_model = torch.compile(self.conditional_model)
+            except Exception as e:
+                if self.master_process:
+                    print(f"Model compilation failed: {e}. Continuing without compilation.")
+
 
         # Wrap models for DDP after compilation
         self._wrap_models_for_ddp()
@@ -1191,77 +1195,76 @@ class SampleSDE(nn.Module):
 
 from utils import NoisePredictor, Metrics, TextEncoder
 import os
-import matplotlib.pyplot as plt
-from PIL import Image
-import numpy as np
 import torch
 import torch.nn as nn
-import torchvision
+import transformers
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
 
+# Set device and optimize for FP16
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.set_float32_matmul_precision('high')  # Optimize for FP16
 
+# Data transforms
 transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # For RGB
 ])
 
+# Load CIFAR-10 datasets
 train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
 test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
 
-# Use small subset
+# Subsets
 train_subset = Subset(train_dataset, torch.randperm(len(train_dataset))[:100])
 test_subset = Subset(test_dataset, torch.randperm(len(test_dataset))[:10])
 
-train_loader = DataLoader(train_subset, batch_size=32, shuffle=True)
-val_loader = DataLoader(test_subset, batch_size=10, shuffle=False)
+# DataLoaders
+train_loader = DataLoader(train_subset, batch_size=32, shuffle=True, pin_memory=True)
+val_loader = DataLoader(test_subset, batch_size=10, shuffle=False, pin_memory=True)
 
-# Initialize the NoisePredictor for the SDE model with parameters for RGB images
+# Initialize tokenizer for text labels
+tokenizer = transformers.BertTokenizer.from_pretrained("bert-base-uncased")
+class_names = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+
+# Initialize NoisePredictor
 noise_predictor = NoisePredictor(
-        in_channels=3,  # RGB images
-        down_channels=[16, 32],
-        mid_channels=[32, 32],
-        up_channels=[32, 16],
-        down_sampling=[True, True],
-        time_embed_dim=64,
-        y_embed_dim=64,
-        num_down_blocks=2,
-        num_mid_blocks=2,
-        num_up_blocks=2,
-        down_sampling_factor=2
-)
+    in_channels=3,
+    down_channels=[16, 32],
+    mid_channels=[32, 32],
+    up_channels=[32, 16],
+    down_sampling=[True, True],
+    time_embed_dim=64,
+    y_embed_dim=64,
+    num_down_blocks=2,
+    num_mid_blocks=2,
+    num_up_blocks=2,
+    down_sampling_factor=2
+).to(device)
 
-# label conditional model
+# Initialize TextEncoder
 text_encoder = TextEncoder(
-        use_pretrained_model=True,
-        model_name="bert-base-uncased",
-        vocabulary_size=30522,
-        num_layers=2,
-        input_dimension=64,
-        output_dimension=64,
-        num_heads=2,
-        context_length=77
-)
+    use_pretrained_model=True,
+    model_name="bert-base-uncased",
+    vocabulary_size=30522,
+    num_layers=2,
+    input_dimension=64,
+    output_dimension=64,
+    num_heads=2,
+    context_length=77
+).to(device)
 
-# Set up the AdamW optimizer for the NoisePredictor parameters plus TextEncoder trainable parameters with a learning rate of 1e-3
+# Optimizer and loss
 optimizer = torch.optim.Adam(
     [p for p in noise_predictor.parameters() if p.requires_grad] +
     [p for p in text_encoder.parameters() if p.requires_grad], lr=1e-3
 )
-
-# Initialize the Mean Squared Error (MSE) loss function
 loss = nn.MSELoss()
 
-# Configure the Metrics class for evaluation on CPU (GPUs are recommended for actual training)
-metrics = Metrics(
-    device="cuda", #"cpu",  # Using CPU for this tutorial, but GPUs are recommended for training diffusion models
-    fid=True,
-    metrics=True,
-    lpips_=True
-)
+# Metrics
+metrics = Metrics(device="cuda", fid=True, metrics=True, lpips_=True)
 
-
-# Initialize SDE hyperparameters for the noise schedule
+# SDE hyperparameters
 hyperparams_sde = HyperParamsSDE(
     num_steps=500,
     beta_start=1e-4,
@@ -1274,16 +1277,12 @@ hyperparams_sde = HyperParamsSDE(
     beta_method="linear"
 )
 
-# Set up the reverse diffusion process for sampling
-reverse_sde = ReverseSDE(
-    hyper_params=hyperparams_sde,
-    method="ode" # there are three stochastic methods and one deterministic method available ("ve", "vp", "sub-vp", "ode"). Here we will use a stochastic method
-)
+# Reverse SDE
+reverse_sde = ReverseSDE(hyper_params=hyperparams_sde, method="ode")
 
-
-# Configure the SDE trainer for model training
+# TrainSDE with compilation
 trainer = TrainSDE(
-    method="ode", # "ve", "vp", "sub-vp", "ode"
+    method="ode",
     noise_predictor=noise_predictor,
     hyper_params=hyperparams_sde,
     conditional_model=text_encoder,
@@ -1293,17 +1292,17 @@ trainer = TrainSDE(
     data_loader=train_loader,
     val_loader=val_loader,
     max_epoch=5,
-    device=torch.device("cuda"),
+    device=device,
     store_path="test_sde",
     val_frequency=3,
     ddp=False,
     num_grad_accumulation=1,
-    progress_frequency=1
+    progress_frequency=1,
+    compilation=True
 )
 
+
 train_losses, best_val_loss = trainer()
-
-
 
 
 

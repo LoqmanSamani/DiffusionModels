@@ -36,7 +36,7 @@ import shutil
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchvision.utils import save_image
-from typing import Optional, Tuple, Any, Callable, List, Union, Self
+from typing import Optional, Tuple, List
 
 
 ###==================================================================================================================###
@@ -215,14 +215,15 @@ class EncoderLayer(torch.nn.Module):
             epsilon: float = 1e-5
     ) -> None:
         super().__init__()
-        self.attention = FlashAttention(
+        self.attention = nn.MultiheadAttention(
             embed_dim=input_dimension,
             num_heads=num_heads,
-            dropout_rate=dropout_rate,
-            bias=qkv_bias
+            dropout=dropout_rate,
+            bias=qkv_bias,
+            batch_first=True
         )
         self.output_projection = nn.Linear(input_dimension, output_dimension) if input_dimension != output_dimension else nn.Identity()
-        self.norm1 = nn.LayerNorm(normalized_shape=input_dimension, eps=epsilon)
+        self.norm1 = self.norm1 = nn.LayerNorm(normalized_shape=input_dimension, eps=epsilon)
         self.dropout1 = nn.Dropout(dropout_rate)
         self.feedforward = FeedForward(
             embedding_dimension=input_dimension,
@@ -318,174 +319,108 @@ class FeedForward(torch.nn.Module):
 ###==================================================================================================================###
 
 
-class FlashAttention(nn.Module):
-    """Multihead attention module using FlashAttention for efficient computation.
+class Attention(nn.Module):
+    """Attention module for NoisePredictor, supporting text conditioning or self-attention.
 
-    Supports self-attention (when `y` is None) and cross-attention (when `y` is provided,
-    using `y` for keys and values).
+    Applies multi-head attention to enhance features, with optional text embeddings for
+    conditional generation.
 
     Parameters
     ----------
-    embed_dim : int
-        Input and output embedding dimension.
+    in_channels : int
+        Number of input channels (embedding dimension for attention).
+    y_embed_dim : int, optional
+        Dimensionality of text embeddings (default: 768).
+    num_heads : int, optional
+        Number of attention heads (default: 4).
+    num_groups : int, optional
+        Number of groups for group normalization (default: 8).
+    dropout_rate : float, optional
+        Dropout rate for attention and output (default: 0.1).
+
+    Attributes
+    ----------
+    in_channels : int
+        Input channel dimension.
+    y_embed_dim : int
+        Text embedding dimension.
     num_heads : int
         Number of attention heads.
-    dropout_rate : float, optional
-        Dropout rate applied to attention scores (default: 0.0).
-    bias : bool, optional
-        Whether to include bias in the query, key, value, and output projections (default: True).
+    dropout_rate : float
+        Dropout rate.
+    attention : torch.nn.MultiheadAttention
+        Multi-head attention with `batch_first=True`.
+    norm : torch.nn.GroupNorm
+        Group normalization before attention.
+    dropout : torch.nn.Dropout
+        Dropout layer for output.
+    y_projection : torch.nn.Linear
+        Projection for text embeddings to match `in_channels`.
 
-    **Notes**
-
-    - Requires PyTorch 2.2+ and a compatible CUDA GPU (e.g., A100, H100, RTX 3090) with FP16 or BF16 inputs for FlashAttention.
-    - The embedding dimension must be divisible by `num_heads` to ensure equal head sizes.
-    - Supports `key_padding_mask` for padded sequences, converted to an attention mask for FlashAttention.
-    - Falls back to efficient or standard attention if FlashAttention is unavailable.
-    - When `y` is provided, it is used to compute keys and values for cross-attention.
+    Raises
+    ------
+    AssertionError
+        If input channels do not match `in_channels`.
+    ValueError
+        If text embeddings (`y`) have incorrect dimensions after projection.
     """
-    def __init__(self, embed_dim: int, num_heads: int, dropout_rate: float = 0.0, bias: bool = True) -> None:
+    def __init__(
+            self,
+            in_channels: int,
+            y_embed_dim: int = 768,
+            num_heads: int = 4,
+            num_groups: int = 8,
+            dropout_rate: float = 0.1
+    ) -> None:
         super().__init__()
-        self.embed_dim = embed_dim
+        self.in_channels = in_channels
+        self.y_embed_dim = y_embed_dim
         self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
-
-        # Linear projections for query (from x) and key/value (from x or y)
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)  # Query projection
-        self.kv_proj = nn.Linear(embed_dim, 2 * embed_dim, bias=bias)  # Key/value projection
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)    # Output projection
         self.dropout_rate = dropout_rate
+        self.attention = nn.MultiheadAttention(embed_dim=in_channels, num_heads=num_heads, dropout=dropout_rate, batch_first=True)
+        self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=in_channels)
+        self.dropout = nn.Dropout(dropout_rate)
+        self.y_projection = nn.Linear(y_embed_dim, in_channels)
 
-    def forward(self, x: torch.Tensor, y: Optional[torch.Tensor] = None, key_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, None]:
-        """Computes multihead attention using FlashAttention, supporting self- and cross-attention.
-
-        Processes input `x` for queries and optionally `y` for keys and values (cross-attention),
-        or uses `x` for all inputs (self-attention).
+    def forward(self, x: torch.Tensor, y: Optional[torch.Tensor] = None):
+        """Applies attention to input features with optional text conditioning.
 
         Parameters
         ----------
         x : torch.Tensor
-            Input embeddings for queries, shape (batch_size, seq_len, embed_dim).
+            Input tensor, shape (batch_size, in_channels, height, width).
         y : torch.Tensor, optional
-            Input embeddings for keys and values (cross-attention), shape (batch_size, seq_len_y, embed_dim).
-            If None, uses `x` for keys and values (self-attention) (default: None).
-        key_padding_mask : torch.Tensor, optional
-            Boolean mask, shape (batch_size, seq_len) if `y` is None, or (batch_size, seq_len_y) if `y` is provided,
-            where `True` indicates positions to mask out (default: None).
-
-        Returns
-        -------
-        Tuple[torch.Tensor, None]
-            - Processed embeddings, shape (batch_size, seq_len, embed_dim).
-            - None (for compatibility with `MultiheadAttention`’s attention weights output).
-
-        **Notes**
-
-        - Inputs must be on a CUDA device with FP16 or BF16 dtype for FlashAttention.
-        - For cross-attention, `y`’s sequence length (`seq_len_y`) may differ from `x`’s (`seq_len`).
-        - The `key_padding_mask` applies to the sequence length of `k` and `v` (from `y` or `x`).
-        - Falls back to efficient or standard attention if FlashAttention is unavailable.
-        """
-        batch_size, seq_len, embed_dim = x.shape
-        device = x.device
-
-        # Compute query from x
-        q = self.q_proj(x)  # [batch_size, seq_len, embed_dim]
-
-        # Compute key and value from x (self-attention) or y (cross-attention)
-        if y is None:
-            kv = self.kv_proj(x)  # [batch_size, seq_len, 2 * embed_dim]
-            k, v = kv.chunk(2, dim=-1)  # Each: [batch_size, seq_len, embed_dim]
-            key_seq_len = seq_len
-        else:
-            assert y.size(2) == embed_dim, f"y’s embed_dim ({y.size(2)}) must match x’s ({embed_dim})"
-            kv = self.kv_proj(y)  # [batch_size, seq_len_y, 2 * embed_dim]
-            k, v = kv.chunk(2, dim=-1)  # Each: [batch_size, seq_len_y, embed_dim]
-            key_seq_len = y.size(1)
-
-        # Reshape for multihead attention: [batch_size, seq_len, num_heads, head_dim]
-        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        k = k.view(batch_size, key_seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        v = v.view(batch_size, key_seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        # Now: q [batch_size, num_heads, seq_len, head_dim], k/v [batch_size, num_heads, seq_len_y, head_dim]
-
-        # Handle attention mask
-        attn_mask = None
-        if key_padding_mask is not None:
-            # key_padding_mask: [batch_size, seq_len] (if y is None) or [batch_size, seq_len_y]
-            assert key_padding_mask.size() == (batch_size, key_seq_len), (
-                f"key_padding_mask shape {key_padding_mask.size()} does not match expected ({batch_size}, {key_seq_len})"
-            )
-            # Create 4D mask for SDPA: [batch_size, 1, seq_len, seq_len_y]
-            attn_mask = key_padding_mask.unsqueeze(1).unsqueeze(1)  # [batch_size, 1, 1, seq_len_y]
-            attn_mask = attn_mask.expand(batch_size, 1, seq_len, key_seq_len)
-            # Convert to float mask with -inf for masked positions
-            attn_mask = attn_mask.masked_fill(attn_mask, float('-inf'))
-
-        # Apply FlashAttention with fallback
-        attn_output = self._apply_attention(q, k, v, attn_mask)
-
-        # Reshape output: [batch_size, num_heads, seq_len, head_dim] -> [batch_size, seq_len, embed_dim]
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)
-
-        # Apply output projection
-        attn_output = self.out_proj(attn_output)
-
-        return attn_output, None  # Return None for compatibility with MultiheadAttention
-
-    def _apply_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
-        """Applies attention with FlashAttention backend and fallback options.
-
-        Attempts to use FlashAttention, falling back to efficient or standard attention if
-        unavailable (e.g., due to unsupported hardware or input shapes).
-
-        Parameters
-        ----------
-        q : torch.Tensor
-            Query tensor, shape (batch_size, num_heads, seq_len, head_dim).
-        k : torch.Tensor
-            Key tensor, shape (batch_size, num_heads, seq_len_y, head_dim).
-        v : torch.Tensor
-            Value tensor, shape (batch_size, num_heads, seq_len_y, head_dim).
-        attn_mask : torch.Tensor, optional
-            Attention mask, shape (batch_size, 1, seq_len, seq_len_y), with `-inf` for masked
-            positions (default: None).
+            Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
+            (batch_size, y_embed_dim) (default: None).
 
         Returns
         -------
         torch.Tensor
-            Attention output, shape (batch_size, num_heads, seq_len, head_dim).
-
-        **Notes**
-
-        - Requires PyTorch 2.2+ and a compatible CUDA GPU for FlashAttention.
-        - Falls back to `EFFICIENT_ATTENTION` or `MATH` backends if FlashAttention fails.
-        - Raises a RuntimeError if all backends fail.
+            Output tensor, same shape as input `x`.
         """
-        backends_to_try = [
-            SDPBackend.FLASH_ATTENTION,
-            SDPBackend.EFFICIENT_ATTENTION,
-            SDPBackend.MATH
-        ]
-
-        for backend in backends_to_try:
-            try:
-                with sdpa_kernel(backend):
-                    return F.scaled_dot_product_attention(
-                        query=q,
-                        key=k,
-                        value=v,
-                        attn_mask=attn_mask,
-                        dropout_p=self.dropout_rate if self.training else 0.0,
-                        is_causal=False
+        batch_size, channels, h, w = x.shape
+        assert channels == self.in_channels, f"Expected {self.in_channels} channels, got {channels}"
+        x_reshaped = x.view(batch_size, channels, h * w).permute(0, 2, 1)
+        if y is not None:
+            y = self.y_projection(y)
+            if y.dim() != 3:
+                if y.dim() == 2:
+                    y = y.unsqueeze(1)
+                else:
+                    raise ValueError(
+                        f"Expected y to be 2D or 3D after projection, got {y.dim()}D with shape {y.shape}"
                     )
-            except RuntimeError as e:
-                if backend == SDPBackend.MATH:  # Last fallback
-                    raise e
-                continue
-
-        # Fallback if all backends fail
-        return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+            if y.shape[-1] != self.in_channels:
+                raise ValueError(
+                    f"Expected y's embedding dim to match in_channels ({self.in_channels}), got {y.shape[-1]}"
+                )
+            out, _ = self.attention(x_reshaped, y, y)
+        else:
+            out, _ = self.attention(x_reshaped, x_reshaped, x_reshaped)
+        out = out.permute(0, 2, 1).view(batch_size, channels, h, w)
+        out = self.norm(out)
+        out = self.dropout(out)
+        return out
 
 
 ###==================================================================================================================###
@@ -900,7 +835,8 @@ class DownBlock(nn.Module):
         self.attention = nn.ModuleList([
             Attention(
                 in_channels=out_channels,
-                y_embed_dim= y_embed_dim,
+                y_embed_dim=y_embed_dim,
+                num_groups=8,
                 num_heads=4,
                 dropout_rate=dropout_rate
             ) for _ in range(self.num_layers)
@@ -950,10 +886,10 @@ class DownBlock(nn.Module):
             output = output + self.resnet[i](resnet_input)
 
             if not self.y_to_all and i == 0:
-                out_attn = self.attention[i](output, y, key_padding_mask)
+                out_attn = self.attention[i](output, y)
                 output = output + out_attn
             elif self.y_to_all:
-                out_attn = self.attention[i](output, y, key_padding_mask)
+                out_attn = self.attention[i](output, y)
                 output = output + out_attn
 
         output = self.down_sampling(output)
@@ -981,11 +917,20 @@ class MiddleBlock(nn.Module):
         Number of convolutional layer pairs (Conv3).
     dropout_rate : float
         Dropout rate for Conv3 and attention layers.
-    y_to_all : bool, optional
+    y_to_all : bool
         If True, apply text-conditioned attention to all layers; if False, only first layer
         (default: False).
     """
-    def __init__(self, in_channels, out_channels, time_embed_dim,  y_embed_dim, num_layers, dropout_rate, y_to_all=False):
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            time_embed_dim: int,
+            y_embed_dim: int,
+            num_layers: int,
+            dropout_rate: float,
+            y_to_all: bool
+    ) -> None:
         super().__init__()
         self.num_layers = num_layers
         self.y_to_all = y_to_all
@@ -1034,7 +979,7 @@ class MiddleBlock(nn.Module):
             ) for i in range(num_layers+1)
         ])
 
-    def forward(self, x, embed_time, y=None):
+    def forward(self, x: torch.Tensor, embed_time: torch.Tensor, y: Optional[torch.Tensor] = None, key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Processes input through convolutions, time embeddings, and attention.
 
         Parameters
@@ -1046,6 +991,9 @@ class MiddleBlock(nn.Module):
         y : torch.Tensor, optional
             Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
             (batch_size, y_embed_dim) (default: None).
+        key_padding_mask : torch.Tensor, optional
+            Boolean mask, shape (batch_size, seq_len) if `y` is None, or (batch_size, seq_len_y) if `y` is provided,
+            where `True` indicates positions to mask out (default: None).
 
         Returns
         -------
@@ -1057,18 +1005,13 @@ class MiddleBlock(nn.Module):
         output = output + self.time_embedding[0](embed_time)[:, :, None, None]
         output = self.conv2[0](output)
         output = output + self.resnet[0](resnet_input)
+
         for i in range(self.num_layers):
-            if y is not None and not self.y_to_all and i == 0:
+            if not self.y_to_all and i == 0:
                 out_attn = self.attention[i](output, y)
                 output = output + out_attn
-            elif y is not None and self.y_to_all:
+            elif self.y_to_all:
                 out_attn = self.attention[i](output, y)
-                output = output + out_attn
-            elif y is None and self.y_to_all:
-                out_attn = self.attention[i](output)
-                output = output + out_attn
-            elif y is None and not self.y_to_all and i == 0:
-                out_attn = self.attention[i](output)
                 output = output + out_attn
             resnet_input = output
             output = self.conv1[i + 1](output)
@@ -1106,15 +1049,27 @@ class UpBlock(nn.Module):
         If True, apply upsampling; if False, use identity (no upsampling).
     dropout_rate : float
         Dropout rate for Conv3 and attention layers.
-    y_to_all : bool, optional
+    y_to_all : bool
         If True, apply text-conditioned attention to all layers; if False, only first layer
         (default: False).
     """
-    def __init__(self, in_channels, out_channels, skip_channels, time_embed_dim,  y_embed_dim, num_layers, up_sampling_factor, up_sampling=True, dropout_rate=0.2, y_to_all=False):
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            skip_channels: int,
+            time_embed_dim: int,
+            y_embed_dim: int,
+            num_layers: int,
+            up_sampling_factor: int,
+            up_sampling: bool,
+            dropout_rate: float,
+            y_to_all: bool
+    ) -> None:
         super().__init__()
         self.num_layers = num_layers
         self.y_to_all = y_to_all
-        effective_in_channels = in_channels//2 + skip_channels
+        effective_in_channels = in_channels // 2 + skip_channels
         self.conv1 = nn.ModuleList([
             Conv3(
                 in_channels=effective_in_channels  if i == 0 else out_channels,
@@ -1152,7 +1107,7 @@ class UpBlock(nn.Module):
                 dropout_rate=dropout_rate
             ) for _ in range(self.num_layers)
         ])
-        self.up_sampling = UpSampling(
+        self.up_sampling_ = UpSampling(
             in_channels=in_channels,
             out_channels=in_channels,
             up_sampling_factor=up_sampling_factor,
@@ -1168,7 +1123,7 @@ class UpBlock(nn.Module):
 
         ])
 
-    def forward(self, x, skip_connection, embed_time, y=None):
+    def forward(self, x: torch.Tensor, skip_connection: torch.Tensor, embed_time: torch.Tensor, y: Optional[torch.Tensor] = None, key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Processes input through upsampling, skip connection, convolutions, time embeddings, and attention.
 
         Parameters
@@ -1183,12 +1138,15 @@ class UpBlock(nn.Module):
         y : torch.Tensor, optional
             Text embeddings, shape (batch_size, seq_len, y_embed_dim) or
             (batch_size, y_embed_dim) (default: None).
+        key_padding_mask : torch.Tensor, optional
+            Boolean mask, shape (batch_size, seq_len) if `y` is None, or (batch_size, seq_len_y) if `y` is provided,
+            where `True` indicates positions to mask out (default: None).
 
         Returns
         -------
         output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height*up_sampling_factor, width*up_sampling_factor) if upsampling; otherwise, same height/width as input (after skip connection).
         """
-        x = self.up_sampling(x)
+        x = self.up_sampling_(x)
         x = torch.cat(tensors=[x, skip_connection], dim=1)
         output = x
         for i in range(self.num_layers):
@@ -1197,18 +1155,14 @@ class UpBlock(nn.Module):
             output = output + self.time_embedding[i](embed_time)[:, :, None, None]
             output = self.conv2[i](output)
             output = output + self.resnet[i](resnet_input)
-            if y is not None and not self.y_to_all and i == 0:
+
+            if not self.y_to_all and i == 0:
                 out_attn = self.attention[i](output, y)
                 output = output + out_attn
-            elif y is not None and self.y_to_all:
+            elif self.y_to_all:
                 out_attn = self.attention[i](output, y)
                 output = output + out_attn
-            elif y is None and self.y_to_all:
-                out_attn = self.attention[i](output)
-                output = output + out_attn
-            elif y is None and not self.y_to_all and i == 0:
-                out_attn = self.attention[i](output)
-                output = output + out_attn
+
         return output
 
 ###==================================================================================================================###
@@ -1235,14 +1189,23 @@ class Conv3(nn.Module):
     dropout_rate : float, optional
         Dropout rate (default: 0.2).
     """
-    def __init__(self, in_channels, out_channels, num_groups=8, kernel_size=3, norm=True, activation=True, dropout_rate=0.2):
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            num_groups: int = 8,
+            kernel_size: int = 3,
+            norm: bool = True,
+            activation: bool = True,
+            dropout_rate: float = 0.2
+    ) -> None:
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, padding=(kernel_size - 1) // 2)
         self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels) if norm else nn.Identity()
         self.activation = nn.SiLU() if activation else nn.Identity()
         self.dropout = nn.Dropout(p=dropout_rate)
 
-    def forward(self, batch):
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
         """Processes input through convolution, normalization, activation, and dropout.
 
         Parameters
@@ -1274,13 +1237,13 @@ class TimeEmbedding(nn.Module):
     embed_dim : int
         Input time embedding dimension.
     """
-    def __init__(self, output_dim, embed_dim):
+    def __init__(self, output_dim: int, embed_dim: int) -> None:
         super().__init__()
         self.embedding = nn.Sequential(
             nn.SiLU(),
             nn.Linear(in_features=embed_dim, out_features=output_dim)
         )
-    def forward(self, batch):
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
         """Projects time embeddings to output dimension.
 
         Parameters
@@ -1308,12 +1271,12 @@ class GetEmbeddedTime(nn.Module):
     embed_dim : int
         Dimensionality of the time embeddings (must be even).
     """
-    def __init__(self, embed_dim):
+    def __init__(self, embed_dim: int) -> None:
         super().__init__()
         assert embed_dim % 2 == 0, "The embedding dimension must be divisible by two"
         self.embed_dim = embed_dim
 
-    def forward(self, time_steps):
+    def forward(self, time_steps: torch.Tensor) -> torch.Tensor:
         """Generates sinusoidal embeddings for time steps.
 
         Parameters
@@ -1334,129 +1297,6 @@ class GetEmbeddedTime(nn.Module):
 ###==================================================================================================================###
 
 
-class Attention(nn.Module):
-    """Attention module for NoisePredictor, supporting text conditioning or self-attention.
-
-    Applies multi-head attention using FlashAttention to enhance features, with optional
-    text embeddings for conditional generation in diffusion models.
-
-    Parameters
-    ----------
-    in_channels : int
-        Number of input channels (embedding dimension for attention).
-    y_embed_dim : int, optional
-        Dimensionality of text embeddings (default: 768).
-    num_heads : int, optional
-        Number of attention heads (default: 4).
-    dropout_rate : float, optional
-        Dropout rate for attention scores (default: 0.1).
-    layer_norm_eps : float, optional
-        Epsilon for layer normalization (default: 1e-5).
-
-    **Notes**
-
-    - Uses `FlashAttentionModule` for efficient attention (2–4x speedups, 10–20x memory
-      savings on supported GPUs).
-    - Supports cross-attention with text embeddings (`y`) and self-attention (`y=None`).
-    - Applies layer normalization instead of group normalization for efficiency.
-    - Optimized with `torch.compile` for kernel fusion on modern GPUs.
-    - Supports `key_padding_mask` for padded text sequences.
-    """
-    def __init__(
-        self,
-        in_channels: int,
-        y_embed_dim: int = 768,
-        num_heads: int = 4,
-        dropout_rate: float = 0.1,
-        layer_norm_eps: float = 1e-5
-    ) -> None:
-        super().__init__()
-        self.in_channels = in_channels
-        self.y_embed_dim = y_embed_dim
-        self.num_heads = num_heads
-        self.dropout_rate = dropout_rate
-
-        # Attention module
-        self.attention = FlashAttention(
-            embed_dim=in_channels,
-            num_heads=num_heads,
-            dropout_rate=dropout_rate
-        )
-        self.norm = nn.LayerNorm(in_channels, eps=layer_norm_eps)
-
-        # Projection for text embeddings (only if y_embed_dim != in_channels)
-        self.y_projection = None if y_embed_dim == in_channels else nn.Linear(y_embed_dim, in_channels)
-
-        # Compile forward for efficiency
-        #self.forward = torch.compile(self.forward)
-
-    def forward(self, x: torch.Tensor, y: Optional[torch.Tensor] = None, key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Applies attention to input features with optional text conditioning.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor, shape (batch_size, in_channels, height, width).
-        y : torch.Tensor, optional
-            Text embeddings, shape (batch_size, seq_len_y, y_embed_dim) or
-            (batch_size, y_embed_dim) (default: None).
-        key_padding_mask : torch.Tensor, optional
-            Boolean mask for keys/values, shape (batch_size, seq_len_y) if `y` is
-            provided, or (batch_size, height * width) if `y` is None, where `True`
-            indicates positions to mask out (default: None).
-
-        Returns
-        -------
-        torch.Tensor
-            Output tensor, shape (batch_size, in_channels, height, width).
-
-        **Notes**
-
-        - Reshapes input `x` to (batch_size, height * width, in_channels) for attention.
-        - Projects `y` to `in_channels` if `y_embed_dim != in_channels`.
-        - Applies layer normalization and attention dropout for regularization.
-        """
-        batch_size, channels, h, w = x.shape
-        assert channels == self.in_channels, f"Expected {self.in_channels} channels, got {channels}"
-
-        # Reshape x to [batch_size, seq_len, in_channels] where seq_len = height * width
-        seq_len = h * w
-        x_reshaped = x.view(batch_size, channels, seq_len).permute(0, 2, 1)  # [batch_size, seq_len, in_channels]
-
-        # Handle text embeddings for cross-attention
-        if y is not None:
-            if y.dim() not in (2, 3):
-                raise ValueError(f"Expected y to be 2D or 3D, got {y.dim()}D with shape {y.shape}")
-            if y.dim() == 2:
-                y = y.unsqueeze(1)  # [batch_size, 1, y_embed_dim]
-            seq_len_y = y.size(1)
-            if key_padding_mask is not None:
-                assert key_padding_mask.size() == (batch_size, seq_len_y), (
-                    f"key_padding_mask shape {key_padding_mask.size()} does not match expected ({batch_size}, {seq_len_y})"
-                )
-            # Project y to in_channels if necessary
-            y = y if self.y_projection is None else self.y_projection(y)
-            if y.shape[-1] != self.in_channels:
-                raise ValueError(
-                    f"Expected y's embedding dim to match in_channels ({self.in_channels}), got {y.shape[-1]}"
-                )
-        else:
-            if key_padding_mask is not None:
-                assert key_padding_mask.size() == (batch_size, seq_len), (
-                    f"key_padding_mask shape {key_padding_mask.size()} does not match expected ({batch_size}, {seq_len})"
-                )
-
-        # Apply attention (self-attention if y is None, cross-attention otherwise)
-        out, _ = self.attention(x_reshaped, y, key_padding_mask)
-
-        # Reshape back to [batch_size, in_channels, height, width]
-        out = out.permute(0, 2, 1).view(batch_size, channels, h, w)
-        out = self.norm(out)
-
-        return out
-
-###==================================================================================================================###
-
 class DownSampling(nn.Module):
     """Downsampling module for NoisePredictor’s DownBlock.
 
@@ -1476,7 +1316,14 @@ class DownSampling(nn.Module):
     max_pool : bool, optional
         If True, include max pooling path (default: True).
     """
-    def __init__(self, in_channels, out_channels, down_sampling_factor, conv_block=True, max_pool=True):
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            down_sampling_factor: int,
+            conv_block: bool = True,
+            max_pool: bool = True
+    ) -> None:
         super().__init__()
         self.conv_block = conv_block
         self.max_pool = max_pool
@@ -1492,7 +1339,7 @@ class DownSampling(nn.Module):
                       kernel_size=1, stride=1, padding=0)
         ) if max_pool else nn.Identity()
 
-    def forward(self, batch):
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
         """Downsamples input using convolutional and/or pooling paths.
 
         Parameters
@@ -1532,7 +1379,14 @@ class UpSampling(nn.Module):
     up_sampling : bool, optional
         If True, include nearest-neighbor upsampling path (default: True).
     """
-    def __init__(self, in_channels, out_channels, up_sampling_factor, conv_block=True, up_sampling=True):
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            up_sampling_factor: int,
+            conv_block: bool = True,
+            up_sampling: bool = True
+    ) -> None:
         super().__init__()
         self.conv_block = conv_block
         self.up_sampling = up_sampling
@@ -1562,7 +1416,7 @@ class UpSampling(nn.Module):
                       kernel_size=1, stride=1, padding=0)
         ) if up_sampling else nn.Identity()
 
-    def forward(self, batch):
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
         """Upsamples input using convolutional and/or upsampling paths.
 
         Parameters
@@ -1615,7 +1469,13 @@ class Metrics:
         If True, compute LPIPS using VGG backbone (default: False).
     """
 
-    def __init__(self, device="cuda", fid=True, metrics=False, lpips_=False):
+    def __init__(
+            self,
+            device: str = "cuda",
+            fid: bool = True,
+            metrics: bool = False,
+            lpips_: bool = False
+    ) -> None:
         self.device = device
         self.fid = fid
         self.metrics = metrics
@@ -1627,7 +1487,7 @@ class Metrics:
         self.temp_dir_real = "temp_real"
         self.temp_dir_fake = "temp_fake"
 
-    def compute_fid(self, real_images, fake_images):
+    def compute_fid(self, real_images: torch.Tensor, fake_images: torch.Tensor) -> float:
         """Computes the Fréchet Inception Distance (FID) between real and generated images.
 
         Saves images to temporary directories and uses Inception V3 to compute FID,
@@ -1680,7 +1540,7 @@ class Metrics:
 
         return fid
 
-    def compute_metrics(self, x, x_hat):
+    def compute_metrics(self, x: torch.Tensor, x_hat: torch.Tensor) -> Tuple[float, float, float]:
         """Computes MSE, PSNR, and SSIM for evaluating image quality.
 
         Parameters
@@ -1718,7 +1578,7 @@ class Metrics:
 
         return mse.item(), psnr.item(), ssim.mean().item()
 
-    def compute_lpips(self, x, x_hat):
+    def compute_lpips(self, x: torch.Tensor, x_hat: torch.Tensor) -> float:
         """Computes LPIPS using a pre-trained VGG network.
 
         Parameters
@@ -1754,7 +1614,7 @@ class Metrics:
 
         return self.lpips_model(x, x_hat).mean().item()
 
-    def forward(self, x, x_hat):
+    def forward(self, x: torch.Tensor, x_hat: torch.Tensor) -> Tuple[float, float, float, float, float]:
         """Computes specified metrics for ground truth and generated images.
 
         Parameters
@@ -1789,3 +1649,133 @@ class Metrics:
             lpips_score = self.compute_lpips(x, x_hat)
 
         return fid, mse, psnr, ssim, lpips_score
+
+
+import time
+
+
+"""
+# Ensure GPU usage
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+x = torch.randn(5, 3, 50, 50).to(device)
+t = torch.rand(5).to(device)
+
+np_ = NoisePredictor(
+    in_channels=3,
+    down_channels=[16, 32],
+    mid_channels=[32, 32],
+    up_channels=[32, 16],
+    down_sampling=[True, True],
+    time_embed_dim=20,
+    y_embed_dim=20,
+    num_down_blocks=2,
+    num_mid_blocks=2,
+    num_up_blocks=2,
+    down_sampling_factor=2
+).to(device)
+
+# Uncompiled
+times = []
+for i in range(50):
+    st = time.time()
+    np_(x, t)
+    torch.cuda.synchronize()  # Ensure GPU operations complete
+    ft = time.time()
+    times.append(ft - st)
+    print(f"Uncompiled iter: {i+1} finished in {ft - st:.4f} s")
+print(f"Uncompiled average: {sum(times)/len(times):.4f} s")
+
+# Compiled with warm-up
+cm = torch.compile(np_, mode="reduce-overhead")
+for _ in range(5):  # Warm-up
+    cm(x, t)
+torch.cuda.synchronize()
+
+times = []
+for i in range(50):
+    st = time.time()
+    cm(x, t)
+    torch.cuda.synchronize()
+    ft = time.time()
+    times.append(ft - st)
+    print(f"Compiled iter: {i+1} finished in {ft - st:.4f} s")
+print(f"Compiled average: {sum(times)/len(times):.4f} s")
+
+
+import transformers
+import time
+
+# Set up device and inputs
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+x = torch.randn(5, 3, 50, 50).to(device)  # Image input (not used in TextEncoder)
+t = torch.rand(5).to(device)  # Time embedding (not used)
+y = ["do", "not to do", "correctly", "wrong", "it is true"]  # Text inputs
+
+# Initialize tokenizer and TextEncoder
+tokenizer = transformers.BertTokenizer.from_pretrained("bert-base-uncased")
+te = TextEncoder(
+    use_pretrained_model=True,
+    model_name="bert-base-uncased",
+    num_layers=2,
+    vocabulary_size=30522,
+    input_dimension=768,
+    output_dimension=768,
+    dropout_rate=0.2,
+    num_heads=6,
+    context_length=77
+).to(device)  # Use FP16 for better performance
+
+# Tokenize inputs
+y_list = y  # Already a list of strings
+y_encoded = tokenizer(
+    y_list,
+    padding="max_length",
+    truncation=True,
+    max_length=77,
+    return_tensors="pt"
+).to(device)  # Convert to FP16
+input_ids = y_encoded["input_ids"]  # Shape: [5, 77]
+attention_mask = y_encoded["attention_mask"]  # Shape: [5, 77]
+
+# Uncompiled TextEncoder
+times = []
+for i in range(50):
+    st = time.time()
+    with torch.no_grad():  # Disable gradients
+        y_encoded = te(input_ids, attention_mask)
+    torch.cuda.synchronize()
+    ft = time.time()
+    times.append(ft - st)
+    print(f"Uncompiled iter: {i+1} finished in {ft - st:.4f} s")
+print(f"Uncompiled average: {sum(times)/len(times):.4f} s")
+
+# Compiled TextEncoder with warm-up
+cm = torch.compile(te, mode="reduce-overhead")
+for _ in range(5):  # Warm-up runs
+    with torch.no_grad():
+        cm(input_ids, attention_mask)
+torch.cuda.synchronize()
+
+times = []
+for i in range(50):
+    st = time.time()
+    with torch.no_grad():  # Disable gradients
+        y_encoded = cm(input_ids, attention_mask)
+    torch.cuda.synchronize()
+    ft = time.time()
+    times.append(ft - st)
+    print(f"Compiled iter: {i+1} finished in {ft - st:.4f} s")
+print(f"Compiled average: {sum(times)/len(times):.4f} s")
+
+# Verify output shape
+print(f"Output shape: {y_encoded.shape}")
+"""
+
+
+
+
+
+
+
+
+
