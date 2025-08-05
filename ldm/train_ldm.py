@@ -103,7 +103,7 @@ class TrainLDM(nn.Module):
     def __init__(self, forward_model, hyper_params_model, noise_predictor, compressor_model, optimizer, objective, data_loader,
                  conditional_model=None, val_loader=None, max_epoch=1000, device=None, store_path=None,
                  patience=10, warmup_epochs=100, tokenizer=None, max_length=77, val_frequency=10):
-        super( ).__init__()
+        super().__init__()
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.forward_diffusion = forward_model.to(device)
         self.hyper_params_model = hyper_params_model.to(device)

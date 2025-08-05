@@ -324,6 +324,17 @@ class TrainLDM(nn.Module):
                     "skipping conditional model loading"
                 )
 
+        # Load hyper_params state
+        if 'hyper_params_model' not in checkpoint:
+            raise KeyError("Checkpoint missing 'hyper_params_model' key")
+        try:
+            if isinstance(self.hyper_params, nn.Module):
+                self.hyper_params.load_state_dict(checkpoint['hyper_params_model'])
+            else:
+                self.hyper_params = checkpoint['hyper_params_model']
+        except Exception as e:
+            warnings.warn(f"Hyper_params loading failed: {e}. Continuing with current hyper_params.")
+
         # Load optimizer state
         if 'optimizer_state_dict' not in checkpoint:
             raise KeyError("Checkpoint missing 'optimizer_state_dict' key")
@@ -337,7 +348,9 @@ class TrainLDM(nn.Module):
 
         if self.master_process:
             print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
+
         return epoch, loss
+
 
     @staticmethod
     def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:

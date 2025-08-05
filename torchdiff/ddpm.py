@@ -38,6 +38,7 @@ from tqdm import tqdm
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
+import os
 
 
 ###==================================================================================================================###
@@ -540,6 +541,17 @@ class TrainDDPM(nn.Module):
                     "Checkpoint contains no 'model_state_dict_conditional' or it is None, "
                     "skipping conditional model loading"
                 )
+
+        # Load hyper_params state
+        if 'hyper_params_model' not in checkpoint:
+            raise KeyError("Checkpoint missing 'hyper_params_model' key")
+        try:
+            if isinstance(self.hyper_params, nn.Module):
+                self.hyper_params.load_state_dict(checkpoint['hyper_params_model'])
+            else:
+                self.hyper_params = checkpoint['hyper_params_model']
+        except Exception as e:
+            warnings.warn(f"Hyper_params loading failed: {e}. Continuing with current hyper_params.")
 
         # Load optimizer state
         if 'optimizer_state_dict' not in checkpoint:
