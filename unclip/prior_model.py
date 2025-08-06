@@ -4,109 +4,132 @@ import math
 from typing import Union
 
 
-class UnclipPrior(nn.Module):
+class UnCLIPTransformerPrior(nn.Module):
     """UnCLIP prior model using Transformer"""
     def __init__(
-            self,
-            embedding_dim: int = 319,
-            num_layers: int = 12,
-            num_heads: int = 8,
-            feed_forward_dim: int = 768,
-            max_seq_len: int = 2,
-            dropout_rate: float = 0.2
+        self,
+        embedding_dim: int = 319,
+        num_layers: int = 12,
+        num_attention_heads: int = 8,
+        feedforward_dim: int = 768,
+        max_sequence_length: int = 2,
+        dropout_rate: float = 0.1
     ) -> None:
         super().__init__()
 
         self.embedding_dim = embedding_dim
+        self.max_sequence_length = max_sequence_length
 
-        # Time embedding
-        self.time_embedding = nn.Sequential(
+        # Time embedding network
+        self.time_embedding_net = nn.Sequential(
             nn.Linear(embedding_dim, embedding_dim),
             nn.GELU(),
             nn.Linear(embedding_dim, embedding_dim)
         )
-        # Positional embedding
-        self.positional_embedding = nn.Parameter(torch.randn(max_seq_len, embedding_dim))
+
+        # Positional embeddings
+        self.positional_embeddings = nn.Parameter(torch.randn(max_sequence_length, embedding_dim))
 
         # Transformer layers
-        self.transformer_layers = nn.ModuleList([
-            TransformerBlock(embedding_dim, num_heads, feed_forward_dim, dropout_rate)
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(embedding_dim, num_attention_heads, feedforward_dim, dropout_rate)
             for _ in range(num_layers)
         ])
 
-        # Output projection
+        # Final output projection
         self.output_projection = nn.Linear(embedding_dim, embedding_dim)
-
 
     def forward(
             self,
-            text_embed: torch.Tensor,
-            noisy_image_embed: torch.Tensor,
-            timestep: torch.Tensor
+            text_embeddings: torch.Tensor,
+            noisy_image_embeddings: torch.Tensor,
+            timesteps: torch.Tensor
     ) -> torch.Tensor:
 
-        batch_size = text_embed.shape[0]
-        device = text_embed.device
+        batch_size = text_embeddings.shape[0]
+        device = text_embeddings.device
 
-        # Time embedding
-        time_embed = self.get_time_embedding(timestep, self.embedding_dim, device)
-        time_embed = self.time_embed(time_embed)
+        # Create sinusoidal time embeddings
+        time_embeddings = self._get_sinusoidal_embeddings(timesteps, self.embedding_dim, device)
+        time_embeddings = self.time_embedding_net(time_embeddings)
 
-        # Add time embedding to image embedding
-        image_proj = noisy_image_embed + time_embed
+        # Add time information to image embeddings
+        conditioned_image_embeddings = noisy_image_embeddings + time_embeddings
 
-        # Create sequence: [text, noisy_image]
-        sequence = torch.stack([text_embed, image_proj], dim=1)  # (B, 2, reduced_dim)
+        # Create sequence: [text_embeddings, conditioned_image_embeddings]
+        sequence = torch.stack([text_embeddings, conditioned_image_embeddings], dim=1)  # [B, 2, D]
 
         # Add positional embeddings
-        sequence = sequence + self.positional_embedding.unsqueeze(0)
+        sequence = sequence + self.positional_embeddings.unsqueeze(0)
 
-        # Pass through transformer layers
-        for layer in self.transformer_layers:
-            sequence = layer(sequence)
+        # Pass through transformer blocks
+        for transformer_block in self.transformer_blocks:
+            sequence = transformer_block(sequence)
 
-        # Extract image prediction (second token)
-        predicted_clean_image = sequence[:, 1, :]  # (B, reduced_dim)
+        # Extract predicted clean image embedding (second position in sequence)
+        predicted_clean_embeddings = sequence[:, 1, :]  # [B, D]
 
-        # Final output projection
-        predicted_clean_image = self.output_projection(predicted_clean_image)
+        # Apply final projection
+        predicted_clean_embeddings = self.output_projection(predicted_clean_embeddings)
 
-        return predicted_clean_image
+        return predicted_clean_embeddings
 
-    def get_time_embedding(self, timesteps: torch.Tensor, embedding_dim: torch.Tensor, device: Union[torch.device, str]) -> torch.Tensor:
-        """Sinusoidal time embeddings"""
+    def _get_sinusoidal_embeddings(
+            self,
+            timesteps: torch.Tensor,
+            embedding_dim: int,
+            device: Union[torch.device, str]
+    ) -> torch.Tensor:
+        """Generate sinusoidal positional embeddings for timesteps."""
         half_dim = embedding_dim // 2
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
         emb = timesteps[:, None].float() * emb[None, :]
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
+
+        # Handle odd embedding dimensions
+        if embedding_dim % 2 == 1:
+            emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=1)
+
         return emb
 
 
-
 class TransformerBlock(nn.Module):
-    """Transformer block for UnCLIP prior"""
+    """Single transformer block with multi-head attention and feedforward layers."""
 
-    def __init__(self, embedding_dim: int, num_heads: int, feed_forward_dim: int, dropout: float) -> None:
+    def __init__(
+            self,
+            embedding_dim: int,
+            num_heads: int,
+            feedforward_dim: int,
+            dropout: float
+    ) -> None:
         super().__init__()
-        self.attention = nn.MultiheadAttention(embedding_dim, num_heads, dropout=dropout, batch_first=True)
-        self.norm1 = nn.LayerNorm(embedding_dim)
-        self.norm2 = nn.LayerNorm(embedding_dim)
 
-        self.feed_forward = nn.Sequential(
-            nn.Linear(embedding_dim, feed_forward_dim),
+        self.self_attention = nn.MultiheadAttention(
+            embedding_dim,
+            num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.attention_norm = nn.LayerNorm(embedding_dim)
+        self.feedforward_norm = nn.LayerNorm(embedding_dim)
+
+        self.feedforward = nn.Sequential(
+            nn.Linear(embedding_dim, feedforward_dim),
             nn.GELU(),
-            nn.Linear(feed_forward_dim, embedding_dim),
+            nn.Dropout(dropout),
+            nn.Linear(feedforward_dim, embedding_dim),
             nn.Dropout(dropout)
         )
 
-    def forward(self, sequence: torch.Tensor) -> torch.Tensor:
-        # Self-attention
-        attention_out, _ = self.attention(sequence, sequence, sequence)
-        sequence = self.norm1(sequence + attention_out)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Self-attention with residual connection
+        attn_output, _ = self.self_attention(x, x, x)
+        x = self.attention_norm(x + attn_output)
 
-        # Feed-forward
-        feed_forward_out = self.feed_forward(sequence)
-        sequence = self.norm2(sequence + feed_forward_out)
+        # Feedforward with residual connection
+        ff_output = self.feedforward(x)
+        x = self.feedforward_norm(x + ff_output)
 
-        return sequence
+        return x

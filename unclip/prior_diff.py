@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple
+import math
 
 
 class ForwardDIF(nn.Module):
+
     def __init__(self, hyper_params: torch.nn.Module) -> None:
         super().__init__()
         self.hyper_params = hyper_params
@@ -77,6 +79,15 @@ class HyperParamsDIF(nn.Module):
             beta = beta_min + (beta_max - beta_min) * (beta - beta.min()) / (beta.max() - beta.min())
         elif method == "linear":
             beta = torch.linspace(beta_min, beta_max, num_steps)
+        elif method == "cosine":
+            # Cosine schedule from "Improved Denoising Diffusion Probabilistic Models"
+            s = 0.008  # small offset
+            steps = num_steps + 1
+            x = torch.linspace(0, num_steps, steps)
+            alphas_cumprod = torch.cos(((x / num_steps) + s) / (1 + s) * math.pi * 0.5) ** 2
+            alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+            betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+            return torch.clamp(betas, min=beta_range[0], max=beta_range[1])
         else:
             raise ValueError(f"Unknown beta_method: {method}. Supported: linear, sigmoid, quadratic, constant, inverse_time")
 
@@ -86,20 +97,24 @@ class HyperParamsDIF(nn.Module):
     def compute_schedule(
             self,
             time_steps: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, ...]:
 
         if self.trainable_beta:
             # Compute betas from trainable log_betas using sigmoid
             betas = torch.sigmoid(self.betas) * (self.beta_end - self.beta_start) + self.beta_start
+            alphas = 1.0 - betas
+            alpha_bars = torch.cumprod(alphas, dim=0)
         else:
             betas = self.betas
-
-        alphas = 1 - betas
-        alpha_bars = torch.cumprod(alphas, dim=0)
+            alphas = self.alphas
+            alpha_bars = self.alpha_bars
 
         if time_steps is not None:
             betas = betas[time_steps]
             alphas = alphas[time_steps]
             alpha_bars = alpha_bars[time_steps]
 
-        return betas, alphas, alpha_bars, torch.sqrt(alpha_bars), torch.sqrt(1 - alpha_bars)
+        sqrt_alpha_bars = torch.sqrt(alpha_bars)
+        sqrt_one_minus_alpha_bars = torch.sqrt(1.0 - alpha_bars)
+
+        return betas, alphas, alpha_bars, sqrt_alpha_bars, sqrt_one_minus_alpha_bars

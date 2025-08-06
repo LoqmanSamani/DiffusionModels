@@ -7,7 +7,7 @@ from transformers import CLIPProcessor, CLIPModel
 import numpy as np
 
 
-class CLIP(nn.Module):
+class CLIPEncoder(nn.Module):
     """A PyTorch module for encoding images or text using a CLIP model.
 
     Attributes:
