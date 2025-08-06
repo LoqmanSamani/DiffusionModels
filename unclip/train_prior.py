@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional, List, Tuple, Union, Callable, Any
 from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 # multi-GPU processor module
@@ -20,11 +21,11 @@ class TrainPrior(nn.Module):
             clip_model: nn.Module,
             hyper_params: nn.Module,
             forward_diffusion: nn.Module,
-            reverse_diffusion: nn.Module,
-            pca_model: nn.Module,
             train_loader: torch.utils.data.DataLoader,
             optimizer: torch.optim.Optimizer,
             objective: Callable,
+            text_projection: Optional[nn.Module] = None,  # used instead of PCA in the main paper
+            image_projection: Optional[nn.Module] = None,  # used instead of PCA in the main paper
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epoch: int = 1000,
             device: Optional[Union[str, torch.device]] = None,
@@ -36,7 +37,11 @@ class TrainPrior(nn.Module):
             ddp: bool = False,
             num_grad_accumulation: int = 1,
             progress_frequency: int = 1,
-            compilation: bool = False
+            compilation: bool = False,
+            output_range: Tuple[float, float] = (-1.0, 1.0),
+            reduce_dim: bool = True,
+            output_dim: int = 319,
+            normalize: bool = True
     ) -> None:
         super().__init__()
 
@@ -54,10 +59,12 @@ class TrainPrior(nn.Module):
         # Move models to appropriate device
         self.prior_model = prior_model.to(self.device)
         self.clip_model = clip_model.to(self.device)
+        if text_projection is not None and image_projection is not None:
+            self.text_projection = text_projection.to(self.device)
+            self.image_projection = image_projection.to(self.device)
+
         self.hyper_params = hyper_params.to(self.device)
-        self.pca_model = pca_model.to(self.device)
         self.forward_diffusion = forward_diffusion.to(self.device)
-        self.reverse_diffusion = reverse_diffusion.to(self.device)
 
         # Training components
         self.metrics_ = metrics_
@@ -71,6 +78,10 @@ class TrainPrior(nn.Module):
         self.val_frequency = val_frequency
         self.progress_frequency = progress_frequency
         self.compilation = compilation
+        self.output_range = output_range
+        self.reduce_dim = reduce_dim
+        self.output_dim = output_dim
+        self.normalize = normalize
 
         # Learning rate scheduling
         self.scheduler = ReduceLROnPlateau(
@@ -81,11 +92,6 @@ class TrainPrior(nn.Module):
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
 
     def _setup_ddp(self) -> None:
-        """Setup Distributed Data Parallel training configuration.
-
-        Initializes process group, determines rank information, and sets up
-        CUDA device for the current process.
-        """
         # Check if DDP environment variables are set
         if "RANK" not in os.environ:
             raise ValueError("DDP enabled but RANK environment variable not set")
@@ -126,23 +132,6 @@ class TrainPrior(nn.Module):
         self.master_process = True
 
     def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, float]:
-        """Loads a training checkpoint to resume training.
-
-        Restores the state of the noise predictor, conditional model (if applicable),
-        optimizer, and hyper_params from a saved checkpoint. Handles DDP model state dict loading.
-
-        Parameters
-        ----------
-        checkpoint_path : str
-            Path to the checkpoint file.
-
-        Returns
-        -------
-        epoch : int
-            The epoch at which the checkpoint was saved.
-        loss : float
-             The loss at the checkpoint.
-        """
         try:
             # Load checkpoint with proper device mapping
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -175,6 +164,28 @@ class TrainPrior(nn.Module):
         except Exception as e:
             warnings.warn(f"Hyper_params loading failed: {e}. Continuing with current hyper_params.")
 
+        # Load projection models state
+        if self.reduce_dim:
+            if 'text_projection_model' not in checkpoint:
+                raise KeyError("Checkpoint missing 'text_projection_model' key")
+            try:
+                if isinstance(self.text_projection, nn.Module):
+                    self.text_projection.load_state_dict(checkpoint['text_projection_model'])
+                else:
+                    self.text_projection = checkpoint['text_projection_model']
+            except Exception as e:
+                warnings.warn(f"text_projection_model loading failed: {e}. Continuing with current text_projection_model.")
+
+            if 'image_projection_model' not in checkpoint:
+                raise KeyError("Checkpoint missing 'image_projection_model' key")
+            try:
+                if isinstance(self.image_projection, nn.Module):
+                    self.image_projection.load_state_dict(checkpoint['image_projection_model'])
+                else:
+                    self.image_projection = checkpoint['image_projection_model']
+            except Exception as e:
+                warnings.warn(f"image_projection_model loading failed: {e}. Continuing with current image_projection_model.")
+
         # Load optimizer state
         if 'optimizer_state_dict' not in checkpoint:
             raise KeyError("Checkpoint missing 'optimizer_state_dict' key")
@@ -194,24 +205,6 @@ class TrainPrior(nn.Module):
 
     @staticmethod
     def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
-        """Creates a learning rate scheduler for warmup.
-
-        Generates a scheduler that linearly increases the learning rate from 0 to the
-        optimizer's initial value over the specified warmup epochs, then maintains it.
-
-        Parameters
-        ----------
-        optimizer : torch.optim.Optimizer
-            Optimizer to apply the scheduler to.
-        warmup_epochs : int
-            Number of epochs for the warmup phase.
-
-        Returns
-        -------
-        torch.optim.lr_scheduler.LambdaLR
-            Learning rate scheduler for warmup.
-        """
-
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
                 return epoch / warmup_epochs
@@ -233,11 +226,17 @@ class TrainPrior(nn.Module):
 
         # Set models to training mode
         self.prior_model.train()
+        if self.reduce_dim:
+            self.text_projection.train()
+            self.image_projection.train()
 
         # Compile models for optimization (if supported)
         if self.compilation:
             try:
                 self.prior_model = torch.compile(self.prior_model)
+                if self.reduce_dim:
+                    self.text_projection = torch.compile(self.text_projection)
+                    self.image_projection = torch.compile(self.image_projection)
             except Exception as e:
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
@@ -266,22 +265,31 @@ class TrainPrior(nn.Module):
                 # Forward pass with mixed precision
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
 
-                    encoded_captions = self.clip_model(y, "text")
-                    encoded_imgs = self.clip_model(x, "img")
-                    encoded_imgs = self.pca_model(encoded_imgs)
+                    with torch.no_grad():
+                        text_embeddings = self.clip_model(data=y, data_type="text", normalize=self.normalize)
+                        image_embeddings = self.clip_model(data=x, data_type="img", normalize=self.normalize)
+
+                    if self.reduce_dim:
+                        text_embeddings = self.text_projection(text_embeddings)
+                        image_embeddings = self.image_projection(image_embeddings)
 
                     # Generate noise and timesteps
-                    noise = torch.randn_like(encoded_imgs).to(self.device)
-                    t = torch.randint(0, self.hyper_params.num_steps, (encoded_imgs.shape[0],)).to(self.device)
+                    noise = torch.randn_like(image_embeddings).to(self.device)
+                    t = torch.randint(0, self.hyper_params.num_steps, (image_embeddings.shape[0],)).to(self.device)
 
                     # Apply forward diffusion
-                    noisy_encoded_imgs = self.forward_diffusion(encoded_imgs, noise, t)
+                    noisy_image_embeddings = self.forward_diffusion(image_embeddings, noise, t)
+
+                    # sequence_input = torch.cat([y, text_embeddings, noisy_image_embeddings], dim=-1)
 
                     # Predict un-noisy encoded images
-                    pred_encoded_imgs = self.prior_model(y, encoded_captions, t, noisy_encoded_imgs)
+                    pred_image_embeddings = self.prior_model(text_embeddings, noisy_image_embeddings, t)
+
+                    if self.reduce_dim:
+                        pred_image_embeddings = self.image_projection.inverse_transform(pred_image_embeddings)
 
                     # Compute loss and scale for gradient accumulation
-                    loss = self.objective(pred_encoded_imgs, encoded_imgs) / self.num_grad_accumulation
+                    loss = self.objective(pred_image_embeddings, image_embeddings) / self.num_grad_accumulation
 
                 # Backward pass
                 scaler.scale(loss).backward()
@@ -290,7 +298,9 @@ class TrainPrior(nn.Module):
                 if (step + 1) % self.num_grad_accumulation == 0:
                     # Clip gradients
                     scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.prior.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(self.prior_model.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(self.image_projection.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(self.text_projection.parameters(), max_norm=1.0)
 
                     # Optimizer step
                     scaler.step(self.optimizer)
@@ -359,27 +369,29 @@ class TrainPrior(nn.Module):
 
 
     def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "") -> None:
-        """Save model checkpoint (only called by master process).
-
-        Parameters
-        ----------
-        epoch : int
-            Current epoch number.
-        loss : float
-            Current loss value.
-        suffix : str, optional
-            Suffix to add to checkpoint filename.
-        """
         try:
             # Get state dicts, handling DDP wrapping
             prior_model_state = (
                 self.prior_model.module.state_dict() if self.ddp
                 else self.prior_model.state_dict()
             )
+            image_proj_model_state = None
+            text_proj_model_state = None
+            if self.reduce_dim:
+                image_proj_model_state = (
+                    self.image_projection.module.state_dict() if self.ddp
+                    else self.image_projection.state_dict()
+                )
+                text_proj_model_state = (
+                    self.text_projection.module.state_dict() if self.ddp
+                    else self.text_projection.state_dict()
+                )
 
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict_prior': prior_model_state,
+                'image_projection_model' : image_proj_model_state,
+                'text_projection_model': text_proj_model_state,
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'loss': loss,
                 'hyper_params_model': (
@@ -399,16 +411,11 @@ class TrainPrior(nn.Module):
 
 
     def validate(self) -> Tuple[float, float, float, float]:
-        """Validates the prior model and computes evaluation metrics.
 
-        Computes validation loss (MSE between predicted and ground truth encoded images).
-
-        Returns
-        -------
-        tuple
-            (val_loss, mse, psnr, ssim) where metrics may be None if not computed.
-        """
         self.prior_model.eval()
+        if self.reduce_dim:
+            self.text_projection.eval()
+            self.image_projection.eval()
 
         # set fid and lpips of metrics to false! we do not need to compute them.
         self.metrics_.fid = False
@@ -421,44 +428,42 @@ class TrainPrior(nn.Module):
             for x, y in self.val_loader:
                 x = x.to(self.device)
 
-                encoded_captions = self.clip_model(y, "text")
-                encoded_imgs = self.clip_model(x, "img")
-                encoded_imgs = self.pca_model(encoded_imgs)
+                text_embeddings = self.clip_model(data=y, data_type="text", normalize=self.normalize)
+                image_embeddings = self.clip_model(data=x, data_type="img", normalize=self.normalize)
 
-                encoded_imgs_orig = encoded_imgs.clone()
+                orig_image_embeddings = image_embeddings.clone()
+
+                if self.reduce_dim:
+                    text_embeddings = self.text_projection(text_embeddings)
+                    image_embeddings = self.image_projection(image_embeddings)
 
                 # Generate noise and timesteps
-                noise = torch.randn_like(encoded_imgs).to(self.device)
-                t = torch.randint(0, self.hyper_params.num_steps, (encoded_imgs.shape[0],)).to(self.device)
+                noise = torch.randn_like(image_embeddings).to(self.device)
+                t = torch.randint(0, self.hyper_params.num_steps, (image_embeddings.shape[0],)).to(self.device)
 
                 # Apply forward diffusion
-                noisy_encoded_imgs = self.forward_diffusion(encoded_imgs, noise, t)
+                noisy_image_embeddings = self.forward_diffusion(image_embeddings, noise, t)
+
+                sequence_input = torch.cat([y, text_embeddings, noisy_image_embeddings], dim=-1)
 
                 # Predict un-noisy encoded images
-                pred_encoded_imgs = self.prior_model(y, encoded_captions, t, noisy_encoded_imgs)
+                pred_image_embeddings = self.prior_model(sequence_input, t)
+
+                if self.reduce_dim:
+                    pred_image_embeddings = self.text_projection.inverse_transform(pred_image_embeddings)
 
                 # Compute loss and scale for gradient accumulation
-                loss = self.objective(pred_encoded_imgs, encoded_imgs)
+                loss = self.objective(pred_image_embeddings, image_embeddings)
                 val_losses.append(loss.item())
 
                 # Generate samples for metrics evaluation
-                if self.metrics_ is not None and self.reverse_diffusion is not None:
-                    xt = torch.randn_like(x).to(self.device)
-
-                    # Reverse diffusion sampling
-                    for t in reversed(range(self.hyper_params.num_steps)):
-                        time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
-                        pred_encoded_imgs = self.prior_model(y, encoded_captions, t, noisy_encoded_imgs)
-                        xt = self.reverse_diffusion(xt, pred_encoded_imgs, time_steps)
-
-                    # Clamp and normalize generated samples
-                    pred_encoded_imgs = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
-                    if self.normalize_output:
-                        pred_encoded_imgs = (pred_encoded_imgs - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
-                        encoded_imgs_orig = (encoded_imgs_orig - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+                if self.metrics_ is not None:
+                    if self.normalize:
+                        pred_image_embeddings = F.normalize(pred_image_embeddings, p=2, dim=-1)
+                        orig_image_embeddings = F.normalize(orig_image_embeddings, p=2, dim=-1)
 
                     # Compute metrics
-                    metrics_result = self.metrics_.forward(encoded_imgs_orig, pred_encoded_imgs)
+                    metrics_result = self.metrics_.forward(orig_image_embeddings, pred_image_embeddings)
                     _, mse, psnr, ssim, _ = metrics_result
 
                     if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
@@ -481,5 +486,8 @@ class TrainPrior(nn.Module):
 
         # Return to training mode
         self.prior_model.train()
+        if self.reduce_dim:
+            self.text_projection.train()
+            self.image_projection.train()
 
         return val_loss, mse_avg, psnr_avg, ssim_avg
