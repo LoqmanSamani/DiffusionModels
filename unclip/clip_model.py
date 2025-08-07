@@ -109,14 +109,38 @@ class CLIPEncoder(nn.Module):
         # Get image embeddings
         return self.model.get_image_features(**inputs)
 
-    def _encode_texts(self, data: Union[str, List[str]]) -> torch.Tensor:
+    def _encode_texts(self, data: Union[str, List[str], torch.Tensor]) -> torch.Tensor:
         """Helper method to encode texts."""
+
+        # If input is already a tensor, assume it's pre-tokenized and return embeddings directly
+        if isinstance(data, torch.Tensor):
+            # Move tensor to the correct device if needed
+            data = data.to(self.device)
+
+            # If it's already text embeddings (2D tensor), return as-is
+            if data.dim() == 2:
+                return data
+
+            # If it's tokenized input (1D or 2D token IDs), process through model
+            if data.dim() == 1:
+                data = data.unsqueeze(0)  # Add batch dimension
+
+            # Create attention mask (assuming all tokens are valid)
+            attention_mask = torch.ones_like(data)
+
+            # Get text embeddings using tokenized input
+            return self.model.get_text_features(input_ids=data, attention_mask=attention_mask)
+
+        # Handle string inputs
         if isinstance(data, str):
             # Convert single string to list for consistent processing
             data = [data]
-        elif not isinstance(data, list) or not all(isinstance(t, str) for t in data):
+        elif isinstance(data, list) and all(isinstance(t, str) for t in data):
+            # List of strings is already in correct format
+            pass
+        else:
             raise ValueError(
-                f"Invalid text data type: {type(data)}. Expected str or List[str]."
+                f"Invalid text data type: {type(data)}. Expected str, List[str], or torch.Tensor."
             )
 
         # Process text using the CLIP processor
@@ -155,7 +179,7 @@ def main():
     print("=== CLIP Usage Example ===\n")
 
     # Initialize CLIP model
-    clip_model = CLIP(model_name="openai/clip-vit-base-patch32")
+    clip_model = CLIPEncoder(model_name="openai/clip-vit-base-patch32")
     print(f"Model loaded on device: {clip_model.device}")
     print(f"Model name: {clip_model.model_name}\n")
 

@@ -23,8 +23,10 @@ class ForwardDIF(nn.Module):
             sqrt_alpha_bar_t = self.hyper_params.sqrt_alpha_bars[time_steps].to(x0.device)
             sqrt_one_minus_alpha_bar_t = self.hyper_params.sqrt_one_minus_alpha_bars[time_steps].to(x0.device)
 
-        sqrt_alpha_bar_t = sqrt_alpha_bar_t.view(-1, 1, 1, 1)
-        sqrt_one_minus_alpha_bar_t = sqrt_one_minus_alpha_bar_t.view(-1, 1, 1, 1)
+        # Reshape for 2D embedding tensors: (batch_size, embedding_dim)
+        sqrt_alpha_bar_t = sqrt_alpha_bar_t.view(-1, 1)
+        sqrt_one_minus_alpha_bar_t = sqrt_one_minus_alpha_bar_t.view(-1, 1)
+
         xt = sqrt_alpha_bar_t * x0 + sqrt_one_minus_alpha_bar_t * noise
 
         return xt
@@ -118,3 +120,23 @@ class HyperParamsDIF(nn.Module):
         sqrt_one_minus_alpha_bars = torch.sqrt(1.0 - alpha_bars)
 
         return betas, alphas, alpha_bars, sqrt_alpha_bars, sqrt_one_minus_alpha_bars
+
+
+"""
+hyp = HyperParamsDIF(
+    num_steps=1000,
+    beta_start=1e-4,
+    beta_end=0.02,
+    trainable_beta=False,
+    beta_method="cosine"
+)
+
+forward = ForwardDIF(hyp)
+x = torch.randn((10, 3, 100, 100))
+t = torch.randint(0, 1000, (10,))
+noise = torch.randn_like(x)
+
+xt = forward(x, noise, t)
+print(xt.size())
+"""
+

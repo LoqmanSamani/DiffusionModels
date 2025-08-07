@@ -8,12 +8,12 @@ class UnCLIPTransformerPrior(nn.Module):
     """UnCLIP prior model using Transformer"""
     def __init__(
         self,
-        embedding_dim: int = 319,
+        embedding_dim: int = 320,
         num_layers: int = 12,
         num_attention_heads: int = 8,
         feedforward_dim: int = 768,
         max_sequence_length: int = 2,
-        dropout_rate: float = 0.1
+        dropout_rate: float = 0.2
     ) -> None:
         super().__init__()
 
@@ -48,6 +48,9 @@ class UnCLIPTransformerPrior(nn.Module):
 
         batch_size = text_embeddings.shape[0]
         device = text_embeddings.device
+        #print("text", text_embeddings.size())
+        #print("noisy ", noisy_image_embeddings.size())
+        #print("time ", timesteps.size())
 
         # Create sinusoidal time embeddings
         time_embeddings = self._get_sinusoidal_embeddings(timesteps, self.embedding_dim, device)
@@ -133,3 +136,24 @@ class TransformerBlock(nn.Module):
         x = self.feedforward_norm(x + ff_output)
 
         return x
+
+
+"""
+model = UnCLIPTransformerPrior(
+    embedding_dim=320,
+    num_layers=12,
+    num_attention_heads=8,
+    feedforward_dim=768,
+    max_sequence_length=2,
+    dropout_rate=0.3
+)
+
+x = torch.randn((10, 320))
+t = torch.randint(0, 1000, (10,))
+print(t.size())
+tm = model._get_sinusoidal_embeddings(t, 320, "cpu")
+print(tm.size())
+y = torch.randn((10, 320))
+p = model(y, x, t)
+print(p.size())
+"""

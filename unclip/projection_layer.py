@@ -6,11 +6,11 @@ class Projection(nn.Module):
 
     def __init__(
         self,
-        input_dim: int = 512,
-        output_dim: int = 319,
-        hidden_dim: int = 384,
+        input_dim: int = 1024,
+        output_dim: int = 310,
+        hidden_dim: int = 512,
         num_layers: int = 2,
-        dropout: float = 0.1,
+        dropout: float = 0.2,
         use_layer_norm: bool = True
     ) -> None:
         super().__init__()
@@ -67,3 +67,19 @@ class Projection(nn.Module):
         x_reduced = self.forward(x)
         x_reconstructed = self.inverse_transform(x_reduced)
         return F.mse_loss(x_reconstructed, x)
+
+"""
+p = Projection(
+    input_dim=1024,
+    output_dim=512,
+    hidden_dim=768,
+    num_layers=2,
+    dropout=0.1,
+    use_layer_norm=True
+)
+
+x = torch.randn((100, 1024))
+o = p(x)
+print(o.size())
+"""
+

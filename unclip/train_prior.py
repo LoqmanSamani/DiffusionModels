@@ -27,7 +27,6 @@ class TrainUnCLIPPrior(nn.Module):
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epochs: int = 1000,
             device: Optional[Union[str, torch.device]] = None,
-            metrics_: Optional[Any] = None,
             store_path: Optional[str] = None,
             patience: int = 100,
             warmup_epochs: int = 100,
@@ -70,7 +69,6 @@ class TrainUnCLIPPrior(nn.Module):
             self.image_projection = None
 
         # Training components
-        self.metrics_ = metrics_
         self.optimizer = optimizer
         self.objective = objective
         self.train_loader = train_loader
@@ -173,7 +171,6 @@ class TrainUnCLIPPrior(nn.Module):
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
     def forward(self) -> Tuple[List[float], float]:
-
         # Set models to training mode
         self.prior_model.train()
         if self.reduce_dim:
@@ -184,9 +181,6 @@ class TrainUnCLIPPrior(nn.Module):
         self._compile_models()
         self._wrap_models_for_ddp()
 
-        # Wrap models for DDP after compilation
-        self._wrap_models_for_ddp()
-
         # Initialize training components
         scaler = torch.GradScaler()
         train_losses = []
@@ -194,10 +188,10 @@ class TrainUnCLIPPrior(nn.Module):
         wait = 0
 
         # Main training loop
-        for epoch in range(self.max_epoch):
+        for epoch in range(self.max_epochs):
             # Set epoch for distributed sampler if using DDP
-            if self.use_ddp and hasattr(self.data_loader.sampler, 'set_epoch'):
-                self.data_loader.sampler.set_epoch(epoch)
+            if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
+                self.train_loader.sampler.set_epoch(epoch)
 
             train_losses_epoch = []
 
@@ -210,11 +204,11 @@ class TrainUnCLIPPrior(nn.Module):
                     loss = self._compute_training_loss(x, y)
                     loss = loss / self.num_grad_accumulation
 
-                # Backward pass
+                # Backward pass - ONLY ONCE!
                 scaler.scale(loss).backward()
 
                 # Optimizer step with gradient accumulation
-                if (step + 1) % self.gradient_accumulation_steps == 0:
+                if (step + 1) % self.num_grad_accumulation == 0:
                     self._optimizer_step(scaler)
                     # Update learning rate (warmup scheduler)
                     self.warmup_lr_scheduler.step()
@@ -231,55 +225,14 @@ class TrainUnCLIPPrior(nn.Module):
                 current_lr = self.optimizer.param_groups[0]['lr']
                 print(f"Epoch {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}", end="")
 
-                # Backward pass
-                scaler.scale(loss).backward()
-
-                # Gradient accumulation and optimizer step
-                if (step + 1) % self.num_grad_accumulation == 0:
-                    # Clip gradients
-                    scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.prior_model.parameters(), max_norm=1.0)
-                    torch.nn.utils.clip_grad_norm_(self.image_projection.parameters(), max_norm=1.0)
-                    torch.nn.utils.clip_grad_norm_(self.text_projection.parameters(), max_norm=1.0)
-
-                    # Optimizer step
-                    scaler.step(self.optimizer)
-                    scaler.update()
-                    self.optimizer.zero_grad()
-
-                    # Update learning rate (warmup scheduler)
-                    self.warmup_lr_scheduler.step()
-
-                # Record loss (unscaled)
-                train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
-
-            # Compute mean training loss
-            mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
-
-            # All-reduce loss across processes for DDP
-            if self.use_ddp:
-                loss_tensor = torch.tensor(mean_train_loss, device=self.device)
-                dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
-                mean_train_loss = loss_tensor.item()
-
-            train_losses.append(mean_train_loss)
-
-            # Print training progress
-            if self.master_process:
-                if (epoch + 1) % self.progress_frequency == 0:
-                    print(f"\nEpoch: {epoch + 1} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
-
             # Validation and checkpointing
             current_loss = mean_train_loss
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
-                val_metrics = self.validate()
-                val_loss, mse, psnr, ssim = val_metrics
+                val_loss = self.validate()
                 current_loss = val_loss
 
                 if self.master_process:
                     print(f" | Val Loss: {val_loss:.4f}")
-                    if self.metrics_ and hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
-                        print(f" | MSE: {mse:.4f} | PSNR: {psnr:.4f} | SSIM: {ssim:.4f}", end="")
             elif self.master_process:
                 print()
 
@@ -288,17 +241,17 @@ class TrainUnCLIPPrior(nn.Module):
 
             # Save checkpoint and early stopping
             if self.master_process:
-                if current_loss < best_val_loss:
+                if current_loss < best_val_loss and (epoch + 1) % self.val_frequency == 0:
                     best_val_loss = current_loss
                     wait = 0
                     self._save_checkpoint(epoch + 1, best_val_loss, is_best=True)
                 else:
                     wait += 1
-
                     if wait >= self.patience:
                         print("Early stopping triggered")
                         self._save_checkpoint(epoch + 1, current_loss, suffix="_early_stop")
                         break
+
         # Cleanup
         if self.use_ddp:
             destroy_process_group()
@@ -313,20 +266,28 @@ class TrainUnCLIPPrior(nn.Module):
             text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize)
             image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize)
 
+            #print("encoded images: ", image_embeddings.size())
+            #print("encoded text: ", text_embeddings.size())
+
         # Reduce dimensionality (optional)
         if self.reduce_dim:
             text_embeddings = self.text_projection(text_embeddings)
             image_embeddings = self.image_projection(image_embeddings)
+            #print("encoded images: ", image_embeddings.size())
+            #print("encoded text: ", text_embeddings.size())
 
         # Sample timestep t ~ Uniform(1, T)
         batch_size = image_embeddings.shape[0]
         timesteps = torch.randint(0, self.hyper_params.num_steps, (batch_size,), device=self.device)
+        #print("time ", timesteps.size())
 
         # Sample noise ε ~ N(0, I)
         noise = torch.randn_like(image_embeddings)
+        #print("noise ", noise.size())
 
         # Compute noised embedding z_{i,t}
         noisy_image_embeddings = self.forward_diffusion(image_embeddings, noise, timesteps)
+        #print("noisy image: ", noisy_image_embeddings.size())
 
         # Predict unnoised embedding ẑ_i
         predicted_image_embeddings = self.prior_model(text_embeddings, noisy_image_embeddings, timesteps)
@@ -339,7 +300,7 @@ class TrainUnCLIPPrior(nn.Module):
             target_embeddings = image_embeddings
 
         # Compute loss L = ||ẑ_i - z_i||²
-        loss = self.loss_fn(predicted_image_embeddings, target_embeddings)
+        loss = self.objective(predicted_image_embeddings, target_embeddings)
         return loss
 
     def _optimizer_step(self, scaler: torch.cuda.amp.GradScaler) -> None:
@@ -348,7 +309,7 @@ class TrainUnCLIPPrior(nn.Module):
 
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(self.prior_model.parameters(), max_norm=1.0)
-        if self.use_dimension_reduction:
+        if self.reduce_dim:
             torch.nn.utils.clip_grad_norm_(self.image_projection.parameters(), max_norm=1.0)
             torch.nn.utils.clip_grad_norm_(self.text_projection.parameters(), max_norm=1.0)
 
@@ -368,19 +329,15 @@ class TrainUnCLIPPrior(nn.Module):
         return mean_loss
 
 
-    def validate(self) -> Tuple[float, ...]:
+    def validate(self) -> float:
 
         self.prior_model.eval()
         if self.reduce_dim:
             self.text_projection.eval()
             self.image_projection.eval()
 
-        # set fid and lpips of metrics to false! we do not need to compute them.
-        self.metrics_.fid = False
-        self.metrics_.lpips_ = False
 
         val_losses = []
-        metrics_scores = {'mse': [], 'psnr': [], 'ssim': []}
 
         with torch.no_grad():
             for images, texts in self.val_loader:
@@ -411,35 +368,17 @@ class TrainUnCLIPPrior(nn.Module):
                 loss = self.objective(predicted_embeddings, original_image_embeddings)
                 val_losses.append(loss.item())
 
-                # Compute metrics if available
-                if self.metrics_ is not None:
-                    if self.normalize:
-                        predicted_embeddings = F.normalize(predicted_embeddings, p=2, dim=-1)
-                        original_image_embeddings = F.normalize(original_image_embeddings, p=2, dim=-1)
-
-                    metrics_result = self.metrics_.forward(original_image_embeddings, predicted_embeddings)
-                    if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
-                        _, mse, psnr, ssim, _ = metrics_result
-                        metrics_scores['mse'].append(mse)
-                        metrics_scores['psnr'].append(psnr)
-                        metrics_scores['ssim'].append(ssim)
 
         # Compute averages
         val_loss = self._compute_mean_loss(val_losses)
 
-        results = [val_loss]
-        for metric_name, scores in metrics_scores.items():
-            if scores:
-                avg_score = torch.tensor(scores).mean().item()
-                results.append(avg_score)
-
         # Return to training mode
         self.prior_model.train()
-        if self.use_dimension_reduction:
+        if self.reduce_dim:
             self.text_projection.train()
             self.image_projection.train()
 
-        return tuple(results)
+        return val_loss
 
 
     def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "", is_best: bool = False) -> None:
@@ -475,15 +414,22 @@ class TrainUnCLIPPrior(nn.Module):
                     else self.text_projection.state_dict()
                 )
 
-            # Save checkpoint
+            # Create the directory if it doesn't exist
+            os.makedirs(self.store_path, exist_ok=True)
+
+            # Define the checkpoint filename
             if is_best:
-                save_path = os.path.join(self.store_path, "best_model.pth")
+                filename = "best_model.pth"
             else:
                 filename = f"checkpoint_epoch_{epoch}{suffix}.pth"
-                save_path = os.path.join(self.store_path, filename)
 
+            # Construct the full save path
+            save_path = os.path.join(self.store_path, filename)
+
+            # Save checkpoint
             torch.save(checkpoint, save_path)
-            print(f"Checkpoint saved: {save_path}")
+            if self.master_process:  # Only print from the master process in DDP
+                print(f"Checkpoint saved: {save_path}")
 
         except Exception as e:
             print(f"Failed to save checkpoint: {e}")
@@ -542,3 +488,151 @@ class TrainUnCLIPPrior(nn.Module):
             print(f"Loaded checkpoint from {checkpoint_path} (epoch {epoch}, loss {loss:.4f})")
 
         return epoch, loss
+
+
+"""
+from prior_diff import ForwardDIF, HyperParamsDIF
+from prior_model import UnCLIPTransformerPrior
+from clip_model import CLIPEncoder
+from projection_layer import Projection
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, Subset, Dataset
+import torch
+
+
+# Option 2A: Use CIFAR-10 with descriptive captions
+class CIFAR10WithCaptions(Dataset):
+    def __init__(self, cifar_dataset):
+        self.dataset = cifar_dataset
+        self.class_names = [
+            'airplane', 'automobile', 'bird', 'cat', 'deer',
+            'dog', 'frog', 'horse', 'ship', 'truck'
+        ]
+        # More descriptive templates
+        self.templates = [
+            "A photo of a {}",
+            "An image of a {}",
+            "A picture of a {}",
+            "This is a {}",
+        ]
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        image, label = self.dataset[idx]
+        class_name = self.class_names[label]
+        # Use different templates for variety
+        template = self.templates[idx % len(self.templates)]
+        caption = template.format(class_name)
+        return image, caption
+
+
+# Updated transforms for CLIP
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# Load CIFAR-10 with captions
+cifar_train = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+cifar_test = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+
+train_dataset = CIFAR10WithCaptions(cifar_train)
+test_dataset = CIFAR10WithCaptions(cifar_test)
+
+# Small subset for testing
+train_subset_indices = torch.randperm(len(train_dataset))[:100]
+test_subset_indices = torch.randperm(len(test_dataset))[:20]
+
+train_subset = Subset(train_dataset, train_subset_indices)
+test_subset = Subset(test_dataset, test_subset_indices)
+
+# DataLoaders
+t_loader = DataLoader(train_subset, batch_size=32, shuffle=True, pin_memory=True)
+val = DataLoader(test_subset, batch_size=10, shuffle=False, pin_memory=True)
+
+h_model = HyperParamsDIF(
+    num_steps=1000,
+    beta_start=1e-4,
+    beta_end=0.02,
+    trainable_beta=False,
+    beta_method="cosine"
+)
+
+d_model = ForwardDIF(h_model)
+
+p_model = UnCLIPTransformerPrior(
+    embedding_dim=320,
+    num_layers=12,
+    num_attention_heads=8,
+    feedforward_dim=512,
+    max_sequence_length=2,
+    dropout_rate=0.3
+)
+
+c_model = CLIPEncoder(model_name="openai/clip-vit-base-patch32")
+tp = Projection(
+    input_dim=512,
+    output_dim=320,
+    hidden_dim=480,
+    num_layers=2,
+    dropout=0.1,
+    use_layer_norm=True
+)
+ip = Projection(
+    input_dim=512,
+    output_dim=320,
+    hidden_dim=480,
+    num_layers=2,
+    dropout=0.1,
+    use_layer_norm=True
+)
+
+opt = torch.optim.AdamW(
+    [p for p in h_model.parameters() if p.requires_grad] +
+    [p for p in p_model.parameters() if p.requires_grad] +
+    [p for p in tp.parameters() if p.requires_grad] +
+    [p for p in ip.parameters() if p.requires_grad], lr=1e-3)
+
+models = [h_model, p_model, tp, ip]
+
+total_params = 0
+for model in models:
+    total_params += sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(total_params)
+
+obj = nn.MSELoss()
+
+
+
+train = TrainUnCLIPPrior(
+    prior_model=p_model,
+    clip_model=c_model,
+    hyper_params=h_model,
+    forward_diffusion=d_model,
+    train_loader=t_loader,
+    optimizer=opt,
+    objective=obj,
+    text_projection=tp,  # used instead of PCA in the main paper
+    image_projection=ip,  # used instead of PCA in the main paper
+    val_loader=val,
+    max_epochs=5,
+    device="cuda",
+    store_path="prior",
+    patience=3,
+    warmup_epochs=2,
+    val_frequency=3,
+    use_ddp=False,
+    num_grad_accumulation=2,
+    progress_frequency=1,
+    compilation=False,
+    output_range=(-1.0, 1.0),
+    reduce_dim=True,
+    output_dim=320,
+    normalize=True
+)
+
+train_losses, best_val_loss = train()
+"""
