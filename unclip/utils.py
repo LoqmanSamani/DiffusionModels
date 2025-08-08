@@ -724,7 +724,7 @@ class NoisePredictor(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor, clip_embeddings: torch.Tensor = None, y: torch.Tensor = None) -> torch.Tensor:
         """Predicts noise given input, time step, and optional text conditioning.
 
         Parameters
@@ -733,6 +733,8 @@ class NoisePredictor(nn.Module):
             Input tensor, shape (batch_size, in_channels, height, width).
         t : torch.Tensor
             Time steps, shape (batch_size,).
+        clip_embeddings: torch.Tensor, optional
+            used in the context of un-clip algorithm
         y : torch.Tensor, optional
             Text embeddings for conditioning, shape (batch_size, seq_len, y_embed_dim)
             or (batch_size, y_embed_dim) (default: None).
@@ -746,8 +748,10 @@ class NoisePredictor(nn.Module):
         output = self.conv1(x)
         time_embed = GetEmbeddedTime(embed_dim=self.time_embed_dim)(time_steps=t)
         time_embed = self.time_projection(time_embed)
-        skip_connections = []
+        if clip_embeddings is not None:
+            time_embed = time_embed + clip_embeddings
 
+        skip_connections = []
         for i, down in enumerate(self.down_blocks):
             skip_connections.append(output)
             output = down(x=output, embed_time=time_embed, y=y)
