@@ -1196,7 +1196,7 @@ class SampleDDIM(nn.Module):
         return super().to(device)
 
 
-
+"""
 from utils import NoisePredictor, Metrics, TextEncoder
 import os
 import matplotlib.pyplot as plt
@@ -1321,6 +1321,6 @@ train_ddim = TrainDDIM(
 )
 
 train_losses, best_val_loss = train_ddim()
-
+"""
 
 

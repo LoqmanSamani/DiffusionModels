@@ -1,12 +1,3 @@
-"""Training module for Denoising Diffusion Probabilistic Models (DDPM).
-
-This module implements the training process for DDPM, as described in Ho et al. (2020,
-"Denoising Diffusion Probabilistic Models"). It supports both unconditional and
-conditional training with text prompts, using mixed precision and learning rate
-scheduling.
-"""
-
-
 import torch
 from torch.cuda.amp import GradScaler, autocast
 import torch.nn as nn

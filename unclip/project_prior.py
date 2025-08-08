@@ -2,12 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class ProjectionPrior(nn.Module):
+class Projection(nn.Module):
 
     def __init__(
         self,
         input_dim: int = 1024,
-        output_dim: int = 310,
+        output_dim: int = 320,
         hidden_dim: int = 512,
         num_layers: int = 2,
         dropout: float = 0.2,

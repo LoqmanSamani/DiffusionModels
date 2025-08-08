@@ -748,7 +748,12 @@ class NoisePredictor(nn.Module):
         output = self.conv1(x)
         time_embed = GetEmbeddedTime(embed_dim=self.time_embed_dim)(time_steps=t)
         time_embed = self.time_projection(time_embed)
+        #print("time embed:", time_embed.size())
+        #print("clip embed (before)", clip_embeddings.size())
         if clip_embeddings is not None:
+            if len(clip_embeddings.shape) == 3:  # [batch_size, seq_len, time_embed_dim]
+                clip_embeddings = clip_embeddings.mean(dim=1)
+                #print("clip imbed (after)", clip_embeddings.size())
             time_embed = time_embed + clip_embeddings
 
         skip_connections = []
@@ -1654,8 +1659,6 @@ class Metrics:
 
         return fid, mse, psnr, ssim, lpips_score
 
-
-import time
 
 
 """

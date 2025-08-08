@@ -31,7 +31,7 @@ class TrainUnClipDecoder(nn.Module):
             conditional_model: torch.nn.Module = None,  # GLIDE text encoder
             metrics_: Optional[Any] = None,
             tokenizer: Optional[BertTokenizer] = None,
-            max_epochs: int = 1000,
+            max_epoch: int = 1000,
             device: Optional[Union[str, torch.device]] = None,
             store_path: str = "unclip_decoder",
             patience: int = 100,
@@ -47,15 +47,13 @@ class TrainUnClipDecoder(nn.Module):
             normalize: bool = True,
             classifier_free: float = 0.1,  # paper specifies 10%
             drop_caption: float = 0.5,  # paper specifies 50%
-            max_length: int = 77,  # add max_length for tokenization
-            normalize_output = True,
+            max_length: int = 77  # add max_length for tokenization
     ):
         super().__init__()
         # training configuration
         self.use_ddp = use_ddp
         self.num_grad_accumulation = num_grad_accumulation
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.max_length = max_length
 
         # setup distributed training
         if self.use_ddp:
@@ -80,6 +78,7 @@ class TrainUnClipDecoder(nn.Module):
             self.text_projection = None
             self.image_projection = None
 
+        #self.embedding_dim = embedding_dim
         self.embedding_dim = output_dim if self.reduce_dim else embedding_dim
         self.time_embed_dim = time_embed_dim
 
@@ -94,7 +93,7 @@ class TrainUnClipDecoder(nn.Module):
         self.val_loader = val_loader
 
         # training parameters
-        self.max_epochs = max_epochs
+        self.max_epoch = max_epoch
         self.patience = patience
         self.val_frequency = val_frequency
         self.progress_frequency = progress_frequency
@@ -105,7 +104,7 @@ class TrainUnClipDecoder(nn.Module):
         self.output_dim = output_dim
         self.classifier_free = classifier_free
         self.drop_caption = drop_caption
-        self.normalize_output = normalize_output
+        self.max_length = max_length
 
         self.clip_time_proj = nn.Linear(self.embedding_dim, self.time_embed_dim).to(self.device)
 
@@ -166,17 +165,17 @@ class TrainUnClipDecoder(nn.Module):
         return LambdaLR(optimizer, lr_lambda)
 
     def _wrap_models_for_ddp(self) -> None:
-        """Wrap models with DistributedDataParallel for multi-GPU training."""
+        """wrap models with DistributedDataParallel for multi-GPU training."""
         if self.use_ddp:
             self.noise_predictor = DDP(
                 self.noise_predictor,
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
-            if self.reduce_dim:
+            if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
                 self.text_projection = DDP(self.text_projection, device_ids=[self.ddp_local_rank])
                 self.image_projection = DDP(self.image_projection, device_ids=[self.ddp_local_rank])
-            if self.conditional_model:
+            if self.conditional_model is not None:
                 self.conditional_model = DDP(self.conditional_model, device_ids=[self.ddp_local_rank])
 
     def _compile_models(self) -> None:
@@ -184,10 +183,10 @@ class TrainUnClipDecoder(nn.Module):
         if self.compilation:
             try:
                 self.noise_predictor = torch.compile(self.noise_predictor)
-                if self.reduce_dim:
+                if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
                     self.text_projection = torch.compile(self.text_projection)
                     self.image_projection = torch.compile(self.image_projection)
-                if self.conditional_model:
+                if self.conditional_model is not None:
                     self.conditional_model = torch.compile(self.conditional_model)
                 if self.master_process:
                     print("Models compiled successfully")
@@ -217,10 +216,10 @@ class TrainUnClipDecoder(nn.Module):
         Reduce dimensionality: z_i ← P · z_i
         note: paper uses PCA algorithm, we use learned projections
         """
-        if self.reduce_dim and self.text_projection and self.image_projection:
-            text_embeddings = self.text_projection(text_embeddings)
-            image_embeddings = self.image_projection(image_embeddings)
-
+        with torch.no_grad(): # these models should be trained with the prior model
+            if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
+                text_embeddings = self.text_projection(text_embeddings)
+                image_embeddings = self.image_projection(image_embeddings)
         return text_embeddings, image_embeddings
 
     def _apply_classifier_free_guidance(self, image_embeddings: torch.Tensor, p_value: float) -> torch.Tensor:
@@ -334,12 +333,10 @@ class TrainUnClipDecoder(nn.Module):
 
         # set models to training mode
         self.noise_predictor.train()
-        if self.reduce_dim:
-            if self.text_projection:
-                self.text_projection.train()
-            if self.image_projection:
-                self.image_projection.train()
-        if self.conditional_model:
+        #if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
+        #    self.text_projection.train()
+        #    self.image_projection.train()
+        if self.conditional_model is not None:
             self.conditional_model.train()
 
         # compile and wrap models
@@ -347,13 +344,13 @@ class TrainUnClipDecoder(nn.Module):
         self._wrap_models_for_ddp()
 
         # initialize training components
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.GradScaler()
         train_losses = []
         best_val_loss = float("inf")
         wait = 0
 
         # main training loop
-        for epoch in range(self.max_epochs):
+        for epoch in range(self.max_epoch):
             # set epoch for distributed sampler if using DDP
             if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
                 self.train_loader.sampler.set_epoch(epoch)
@@ -363,17 +360,23 @@ class TrainUnClipDecoder(nn.Module):
             # training step loop with gradient accumulation
             for step, (images, texts) in enumerate(tqdm(self.train_loader, disable=not self.master_process)):
                 images = images.to(self.device, non_blocking=True)
+                #print("image batch shape: ", images.size())
+                #print("text batch shape: ", len(images))
 
                 # forward pass with mixed precision
-                with (((torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu')))):
+                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
 
                     # encode text and image with CLIP
                     text_embeddings, image_embeddings = self._get_clip_embeddings(images, texts)
+                    #print("image embedding batch shape: ", image_embeddings.size())
+                    #print("text embedding batch shape: ", text_embeddings.size())
 
                     # reduce dimensionality (PCA equivalent)
                     text_embeddings, image_embeddings = self._apply_dimensionality_reduction(
                         text_embeddings, image_embeddings
                     )
+                    #print("image embedding reduced batch shape: ", image_embeddings.size())
+                    #print("text embedding reduced batch shape: ", text_embeddings.size())
 
                     # classifier-free guidance
                     p_classifier_free = torch.rand(1).item()
@@ -383,25 +386,37 @@ class TrainUnClipDecoder(nn.Module):
                     p_text_drop = torch.rand(1).item()
                     text_embeddings = self._apply_text_dropout(text_embeddings, p_text_drop)
 
+                    #print("we are here")
                     # project z_i to 4 tokens
                     c = self._project_to_tokens(image_embeddings)
+                    #print("z i to 4 tokens: ", c.size())
+
 
                     # encode text with GLIDE
                     y_encoded = self._encode_text_with_glide(texts if text_embeddings is not None else None)
+                    #if y_encoded is not None:
+                        #print("y_encodded : ", y_encoded.size())
+
 
                     # concatenate embeddings
                     s = self._concatenate_embeddings(y_encoded, c)
+                    #print("y_encodded and c concat : ", s.size())
 
                     # sample timestep and noise
                     t, noise = self._sample_timestep_and_noise(images.shape[0], images.shape)
+                    #print("t : ", t.size())
+                    #print("noise : ", noise.size())
 
                     # compute noisy image
                     noisy_images = self._compute_noisy_image(images, noise, t)
+                    #print("noisy images : ", noisy_images.size())
 
                     clip_image_embedding = self._project_clip_image_embedding(image_embeddings)
+                    #print("clip image embedded : ", clip_image_embedding.size())
 
                     # predict noise
                     predicted_noise = self._predict_noise(noisy_images, t, clip_image_embedding, s)
+                    #print("predicted noise : ", predicted_noise.size())
 
                     # compute loss
                     loss = self.objective(predicted_noise, noise) / self.num_grad_accumulation
@@ -409,10 +424,21 @@ class TrainUnClipDecoder(nn.Module):
                 scaler.scale(loss).backward()
 
                 if (step + 1) % self.num_grad_accumulation == 0:
+                    # clip gradients
+                    scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.noise_predictor.parameters(), max_norm=1.0)
+                    if self.conditional_model is not None:
+                        torch.nn.utils.clip_grad_norm_(self.conditional_model.parameters(), max_norm=1.0)
+                    if self.text_projection is not None:
+                        torch.nn.utils.clip_grad_norm_(self.text_projection.parameters(), max_norm=1.0)
+                    if self.image_projection is not None:
+                        torch.nn.utils.clip_grad_norm_(self.image_projection.parameters(), max_norm=1.0)
+
                     scaler.step(self.optimizer)
                     scaler.update()
                     self.optimizer.zero_grad()
                     self.warmup_lr_scheduler.step()
+                    torch.cuda.empty_cache()  # clear memory after optimizer step
 
                 train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
 
@@ -421,7 +447,7 @@ class TrainUnClipDecoder(nn.Module):
 
             if self.master_process and (epoch + 1) % self.progress_frequency == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
-                print(f"Epoch {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}", end="")
+                print(f"Epoch {epoch + 1}/{self.max_epoch} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}", end="")
 
             current_loss = mean_train_loss
 
@@ -648,11 +674,8 @@ class TrainUnClipDecoder(nn.Module):
 
         return epoch, loss
 
-    from typing import Optional, Tuple
 
     def validate(self) -> Tuple[float, Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
-        if self.val_loader is None:
-            raise ValueError("Validation loader is None")
 
         self.noise_predictor.eval()
         if self.reduce_dim and self.text_projection is not None:
@@ -701,7 +724,7 @@ class TrainUnClipDecoder(nn.Module):
 
                     x_hat = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
 
-                    if self.normalize_output:
+                    if self.normalize:
                         x_hat = (x_hat - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
                         x_orig = (x_orig - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
 
@@ -747,3 +770,179 @@ class TrainUnClipDecoder(nn.Module):
             self.conditional_model.train()
 
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
+
+from utils import NoisePredictor, TextEncoder, Metrics
+from clip_model import CLIPEncoder
+from project_decoder import ProjectDecoder
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, Subset, Dataset
+from project_prior import Projection
+import torch
+from ddim_model import HyperParamsDDIM
+
+
+class CIFAR10WithCaptions(Dataset):
+    def __init__(self, cifar_dataset):
+        self.dataset = cifar_dataset
+        self.class_names = [
+            'airplane', 'automobile', 'bird', 'cat', 'deer',
+            'dog', 'frog', 'horse', 'ship', 'truck'
+        ]
+        # More descriptive templates
+        self.templates = [
+            "A photo of a {}",
+            "An image of a {}",
+            "A picture of a {}",
+            "This is a {}",
+        ]
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        image, label = self.dataset[idx]
+        class_name = self.class_names[label]
+        # Use different templates for variety
+        template = self.templates[idx % len(self.templates)]
+        caption = template.format(class_name)
+        return image, caption
+
+
+# Updated transforms for CLIP
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# Load CIFAR-10 with captions
+cifar_train = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+cifar_test = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+
+train_dataset = CIFAR10WithCaptions(cifar_train)
+test_dataset = CIFAR10WithCaptions(cifar_test)
+
+# Small subset for testing
+train_subset_indices = torch.randperm(len(train_dataset))[:10]
+test_subset_indices = torch.randperm(len(test_dataset))[:5]
+train_subset = Subset(train_dataset, train_subset_indices)
+test_subset = Subset(test_dataset, test_subset_indices)
+
+# DataLoaders
+t_loader = DataLoader(train_subset, batch_size=5, shuffle=True, pin_memory=True)
+v_loader = DataLoader(test_subset, batch_size=2, shuffle=False, pin_memory=True)
+
+d = torch.device("cuda")
+
+n_model = NoisePredictor(
+        in_channels=3,
+        down_channels=[16, 32],
+        mid_channels=[32, 32],
+        up_channels=[32, 16],
+        down_sampling=[True, True],
+        time_embed_dim=320,
+        y_embed_dim=320,
+        num_down_blocks=2,
+        num_mid_blocks=2,
+        num_up_blocks=2,
+        down_sampling_factor=2
+).to(d)
+
+c_model = CLIPEncoder(model_name="openai/clip-vit-base-patch32").to(d)
+
+t_proj = Projection(
+    input_dim=512,
+    output_dim=320,
+    hidden_dim=468,
+    num_layers=2,
+    dropout=0.1,
+    use_layer_norm=True
+).to(d)
+i_proj = Projection(
+    input_dim=512,
+    output_dim=320,
+    hidden_dim=468,
+    num_layers=2,
+    dropout=0.1,
+    use_layer_norm=True
+).to(d)
+
+h_model = HyperParamsDDIM(
+    num_steps=500,
+    beta_start=1e-4,
+    beta_end=0.02,
+    trainable_beta=False,
+    beta_method="linear"
+).to(d)
+
+cond = TextEncoder(
+    use_pretrained_model=True,
+    model_name="bert-base-uncased",
+    vocabulary_size=30522,
+    num_layers=2,
+    input_dimension=320,
+    output_dimension=320,
+    num_heads=2,
+    context_length=77
+).to(d)
+
+opt = torch.optim.AdamW(
+    [p for p in h_model.parameters() if p.requires_grad] +
+    [p for p in n_model.parameters() if p.requires_grad] +
+    [p for p in cond.parameters() if p.requires_grad], lr=1e-3)
+
+obj = nn.MSELoss()
+
+mets = Metrics(
+    device="cpu",
+    fid=True,
+    metrics=True,
+    lpips_=True
+)
+
+
+
+
+model = TrainUnClipDecoder(
+    embedding_dim=512,
+    time_embed_dim=320,
+    noise_predictor=n_model,
+    clip_model=c_model,
+    hyper_params=h_model,
+    train_loader=t_loader,
+    optimizer=opt,
+    objective=obj,
+    text_projection=t_proj,
+    image_projection=i_proj,
+    val_loader=v_loader,
+    conditional_model=cond,
+    metrics_=mets,
+    tokenizer=None,
+    max_epoch=5,
+    device="cuda",
+    store_path="unclip_decoder",
+    patience=5,
+    warmup_epochs=2,
+    val_frequency=3,
+    use_ddp=False,
+    num_grad_accumulation=2,
+    progress_frequency=1,
+    compilation=False,
+    output_range=(-1.0, 1.0),
+    reduce_dim=True,
+    output_dim=320,
+    normalize=True,
+    classifier_free=0.1,
+    drop_caption=0.5,
+    max_length=77
+)
+
+one, two = model()
+
+
+models = [h_model, n_model, cond, t_proj, i_proj, h_model]
+
+total_params = 0
+for model in models:
+    total_params += sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(total_params)
