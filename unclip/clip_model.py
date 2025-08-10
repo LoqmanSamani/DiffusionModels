@@ -4,51 +4,56 @@ import torch.nn.functional as F
 from typing import List, Union, Optional
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
-import numpy as np
+
+
 
 
 class CLIPEncoder(nn.Module):
     """A PyTorch module for encoding images or text using a CLIP model.
 
     Attributes:
-        model_name (str): Name of the CLIP model to load (e.g., 'openai/clip-vit-base-patch32').
+        model_name (str): Name of the CLIP model (e.g., 'openai/clip-vit-base-patch32').
         model (CLIPModel): The loaded CLIP model from transformers.
         processor (CLIPProcessor): The CLIP processor for preprocessing inputs.
         device (str): The device to run the model on (e.g., 'cuda' or 'cpu').
     """
 
-    def __init__(self, model_name: str = "openai/clip-vit-base-patch32", device: Optional[str] = None) -> None:
-        """Initialize the CLIP model and processor.
+    def __init__(
+        self,
+        model_name: str = "openai/clip-vit-base-patch32",
+        device: Optional[str] = None,
+        use_fast: bool = False,
+    ) -> None:
+        """Initialize the CLIP model, processor, and optional projection layer.
 
         Args:
             model_name (str): Name of the CLIP model to load. Defaults to 'openai/clip-vit-base-patch32'.
             device (str, optional): Device to run the model on. If None, auto-selects 'cuda' if available, else 'cpu'.
+            use_fast (bool): Whether to use the fast image processor (torchvision-based). Defaults to False.
         """
         super().__init__()
 
-        # Set model name
+        # Set model name and device
         self.model_name = model_name
-
-        # Set device
         self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
 
         try:
             # Load CLIP model and processor
             self.model = CLIPModel.from_pretrained(self.model_name)
-            # Remove use_fast=True to avoid potential issues with some models
-            self.processor = CLIPProcessor.from_pretrained(self.model_name)
-
-            # Move model to device after loading
+            self.processor = CLIPProcessor.from_pretrained(self.model_name, use_fast=use_fast)
             self.model = self.model.to(self.device)
-
         except Exception as e:
             raise RuntimeError(f"Failed to load CLIP model or processor for {self.model_name}: {e}")
 
-        # Set model to evaluation mode by default
+        # set model to evaluation mode by default
         self.model.eval()
 
-    def forward(self, data: Union[torch.Tensor, List[str], str, Image.Image, List[Image.Image]],
-                data_type: str, normalize: bool = True) -> torch.Tensor:
+    def forward(
+            self,
+            data: Union[torch.Tensor, List[str], str, Image.Image, List[Image.Image]],
+            data_type: str,
+            normalize: bool = True
+    ) -> torch.Tensor:
         """Encodes input data (image or text) using the CLIP model.
 
         Args:
@@ -61,24 +66,18 @@ class CLIPEncoder(nn.Module):
 
         Returns:
             torch.Tensor: Encoded features (image or text embeddings).
-                Shape: (batch_size, embedding_dim) where embedding_dim is typically 512.
-
-        Raises:
-            ValueError: If data_type is invalid or data format is incorrect.
+                Shape: (batch_size, embedding_dim).
         """
         if data_type not in ["img", "text"]:
             raise ValueError(f"Invalid data_type: {data_type}. Must be 'img' or 'text'.")
 
-        # Ensure model is in eval mode and on correct device
-        self.model.eval()
-
         with torch.no_grad():
             if data_type == "img":
                 outputs = self._encode_images(data)
-            else:  # data_type == "text"
+            else:
                 outputs = self._encode_texts(data)
 
-            # Normalize embeddings if requested (standard for CLIP)
+            # normalize embeddings if requested
             if normalize:
                 outputs = F.normalize(outputs, p=2, dim=-1)
 
@@ -87,85 +86,58 @@ class CLIPEncoder(nn.Module):
     def _encode_images(self, data: Union[torch.Tensor, Image.Image, List[Image.Image]]) -> torch.Tensor:
         """Helper method to encode images."""
         if isinstance(data, torch.Tensor):
-            # Assume tensor is already preprocessed (batch_size, channels, height, width)
-            if data.dim() == 3:  # Single image: add batch dimension
+            if data.dim() == 3:
                 data = data.unsqueeze(0)
             inputs = {"pixel_values": data.to(self.device)}
-
         elif isinstance(data, (Image.Image, list)):
-            # Convert single PIL image to list for consistent processing
             if isinstance(data, Image.Image):
                 data = [data]
-
-            # Process PIL images using the CLIP processor
             inputs = self.processor(images=data, return_tensors="pt", padding=True)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
         else:
             raise ValueError(
                 f"Invalid image data type: {type(data)}. Expected torch.Tensor, PIL.Image.Image, or List[PIL.Image.Image]."
             )
-
-        # Get image embeddings
         return self.model.get_image_features(**inputs)
 
     def _encode_texts(self, data: Union[str, List[str], torch.Tensor]) -> torch.Tensor:
         """Helper method to encode texts."""
-
-        # If input is already a tensor, assume it's pre-tokenized and return embeddings directly
         if isinstance(data, torch.Tensor):
-            # Move tensor to the correct device if needed
             data = data.to(self.device)
-
-            # If it's already text embeddings (2D tensor), return as-is
             if data.dim() == 2:
                 return data
-
-            # If it's tokenized input (1D or 2D token IDs), process through model
             if data.dim() == 1:
-                data = data.unsqueeze(0)  # Add batch dimension
-
-            # Create attention mask (assuming all tokens are valid)
+                data = data.unsqueeze(0)
             attention_mask = torch.ones_like(data)
-
-            # Get text embeddings using tokenized input
             return self.model.get_text_features(input_ids=data, attention_mask=attention_mask)
 
-        # Handle string inputs
         if isinstance(data, str):
-            # Convert single string to list for consistent processing
             data = [data]
         elif isinstance(data, list) and all(isinstance(t, str) for t in data):
-            # List of strings is already in correct format
             pass
         else:
             raise ValueError(
                 f"Invalid text data type: {type(data)}. Expected str, List[str], or torch.Tensor."
             )
 
-        # Process text using the CLIP processor
         inputs = self.processor(text=data, return_tensors="pt", padding=True, truncation=True)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
-
-        # Get text embeddings
         return self.model.get_text_features(**inputs)
 
     def compute_similarity(self, image_features: torch.Tensor, text_features: torch.Tensor) -> torch.Tensor:
         """Compute cosine similarity between image and text features.
 
         Args:
-            image_features: Image embeddings (batch_size, embedding_dim)
-            text_features: Text embeddings (batch_size, embedding_dim)
+            image_features: Image embeddings (batch_size, output_dim or embedding_dim)
+            text_features: Text embeddings (batch_size, output_dim or embedding_dim)
 
         Returns:
             torch.Tensor: Similarity scores (batch_size, batch_size)
         """
-        # Ensure features are normalized
         image_features = F.normalize(image_features, p=2, dim=-1)
         text_features = F.normalize(text_features, p=2, dim=-1)
-
-        # Compute similarity matrix
         return torch.matmul(image_features, text_features.T)
+
 
 
 """

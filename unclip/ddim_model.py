@@ -12,6 +12,7 @@ from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
 from typing import Optional, Tuple, Callable, List, Any, Union, Self
+import os
 
 
 
@@ -26,15 +27,15 @@ class ForwardDDIM(nn.Module):
 
     Parameters
     ----------
-    `hyper_params` : object
-        Hyperparameter object (HyperParamsDDIM) containing the noise schedule parameters.
+    `variance_scheduler` : object
+        Variance-scheduler object (VarianceSchedulerDDIM) containing the noise schedule parameters.
         Expected to have attributes: `num_steps`, `trainable_beta`, `betas`, `sqrt_alpha_cumprod`,
         `sqrt_one_minus_alpha_cumprod`, `compute_schedule`
     """
 
-    def __init__(self, hyper_params: torch.nn.Module) -> None:
+    def __init__(self, variance_scheduler: torch.nn.Module) -> None:
         super().__init__()
-        self.hyper_params = hyper_params
+        self.variance_scheduler = variance_scheduler
 
     def forward(self, x0: torch.Tensor, noise: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
         """Applies the forward diffusion process to the input data.
@@ -56,18 +57,18 @@ class ForwardDDIM(nn.Module):
         -------
         xt (torch.Tensor) - Noisy data tensor `xt` at the specified time steps, with the same shape as `x0`.
         """
-        if not torch.all((time_steps >= 0) & (time_steps < self.hyper_params.num_steps)):
-            raise ValueError(f"time_steps must be between 0 and {self.hyper_params.num_steps - 1}")
+        if not torch.all((time_steps >= 0) & (time_steps < self.variance_scheduler.num_steps)):
+            raise ValueError(f"time_steps must be between 0 and {self.variance_scheduler.num_steps - 1}")
 
-        if self.hyper_params.trainable_beta:
-            _, _, _, sqrt_alpha_cumprod_t, sqrt_one_minus_alpha_cumprod_t = self.hyper_params.compute_schedule(
+        if self.variance_scheduler.trainable_beta:
+            _, _, _, sqrt_alpha_cumprod_t, sqrt_one_minus_alpha_cumprod_t = self.variance_scheduler.compute_schedule(
                 time_steps
             )
             sqrt_alpha_cumprod_t = sqrt_alpha_cumprod_t.to(x0.device)
             sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t.to(x0.device)
         else:
-            sqrt_alpha_cumprod_t = self.hyper_params.sqrt_alpha_cumprod[time_steps].to(x0.device)
-            sqrt_one_minus_alpha_cumprod_t = self.hyper_params.sqrt_one_minus_alpha_cumprod[time_steps].to(x0.device)
+            sqrt_alpha_cumprod_t = self.variance_scheduler.sqrt_alpha_cumprod[time_steps].to(x0.device)
+            sqrt_one_minus_alpha_cumprod_t = self.variance_scheduler.sqrt_one_minus_alpha_cumprod[time_steps].to(x0.device)
 
         sqrt_alpha_cumprod_t = sqrt_alpha_cumprod_t.view(-1, 1, 1, 1)
         sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t.view(-1, 1, 1, 1)
@@ -89,14 +90,14 @@ class ReverseDDIM(nn.Module):
 
     Parameters
     ----------
-    `hyper_params` : object
-        Hyperparameter object (HyperParamsDDIM) containing the noise schedule parameters.
+    `variance_scheduler` : object
+        Variance-scheduler object (VarianceSchedulerDDIM) containing the noise schedule parameters.
         Expected to have attributes: `tau_num_steps`, `eta`, `get_tau_schedule`.
     """
 
-    def __init__(self, hyper_params: torch.nn.Module):
+    def __init__(self, variance_scheduler: torch.nn.Module):
         super().__init__()
-        self.hyper_params = hyper_params
+        self.variance_scheduler = variance_scheduler
 
     def forward(self, xt: torch.Tensor, predicted_noise: torch.Tensor, time_steps: torch.Tensor, prev_time_steps: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Applies the reverse diffusion process to the noisy input.
@@ -125,18 +126,18 @@ class ReverseDDIM(nn.Module):
         x0 : torch.Tensor
             Estimated original data (t=0), same shape as `xt`.
         """
-        if not torch.all((time_steps >= 0) & (time_steps < self.hyper_params.tau_num_steps)):
-            raise ValueError(f"time_steps must be between 0 and {self.hyper_params.tau_num_steps - 1}")
-        if not torch.all((prev_time_steps >= 0) & (prev_time_steps < self.hyper_params.tau_num_steps)):
-            raise ValueError(f"prev_time_steps must be between 0 and {self.hyper_params.tau_num_steps - 1}")
+        if not torch.all((time_steps >= 0) & (time_steps < self.variance_scheduler.tau_num_steps)):
+            raise ValueError(f"time_steps must be between 0 and {self.variance_scheduler.tau_num_steps - 1}")
+        if not torch.all((prev_time_steps >= 0) & (prev_time_steps < self.variance_scheduler.tau_num_steps)):
+            raise ValueError(f"prev_time_steps must be between 0 and {self.variance_scheduler.tau_num_steps - 1}")
 
-        _, _, _, tau_sqrt_alpha_cumprod, tau_sqrt_one_minus_alpha_cumprod = self.hyper_params.get_tau_schedule()
+        _, _, _, tau_sqrt_alpha_cumprod, tau_sqrt_one_minus_alpha_cumprod =self.variance_scheduler.get_tau_schedule()
         tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[time_steps].to(xt.device).view(-1, 1, 1, 1)
         tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[time_steps].to(xt.device).view(-1, 1, 1, 1)
         prev_tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1, 1, 1)
         prev_tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1, 1, 1)
 
-        eta = self.hyper_params.eta
+        eta = self.variance_scheduler.eta
         x0 = (xt - tau_sqrt_one_minus_alpha_cumprod_t * predicted_noise) / tau_sqrt_alpha_cumprod_t
         noise_coeff = eta * ((tau_sqrt_one_minus_alpha_cumprod_t / prev_tau_sqrt_alpha_cumprod_t) *
                              prev_tau_sqrt_one_minus_alpha_cumprod_t / torch.clamp(tau_sqrt_one_minus_alpha_cumprod_t, min=1e-8))
@@ -148,8 +149,8 @@ class ReverseDDIM(nn.Module):
 
 ###==================================================================================================================###
 
-class HyperParamsDDIM(nn.Module):
-    """Hyperparameters for DDIM noise schedule with flexible beta computation.
+class VarianceSchedulerDDIM(nn.Module):
+    """Variance-scheduler for DDIM noise schedule with flexible beta computation.
 
     Manages the noise schedule parameters for DDIM, including beta values, derived
     quantities (alphas, alpha_cumprod, etc.), and a subsampled time step schedule
@@ -359,8 +360,8 @@ class TrainDDIM(nn.Module):
     ----------
     `noise_predictor` : nn.Module
         Model to predict noise added during the forward diffusion process.
-    `hyper_params` : nn.Module
-        Hyperparameter module (e.g., HyperParamsDDIM) defining the noise schedule.
+    `variance_scheduler` : nn.Module
+        Variance-scheduler module (e.g., VarianceSchedulerDDIM) defining the noise schedule.
     `data_loader` : torch.utils.data.DataLoader
         DataLoader for training data.
     `optimizer` : torch.optim.Optimizer
@@ -405,7 +406,7 @@ class TrainDDIM(nn.Module):
     def __init__(
             self,
             noise_predictor: torch.nn.Module,
-            hyper_params: torch.nn.Module,
+            variance_scheduler: torch.nn.Module,
             data_loader: torch.utils.data.DataLoader,
             optimizer: torch.optim.Optimizer,
             objective: Callable,
@@ -441,9 +442,9 @@ class TrainDDIM(nn.Module):
 
         # Move models to appropriate device
         self.noise_predictor = noise_predictor.to(self.device)
-        self.hyper_params = hyper_params.to(self.device)
-        self.forward_diffusion = ForwardDDIM(hyper_params=self.hyper_params).to(self.device)
-        self.reverse_diffusion = ReverseDDIM(hyper_params=self.hyper_params).to(self.device)
+        self.variance_scheduler = variance_scheduler.to(self.device)
+        self.forward_diffusion = ForwardDDIM(variance_scheduler=self.variance_scheduler).to(self.device)
+        self.reverse_diffusion = ReverseDDIM(variance_scheduler=self.variance_scheduler).to(self.device)
         self.conditional_model = conditional_model.to(self.device) if conditional_model else None
 
         # Training components
@@ -578,15 +579,15 @@ class TrainDDIM(nn.Module):
                 )
 
         # Load hyper_params state
-        if 'hyper_params_model' not in checkpoint:
-            raise KeyError("Checkpoint missing 'hyper_params_model' key")
+        if 'variance_scheduler_model' not in checkpoint:
+            raise KeyError("Checkpoint missing 'variance_scheduler_model' key")
         try:
-            if isinstance(self.hyper_params, nn.Module):
-                self.hyper_params.load_state_dict(checkpoint['hyper_params_model'])
+            if isinstance(self.variance_scheduler, nn.Module):
+                self.variance_scheduler.load_state_dict(checkpoint['variance_scheduler_model'])
             else:
-                self.hyper_params = checkpoint['hyper_params_model']
+                self.variance_scheduler = checkpoint['variance_scheduler_model']
         except Exception as e:
-            warnings.warn(f"Hyper_params loading failed: {e}. Continuing with current hyper_params.")
+            warnings.warn(f"Variance_scheduler loading failed: {e}. Continuing with current variance_scheduler.")
 
         # Load optimizer state
         if 'optimizer_state_dict' not in checkpoint:
@@ -708,7 +709,7 @@ class TrainDDIM(nn.Module):
 
                     # Generate noise and timesteps
                     noise = torch.randn_like(x).to(self.device)
-                    t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
+                    t = torch.randint(0, self.variance_scheduler.num_steps, (x.shape[0],)).to(self.device)
                     assert x.device == noise.device == t.device, "Device mismatch detected"
                     assert t.shape[0] == x.shape[0], "Timestep batch size mismatch"
 
@@ -716,7 +717,7 @@ class TrainDDIM(nn.Module):
                     noisy_x = self.forward_diffusion(x, noise, t)
 
                     # Predict noise
-                    p_noise = self.noise_predictor(noisy_x, t, y_encoded)
+                    p_noise = self.noise_predictor(x=noisy_x, t=t, y=y_encoded)
 
                     # Compute loss and scale for gradient accumulation
                     loss = self.objective(p_noise, noise) / self.num_grad_accumulation
@@ -864,9 +865,9 @@ class TrainDDIM(nn.Module):
                 'model_state_dict_conditional': conditional_state,
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'loss': loss,
-                'hyper_params_model': (
-                    self.hyper_params.state_dict() if isinstance(self.hyper_params, nn.Module)
-                    else self.hyper_params
+                'variance_scheduler_model': (
+                    self.variance_scheduler.state_dict() if isinstance(self.variance_scheduler, nn.Module)
+                    else self.variance_scheduler
                 ),
                 'max_epoch': self.max_epoch,
             }
@@ -922,7 +923,7 @@ class TrainDDIM(nn.Module):
 
                 # Compute validation loss
                 noise = torch.randn_like(x).to(self.device)
-                t = torch.randint(0, self.hyper_params.num_steps, (x.shape[0],)).to(self.device)
+                t = torch.randint(0, self.variance_scheduler.num_steps, (x.shape[0],)).to(self.device)
 
                 noisy_x = self.forward_diffusion(x, noise, t)
                 predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
@@ -934,7 +935,7 @@ class TrainDDIM(nn.Module):
                     xt = torch.randn_like(x).to(self.device)
 
                     # Reverse diffusion sampling
-                    for t in reversed(range(self.hyper_params.tau_num_steps)):
+                    for t in reversed(range(self.variance_scheduler.tau_num_steps)):
                         time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
                         prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
                         predicted_noise = self.noise_predictor(xt, time_steps, y_encoded)

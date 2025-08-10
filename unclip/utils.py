@@ -724,7 +724,7 @@ class NoisePredictor(nn.Module):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, clip_embeddings: torch.Tensor = None, y: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor = None, clip_embeddings: torch.Tensor = None) -> torch.Tensor:
         """Predicts noise given input, time step, and optional text conditioning.
 
         Parameters
@@ -733,11 +733,11 @@ class NoisePredictor(nn.Module):
             Input tensor, shape (batch_size, in_channels, height, width).
         t : torch.Tensor
             Time steps, shape (batch_size,).
-        clip_embeddings: torch.Tensor, optional
-            used in the context of un-clip algorithm
         y : torch.Tensor, optional
             Text embeddings for conditioning, shape (batch_size, seq_len, y_embed_dim)
             or (batch_size, y_embed_dim) (default: None).
+        clip_embeddings: torch.Tensor, optional
+            used in the context of un-clip algorithm
 
         Returns
         -------
@@ -752,7 +752,10 @@ class NoisePredictor(nn.Module):
         #print("clip embed (before)", clip_embeddings.size())
         if clip_embeddings is not None:
             if len(clip_embeddings.shape) == 3:  # [batch_size, seq_len, time_embed_dim]
-                clip_embeddings = clip_embeddings.mean(dim=1)
+                #clip_embeddings = clip_embeddings.mean(dim=1)
+                time_embed = time_embed.unsqueeze(1)
+                #print("please print it", time_embed.size())
+
                 #print("clip imbed (after)", clip_embeddings.size())
             time_embed = time_embed + clip_embeddings
 
