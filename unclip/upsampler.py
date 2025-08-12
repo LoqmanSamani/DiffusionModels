@@ -3,11 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Tuple
+from prior_diff import ForwardUnCLIP, VarianceSchedulerUnCLIP
 
 
 
-
-class UpsamplerDiffusionModel(nn.Module):
+class UpsamplerUnCLIP(nn.Module):
     """
     Diffusion-based upsampler model for unCLIP.
     Uses only spatial convolutions (no attention) as mentioned in the paper.
@@ -15,6 +15,7 @@ class UpsamplerDiffusionModel(nn.Module):
 
     def __init__(
             self,
+            forward_diffusion: nn.Module,
             in_channels: int = 3,
             out_channels: int = 3,
             model_channels: int = 192,
@@ -27,6 +28,7 @@ class UpsamplerDiffusionModel(nn.Module):
     ) -> None:
         super().__init__()
 
+        self.forward_diffusion = forward_diffusion # this will be used on training time inside 'TrainUpsamplerUnCLIP'
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.model_channels = model_channels
@@ -209,8 +211,10 @@ class ResBlock(nn.Module):
             nn.Linear(time_embed_dim, out_channels * 2 if use_scale_shift_norm else out_channels)
         )
 
-        self.out_layers = nn.Sequential(
-            nn.GroupNorm(8, out_channels),
+        # Changed: Separated the out_norm from the rest of out_layers to avoid slicing issues with nn.Sequential.
+        # Original would raise TypeError because nn.Sequential[1:] does not return a callable Sequential and cannot be directly invoked.
+        self.out_norm = nn.GroupNorm(8, out_channels)
+        self.out_rest = nn.Sequential(
             nn.SiLU(),
             nn.Dropout(dropout),
             nn.Conv2d(out_channels, out_channels, 3, padding=1)
@@ -229,11 +233,15 @@ class ResBlock(nn.Module):
 
         if self.use_scale_shift_norm:
             scale, shift = torch.chunk(emb_out, 2, dim=1)
-            h = self.out_layers[0](h) * (1 + scale) + shift  # GroupNorm
-            h = self.out_layers[1:](h)  # SiLU + Dropout + Conv
+            # Changed: Use self.out_norm instead of self.out_layers[0].
+            h = self.out_norm(h) * (1 + scale) + shift
+            # Changed: Use self.out_rest instead of self.out_layers[1:].
+            h = self.out_rest(h)
         else:
             h = h + emb_out
-            h = self.out_layers(h)
+            # Changed: Apply out_norm and out_rest consistently.
+            h = self.out_norm(h)
+            h = self.out_rest(h)
 
         return h + self.skip_connection(x)
 
@@ -260,9 +268,19 @@ class DownsampleBlock(nn.Module):
         return self.conv(x)
 
 
-
 """
-model = UpsamplerDiffusionModel(
+hyp = VarianceSchedulerUnCLIP(
+    num_steps=1000,
+    beta_start=1e-4,
+    beta_end=0.02,
+    trainable_beta=False,
+    beta_method="cosine"
+)
+
+forward = ForwardUnCLIP(hyp)
+
+model = UpsamplerUnCLIP(
+    forward_diffusion=forward,
     in_channels= 3,
     out_channels= 3,
     model_channels= 32,

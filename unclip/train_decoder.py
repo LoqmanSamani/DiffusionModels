@@ -45,7 +45,18 @@ class TrainUnClipDecoder(nn.Module):
         self.use_ddp = use_ddp
         self.num_grad_accumulation = num_grad_accumulation
         self.compilation = compilation
-        self.device = torch.device(device) or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
+
+        # core models
+        self.decoder_model = decoder_model.to(self.device)
+        self.clip_model = clip_model.to(self.device)
+
+        self.reduce_dim = reduce_dim
 
         # setup distributed training
         if self.use_ddp:
@@ -57,12 +68,7 @@ class TrainUnClipDecoder(nn.Module):
         self._compile_models()
         self._wrap_models_for_ddp()
 
-        # core models
-        self.decoder_model = decoder_model.to(self.device)
-        self.clip_model = clip_model.to(self.device)
-
         # projection models (PCA equivalent in the paper)
-        self.reduce_dim = reduce_dim
         if self.reduce_dim and text_projection is not None and image_projection is not None:
             self.text_projection = text_projection.to(self.device)
             self.image_projection = image_projection.to(self.device)
@@ -105,8 +111,8 @@ class TrainUnClipDecoder(nn.Module):
 
         # set models to training mode
         self.decoder_model.train()  # sets noise_predictor, conditional_model, variance_scheduler, clip_time_proj to train mode
-        if not self.decoder_model.variance_scheduler.trainable_beta:  # ff beta is not trainable
-            self.decoder_model.variance_scheduler.eval()
+        if not self.decoder_model.forward_diffusion.variance_scheduler.trainable_beta:  # ff beta is not trainable
+            self.decoder_model.forward_diffusion.variance_scheduler.eval()
 
         # set text_projection and image_projection to train mode if fine-tuning
         if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
@@ -367,8 +373,8 @@ class TrainUnClipDecoder(nn.Module):
 
         # Save variance scheduler (submodule of decoder_model, always saved)
         checkpoint['variance_scheduler_state_dict'] = (
-            self.decoder_model.module.variance_scheduler.state_dict() if self.use_ddp
-            else self.decoder_model.variance_scheduler.state_dict()
+            self.decoder_model.forward_diffusion.module.variance_scheduler.state_dict() if self.use_ddp
+            else self.decoder_model.forward_diffusion.variance_scheduler.state_dict()
         )
 
         # Save CLIP time projection layer (submodule of decoder_model)
@@ -442,10 +448,10 @@ class TrainUnClipDecoder(nn.Module):
                                    'conditional_model')
 
         # Load variance scheduler (submodule of decoder_model)
-        if 'variance_scheduler_state_dict' in checkpoint or 'hyper_params_state_dict' in checkpoint:
-            state_dict = checkpoint.get('variance_scheduler_state_dict', checkpoint.get('hyper_params_state_dict'))
+        if 'variance_scheduler_state_dict' in checkpoint:
+            state_dict = checkpoint.get('variance_scheduler_state_dict')
             try:
-                _load_model_state_dict(self.decoder_model.variance_scheduler, state_dict, 'variance_scheduler')
+                _load_model_state_dict(self.decoder_model.forward_diffusion.variance_scheduler, state_dict, 'variance_scheduler')
             except Exception as e:
                 warnings.warn(f"Failed to load variance scheduler: {e}")
 
@@ -556,7 +562,7 @@ class TrainUnClipDecoder(nn.Module):
 
                 if self.metrics_ is not None and self.decoder_model.reverse_diffusion is not None:
                     xt = torch.randn_like(images).to(self.device)
-                    for t in reversed(range(self.decoder_model.variance_scheduler.tau_num_steps)):
+                    for t in reversed(range(self.decoder_model.forward_diffusion.variance_scheduler.tau_num_steps)):
                         time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
                         prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
                         image_embeddings = self.decoder_model._apply_classifier_free_guidance(image_embeddings, p_classifier_free)
@@ -637,7 +643,7 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, Dataset
 from project_prior import Projection
 import torch
-from ddim_model import VarianceSchedulerDDIM
+from prior_diff import VarianceSchedulerUnCLIP, ForwardUnCLIP, ReverseUnCLIP
 from decoder_model import UnClipDecoder
 
 
@@ -707,14 +713,14 @@ n_model = NoisePredictor(
         num_mid_blocks=2,
         num_up_blocks=2,
         down_sampling_factor=2
-).to(d)
+)
 
 
 c_model = CLIPEncoder(
     model_name="openai/clip-vit-base-patch32",
     device="cuda",
     use_fast=False
-).to(d)
+)
 
 
 t_proj = Projection(
@@ -724,7 +730,7 @@ t_proj = Projection(
     num_layers=2,
     dropout=0.1,
     use_layer_norm=True
-).to(d)
+)
 i_proj = Projection(
     input_dim=512,
     output_dim=32,
@@ -732,15 +738,17 @@ i_proj = Projection(
     num_layers=2,
     dropout=0.1,
     use_layer_norm=True
-).to(d)
+)
 
-h_model = VarianceSchedulerDDIM(
+h_model = VarianceSchedulerUnCLIP(
     num_steps=500,
     beta_start=1e-4,
     beta_end=0.02,
     trainable_beta=False,
     beta_method="linear"
-).to(d)
+)
+for_ = ForwardUnCLIP(h_model)
+rev_ = ReverseUnCLIP(h_model)
 
 cond = TextEncoder(
     use_pretrained_model=True,
@@ -756,10 +764,11 @@ cond = TextEncoder(
 decoder = UnClipDecoder(
     embedding_dim=32,
     noise_predictor=n_model,
-    variance_scheduler=h_model,
+    forward_diffusion=for_,
+    reverse_diffusion=rev_,
     conditional_model=cond,  # GLIDE text encoder
     tokenizer=None,
-    device="cuda",
+    device="cpu",
     output_range=(-1.0, 1.0),
     normalize=True,
     classifier_free=0.1,  # paper specifies 10%
@@ -816,8 +825,8 @@ if not model.finetune_projections:
         p.requires_grad = False
     for p in model.image_projection.parameters():
         p.requires_grad = False
-if not model.decoder_model.variance_scheduler.trainable_beta:
-    for p in model.decoder_model.variance_scheduler.parameters():
+if not model.decoder_model.forward_diffusion.variance_scheduler.trainable_beta:
+    for p in model.decoder_model.forward_diffusion.variance_scheduler.parameters():
         p.requires_grad = False
 
 # Run training

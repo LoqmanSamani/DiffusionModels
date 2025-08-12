@@ -1,9 +1,7 @@
 import torch
 import torch.nn as nn
-from typing import Optional, List, Tuple, Union, Callable, Any
-
+from typing import Optional, List, Tuple, Union
 from project_decoder import ProjectDecoder
-from ddim_model import ReverseDDIM, ForwardDDIM
 from transformers import BertTokenizer
 
 
@@ -12,7 +10,8 @@ class UnClipDecoder(nn.Module):
             self,
             embedding_dim: int,
             noise_predictor: nn.Module,
-            variance_scheduler: nn.Module,
+            forward_diffusion: nn.Module,
+            reverse_diffusion: nn.Module,
             conditional_model: torch.nn.Module = None,  # GLIDE text encoder
             tokenizer: Optional[BertTokenizer] = None,
             device: Optional[Union[str, torch.device]] = None,
@@ -24,14 +23,18 @@ class UnClipDecoder(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
         self.embedding_dim = embedding_dim
 
         # core models
         self.noise_predictor = noise_predictor.to(self.device)
-        self.variance_scheduler = variance_scheduler.to(self.device)
-        self.forward_diffusion = ForwardDDIM(variance_scheduler=self.variance_scheduler).to(self.device)
-        self.reverse_diffusion = ReverseDDIM(variance_scheduler=self.variance_scheduler).to(self.device)
+        self.forward_diffusion = forward_diffusion.to(self.device)
+        self.reverse_diffusion = reverse_diffusion.to(self.device)
         self.conditional_model = conditional_model.to(self.device) if conditional_model else None
 
         # paper: "projecting CLIP embeddings into four extra tokens of context"
@@ -173,7 +176,7 @@ class UnClipDecoder(nn.Module):
         sample noise ε ~ N(0, I)
         """
         # sample timestep t ~ Uniform(1, T)
-        t = torch.randint(0, self.variance_scheduler.num_steps, (batch_size,), device=self.device)
+        t = torch.randint(0, self.forward_diffusion.variance_scheduler.num_steps, (batch_size,), device=self.device)
         # sample noise ε ~ N(0, I)
         noise = torch.randn(image_shape, device=self.device)
         return t, noise
