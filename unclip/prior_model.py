@@ -1,13 +1,45 @@
 import torch
 import torch.nn as nn
 import math
-from typing import Union
+from typing import Union, Optional
 
 
 class UnCLIPTransformerPrior(nn.Module):
-    """UnCLIP prior model using Transformer"""
+    """Transformer-based prior model for UnCLIP diffusion.
+
+    Predicts clean image embeddings from noisy image embeddings and text embeddings using
+    a Transformer architecture, incorporating time embeddings and optional projection
+    layers for text and image inputs.
+
+    Parameters
+    ----------
+    `forward_diffusion` : nn.Module
+        Forward diffusion module (e.g., ForwardUnCLIP) for adding noise during training.
+    `reverse_diffusion` : nn.Module
+        Reverse diffusion module (e.g., ReverseUnCLIP) for denoising during training.
+    `text_projection` : nn.Module, optional
+        Projection module for text embeddings, default None.
+    `image_projection` : nn.Module, optional
+        Projection module for image embeddings, default None.
+    `embedding_dim` : int, optional
+        Dimensionality of embeddings (default: 320).
+    `num_layers` : int, optional
+        Number of Transformer layers (default: 12).
+    `num_attention_heads` : int, optional
+        Number of attention heads in each Transformer layer (default: 8).
+    `feedforward_dim` : int, optional
+        Dimensionality of the feedforward network in Transformer layers (default: 768).
+    `max_sequence_length` : int, optional
+        Maximum sequence length for input embeddings (default: 2).
+    `dropout_rate` : float, optional
+        Dropout probability for regularization (default: 0.2).
+    """
     def __init__(
         self,
+        forward_diffusion: nn.Module, # will be used during training
+        reverse_diffusion: nn.Module, # will be used during training
+        text_projection: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
+        image_projection: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
         embedding_dim: int = 320,
         num_layers: int = 12,
         num_attention_heads: int = 8,
@@ -16,6 +48,11 @@ class UnCLIPTransformerPrior(nn.Module):
         dropout_rate: float = 0.2
     ) -> None:
         super().__init__()
+
+        self.forward_diffusion = forward_diffusion
+        self.reverse_diffusion = reverse_diffusion
+        self.text_projection = text_projection
+        self.image_projection = image_projection
 
         self.embedding_dim = embedding_dim
         self.max_sequence_length = max_sequence_length
@@ -45,6 +82,25 @@ class UnCLIPTransformerPrior(nn.Module):
             noisy_image_embeddings: torch.Tensor,
             timesteps: torch.Tensor
     ) -> torch.Tensor:
+        """Predicts clean image embeddings from noisy inputs and text embeddings.
+
+        Processes text and noisy image embeddings through a Transformer architecture,
+        conditioned on time embeddings, to predict the clean image embeddings.
+
+        Parameters
+        ----------
+        `text_embeddings` : torch.Tensor
+            Text embeddings, shape (batch_size, embedding_dim).
+        `noisy_image_embeddings` : torch.Tensor
+            Noisy image embeddings, shape (batch_size, embedding_dim).
+        `timesteps` : torch.Tensor
+            Tensor of time step indices (long), shape (batch_size,).
+
+        Returns
+        -------
+        predicted_clean_embeddings : torch.Tensor
+            Predicted clean image embeddings, shape (batch_size, embedding_dim).
+        """
 
         batch_size = text_embeddings.shape[0]
         device = text_embeddings.device
@@ -83,7 +139,25 @@ class UnCLIPTransformerPrior(nn.Module):
             embedding_dim: int,
             device: Union[torch.device, str]
     ) -> torch.Tensor:
-        """Generate sinusoidal positional embeddings for timesteps."""
+        """Generates sinusoidal positional embeddings for timesteps.
+
+        Creates sinusoidal embeddings for the given timesteps to condition the Transformer
+        on the diffusion process time steps.
+
+        Parameters
+        ----------
+        `timesteps` : torch.Tensor
+            Tensor of time step indices (long), shape (batch_size,).
+        `embedding_dim` : int
+            Dimensionality of the embeddings.
+        `device` : Union[torch.device, str]
+            Device to place the embeddings on.
+
+        Returns
+        -------
+        embeddings : torch.Tensor
+            Sinusoidal time embeddings, shape (batch_size, embedding_dim).
+        """
         half_dim = embedding_dim // 2
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
@@ -98,7 +172,23 @@ class UnCLIPTransformerPrior(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Single transformer block with multi-head attention and feedforward layers."""
+    """Single Transformer block with multi-head attention and feedforward layers.
+
+    Implements a Transformer block with multi-head self-attention, layer normalization,
+    and a feedforward network with residual connections for processing sequences in
+    the UnCLIPTransformerPrior model.
+
+    Parameters
+    ----------
+    `embedding_dim` : int
+        Dimensionality of input and output embeddings.
+    `num_heads` : int
+        Number of attention heads in the multi-head attention layer.
+    `feedforward_dim` : int
+        Dimensionality of the feedforward network.
+    `dropout` : float
+        Dropout probability for regularization.
+    """
 
     def __init__(
             self,
@@ -127,6 +217,21 @@ class TransformerBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Processes input sequence through the Transformer block.
+
+        Applies multi-head self-attention followed by a feedforward network, with residual
+        connections and layer normalization.
+
+        Parameters
+        ----------
+        `x` : torch.Tensor
+            Input sequence tensor, shape (batch_size, sequence_length, embedding_dim).
+
+        Returns
+        -------
+        output : torch.Tensor
+            Processed sequence tensor, shape (batch_size, sequence_length, embedding_dim).
+        """
         # Self-attention with residual connection
         attn_output, _ = self.self_attention(x, x, x)
         x = self.attention_norm(x + attn_output)

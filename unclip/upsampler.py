@@ -3,14 +3,39 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from typing import Tuple
-from prior_diff import ForwardUnCLIP, VarianceSchedulerUnCLIP
+
 
 
 
 class UpsamplerUnCLIP(nn.Module):
-    """
-    Diffusion-based upsampler model for unCLIP.
-    Uses only spatial convolutions (no attention) as mentioned in the paper.
+    """Diffusion-based upsampler for UnCLIP models.
+
+    A U-Net-like model that upsamples low-resolution images to high-resolution images,
+    conditioned on noisy high-resolution images and timesteps, using residual blocks,
+    downsampling, and upsampling layers.
+
+    Parameters
+    ----------
+    `forward_diffusion` : nn.Module
+        Forward diffusion module (e.g., ForwardUnCLIP) for adding noise during training.
+    `in_channels` : int, optional
+        Number of input channels (default: 3, for RGB images).
+    `out_channels` : int, optional
+        Number of output channels (default: 3, for RGB noise prediction).
+    `model_channels` : int, optional
+        Base number of channels in the model (default: 192).
+    `num_res_blocks` : int, optional
+        Number of residual blocks per resolution level (default: 2).
+    `channel_mult` : Tuple[int, ...], optional
+        Channel multiplier for each resolution level (default: (1, 2, 4, 8)).
+    `dropout` : float, optional
+        Dropout probability for regularization (default: 0.1).
+    `time_embed_dim` : int, optional
+        Dimensionality of time embeddings (default: 768).
+    `low_res_size` : int, optional
+        Spatial size of low-resolution input (default: 64).
+    `high_res_size` : int, optional
+        Spatial size of high-resolution output (default: 256).
     """
 
     def __init__(
@@ -95,16 +120,24 @@ class UpsamplerUnCLIP(nn.Module):
         )
 
     def forward(self, x_high: torch.Tensor, t: torch.Tensor, x_low: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for upsampler.
+        """Predicts noise for the upsampling process.
 
-        Args:
-            x_high: Noisy high-resolution image [B, C, H, W]
-            t: Timesteps [B]
-            x_low: Low-resolution conditioning image [B, C, H_low, W_low]
+        Processes a noisy high-resolution image and a low-resolution conditioning image,
+        conditioned on timesteps, to predict the noise component for denoising.
 
-        Returns:
-            Predicted noise [B, C, H, W]
+        Parameters
+        ----------
+        `x_high` : torch.Tensor
+            Noisy high-resolution image, shape (batch_size, in_channels, high_res_size, high_res_size).
+        `t` : torch.Tensor
+            Timestep indices, shape (batch_size,).
+        `x_low` : torch.Tensor
+            Low-resolution conditioning image, shape (batch_size, in_channels, low_res_size, low_res_size).
+
+        Returns
+        -------
+        out : torch.Tensor
+            Predicted noise, shape (batch_size, out_channels, high_res_size, high_res_size).
         """
         # Upsample low-resolution image to match high-resolution
         x_low_upsampled = F.interpolate(
@@ -176,13 +209,34 @@ class UpsamplerUnCLIP(nn.Module):
 
 
 class SinusoidalPositionalEmbedding(nn.Module):
-    """Sinusoidal positional embedding for timesteps."""
+    """Sinusoidal positional embedding for timesteps.
+
+    Generates sinusoidal embeddings for timesteps to condition the upsampler on the
+    diffusion process stage.
+
+    Parameters
+    ----------
+    `dim` : int
+        Dimensionality of the embedding.
+    """
 
     def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
 
     def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """Generates sinusoidal embeddings for timesteps.
+
+        Parameters
+        ----------
+        `timesteps` : torch.Tensor
+            Timestep indices, shape (batch_size,).
+
+        Returns
+        -------
+        embeddings : torch.Tensor
+            Sinusoidal embeddings, shape (batch_size, dim).
+        """
         device = timesteps.device
         half_dim = self.dim // 2
         embeddings = math.log(10000) / (half_dim - 1)
@@ -193,8 +247,24 @@ class SinusoidalPositionalEmbedding(nn.Module):
 
 
 class ResBlock(nn.Module):
-    """Residual block with time embedding and conditioning."""
+    """Residual block with time embedding and conditioning.
 
+    A convolutional residual block with group normalization, time embedding conditioning,
+    and optional scale-shift normalization, used in the UnCLIP upsampler.
+
+    Parameters
+    ----------
+    `in_channels` : int
+        Number of input channels.
+    `out_channels` : int
+        Number of output channels.
+    `time_embed_dim` : int
+        Dimensionality of time embeddings.
+    `dropout` : float, optional
+        Dropout probability (default: 0.1).
+    `use_scale_shift_norm` : bool, optional
+        Whether to use scale-shift normalization for time embeddings (default: True).
+    """
     def __init__(self, in_channels: int, out_channels: int, time_embed_dim: int,
                  dropout: float = 0.1, use_scale_shift_norm: bool = True):
         super().__init__()
@@ -226,6 +296,20 @@ class ResBlock(nn.Module):
             self.skip_connection = nn.Identity()
 
     def forward(self, x: torch.Tensor, time_emb: torch.Tensor) -> torch.Tensor:
+        """Processes input through the residual block with time conditioning.
+
+        Parameters
+        ----------
+        `x` : torch.Tensor
+            Input tensor, shape (batch_size, in_channels, height, width).
+        `time_emb` : torch.Tensor
+            Time embeddings, shape (batch_size, time_embed_dim).
+
+        Returns
+        -------
+        out : torch.Tensor
+            Output tensor, shape (batch_size, out_channels, height, width).
+        """
         h = self.in_layers(x)
 
         # Apply time embedding
@@ -247,24 +331,68 @@ class ResBlock(nn.Module):
 
 
 class UpsampleBlock(nn.Module):
-    """Upsampling block using transposed convolution."""
+    """Upsampling block using transposed convolution.
+
+    Increases the spatial resolution of the input tensor using a transposed convolution.
+
+    Parameters
+    ----------
+    `in_channels` : int
+        Number of input channels.
+    `out_channels` : int
+        Number of output channels.
+    """
 
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
         self.conv = nn.ConvTranspose2d(in_channels, out_channels, 4, stride=2, padding=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Upsamples the input tensor.
+
+        Parameters
+        ----------
+        `x` : torch.Tensor
+            Input tensor, shape (batch_size, in_channels, height, width).
+
+        Returns
+        -------
+        out : torch.Tensor
+            Upsampled tensor, shape (batch_size, out_channels, height*2, width*2).
+        """
         return self.conv(x)
 
 
 class DownsampleBlock(nn.Module):
-    """Downsampling block using strided convolution."""
+    """Downsampling block using strided convolution.
+
+    Reduces the spatial resolution of the input tensor using a strided convolution.
+
+    Parameters
+    ----------
+    `in_channels` : int
+        Number of input channels.
+    `out_channels` : int
+        Number of output channels.
+    """
 
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=2, padding=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Downsamples the input tensor.
+
+        Parameters
+        ----------
+        `x` : torch.Tensor
+            Input tensor, shape (batch_size, in_channels, height, width).
+
+        Returns
+        -------
+        out : torch.Tensor
+            Downsampled tensor, shape (batch_size, out_channels, height//2, width//2).
+        """
         return self.conv(x)
 
 

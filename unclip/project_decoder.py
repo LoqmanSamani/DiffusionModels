@@ -3,13 +3,19 @@ import torch.nn as nn
 
 
 class ProjectDecoder(nn.Module):
-    def __init__(self, input_dim, num_tokens=4):
-        """Project CLIP image embedding into multiple context tokens.
+    """Projects CLIP image embeddings into multiple context tokens.
 
-        Args:
-            input_dim (int): Dimensionality of the input CLIP embedding (e.g., 319 or 512).
-            num_tokens (int): Number of context tokens to generate (default: 4).
-        """
+    Transforms a single CLIP image embedding into a specified number of context tokens
+    using a linear projection followed by layer normalization.
+
+    Parameters
+    ----------
+    `input_dim` : int
+        Dimensionality of the input CLIP embedding (e.g., 319 or 512).
+    `num_tokens` : int, optional
+        Number of context tokens to generate (default: 4).
+    """
+    def __init__(self, input_dim, num_tokens=4):
         super().__init__()
         self.input_dim = input_dim
         self.num_tokens = num_tokens
@@ -17,6 +23,21 @@ class ProjectDecoder(nn.Module):
         self.norm = nn.LayerNorm(input_dim)
 
     def forward(self, z_i):
+        """Projects CLIP image embedding into context tokens.
+
+        Applies a linear projection to transform the input embedding into multiple tokens,
+        reshapes the output, and applies layer normalization.
+
+        Parameters
+        ----------
+        `z_i` : torch.Tensor
+            Input CLIP image embedding, shape (batch_size, input_dim).
+
+        Returns
+        -------
+        c : torch.Tensor
+            Context tokens, shape (batch_size, num_tokens, input_dim).
+        """
         batch_size = z_i.shape[0]
         projected = self.projection(z_i)
         c = projected.view(batch_size, self.num_tokens, self.input_dim)

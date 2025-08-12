@@ -12,6 +12,65 @@ import warnings
 
 
 class TrainUnClipDecoder(nn.Module):
+    """Trainer for the UnCLIP decoder model.
+
+    Orchestrates the training of the UnCLIP decoder model, integrating CLIP embeddings, forward
+    and reverse diffusion processes, and optional dimensionality reduction. Supports mixed
+    precision, gradient accumulation, DDP, and comprehensive evaluation metrics.
+
+    Parameters
+    ----------
+    `embedding_dim` : int
+        Dimensionality of the input embeddings.
+    `decoder_model` : nn.Module
+        The UnCLIP decoder model (e.g., UnClipDecoder) to be trained.
+    `clip_model` : nn.Module
+        CLIP model for generating text and image embeddings.
+    `train_loader` : torch.utils.data.DataLoader
+        DataLoader for training data.
+    `optimizer` : torch.optim.Optimizer
+        Optimizer for training the decoder model.
+    `objective` : Callable
+        Loss function to compute the difference between predicted and target noise.
+    `text_projection` : nn.Module, optional
+        Projection module for text embeddings, default None.
+    `image_projection` : nn.Module, optional
+        Projection module for image embeddings, default None.
+    `val_loader` : torch.utils.data.DataLoader, optional
+        DataLoader for validation data, default None.
+    `metrics_` : Any, optional
+        Object providing evaluation metrics (e.g., FID, MSE, PSNR, SSIM, LPIPS), default None.
+    `max_epoch` : int, optional
+        Maximum number of training epochs (default: 1000).
+    `device` : Union[str, torch.device], optional
+        Device for computation (default: CUDA if available, else CPU).
+    `store_path` : str, optional
+        Directory to save model checkpoints (default: "unclip_decoder").
+    `patience` : int, optional
+        Number of epochs to wait for improvement before early stopping (default: 100).
+    `warmup_epochs` : int, optional
+        Number of epochs for learning rate warmup (default: 100).
+    `val_frequency` : int, optional
+        Frequency (in epochs) for validation (default: 10).
+    `use_ddp` : bool, optional
+        Whether to use Distributed Data Parallel training (default: False).
+    `num_grad_accumulation` : int, optional
+        Number of gradient accumulation steps before optimizer update (default: 1).
+    `progress_frequency` : int, optional
+        Frequency (in epochs) for printing progress (default: 1).
+    `compilation` : bool, optional
+        Whether to compile the model using torch.compile (default: False).
+    `output_range` : Tuple[float, float], optional
+        Range for clamping output images (default: (-1.0, 1.0)).
+    `reduce_dim` : bool, optional
+        Whether to apply dimensionality reduction to embeddings (default: True).
+    `output_dim` : int, optional
+        Output dimensionality for reduced embeddings (default: 312).
+    `normalize` : bool, optional
+        Whether to normalize CLIP embeddings (default: True).
+    `finetune_projections` : bool, optional
+        Whether to fine-tune projection layers (default: False).
+    """
     def __init__(
             self,
             embedding_dim: int,
@@ -108,7 +167,19 @@ class TrainUnClipDecoder(nn.Module):
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
 
     def forward(self) -> Tuple[List[float], float]:
+        """Trains the UnCLIP decoder model to predict noise for denoising.
 
+        Executes the training loop, optimizing the decoder model using CLIP embeddings, mixed
+        precision, gradient clipping, and learning rate scheduling. Supports validation, early
+        stopping, and checkpointing.
+
+        Returns
+        -------
+        train_losses : List[float]
+            List of mean training losses per epoch.
+        best_val_loss : float
+            Best validation or training loss achieved.
+        """
         # set models to training mode
         self.decoder_model.train()  # sets noise_predictor, conditional_model, variance_scheduler, clip_time_proj to train mode
         if not self.decoder_model.forward_diffusion.variance_scheduler.trainable_beta:  # ff beta is not trainable
@@ -231,6 +302,11 @@ class TrainUnClipDecoder(nn.Module):
         return train_losses, best_val_loss
 
     def _setup_ddp(self) -> None:
+        """Sets up Distributed Data Parallel training configuration.
+
+        Initializes the process group, sets up rank information, and configures the CUDA
+        device for the current process in DDP mode.
+        """
         required_env_vars = ["RANK", "LOCAL_RANK", "WORLD_SIZE"]
         for var in required_env_vars:
             if var not in os.environ:
@@ -255,7 +331,11 @@ class TrainUnClipDecoder(nn.Module):
             print(f"DDP initialized with world_size={self.ddp_world_size}")
 
     def _setup_single_gpu(self) -> None:
-        """setup single GPU or CPU training configuration."""
+        """Sets up single GPU or CPU training configuration.
+
+        Configures the training setup for single-device operation, setting rank and process
+        information for non-DDP training.
+        """
         self.ddp_rank = 0
         self.ddp_local_rank = 0
         self.ddp_world_size = 1
@@ -263,13 +343,33 @@ class TrainUnClipDecoder(nn.Module):
 
     @staticmethod
     def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
+        """Creates a learning rate scheduler for warmup.
+
+        Generates a scheduler that linearly increases the learning rate from 0 to the
+        optimizer's initial value over the specified warmup epochs.
+
+        Parameters
+        ----------
+        `optimizer` : torch.optim.Optimizer
+            Optimizer to apply the scheduler to.
+        `warmup_epochs` : int
+            Number of epochs for the warmup phase.
+
+        Returns
+        -------
+        lr_scheduler : torch.optim.lr_scheduler.LambdaLR
+            Learning rate scheduler for warmup.
+        """
         def lr_lambda(epoch):
             return min(1.0, epoch / warmup_epochs) if warmup_epochs > 0 else 1.0
 
         return LambdaLR(optimizer, lr_lambda)
 
     def _wrap_models_for_ddp(self) -> None:
-        """Wrap models with DistributedDataParallel for multi-GPU training."""
+        """Wraps models with DistributedDataParallel for multi-GPU training.
+
+        Configures the decoder model and, if fine-tuning, the projection models for DDP training.
+        """
         if self.use_ddp:
             self.decoder_model = self.decoder_model.to(self.ddp_local_rank)
             self.decoder_model = DDP(
@@ -285,7 +385,11 @@ class TrainUnClipDecoder(nn.Module):
                 self.image_projection = DDP(self.image_projection, device_ids=[self.ddp_local_rank])
 
     def _compile_models(self) -> None:
-        """Compile models for optimization if supported."""
+        """Compiles models for optimization if supported.
+
+        Attempts to compile the decoder model and, if fine-tuning, the projection models using
+        torch.compile for optimization, falling back to uncompiled execution if compilation fails.
+        """
         if self.compilation:
             try:
                 self.decoder_model = self.decoder_model.to(self.device)
@@ -307,7 +411,24 @@ class TrainUnClipDecoder(nn.Module):
             images: torch.Tensor,
             texts: Union[List, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """encode text y with CLIP text encoder and image x with CLIP image encoder"""
+        """Encodes images and texts using the CLIP model.
+
+        Generates text and image embeddings using the CLIP model, with optional normalization.
+
+        Parameters
+        ----------
+        `images` : torch.Tensor
+            Input images, shape (batch_size, channels, height, width).
+        `texts` : Union[List, torch.Tensor]
+            Text prompts for conditional generation.
+
+        Returns
+        -------
+        text_embeddings : torch.Tensor
+            CLIP text embeddings, shape (batch_size, embedding_dim).
+        image_embeddings : torch.Tensor
+            CLIP image embeddings, shape (batch_size, embedding_dim).
+        """
         with torch.no_grad():
             # encode text y with CLIP text encoder: z_t ← CLIP_text(y)
             text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize)
@@ -320,9 +441,24 @@ class TrainUnClipDecoder(nn.Module):
             text_embeddings: torch.Tensor,
             image_embeddings: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Reduce dimensionality: z_i ← P · z_i
-        note: paper uses PCA algorithm, we use learned projections
+        """Applies dimensionality reduction to embeddings if enabled.
+
+        Projects text and image embeddings to a lower-dimensional space using learned
+        projection layers, mimicking PCA as used in the UnCLIP paper.
+
+        Parameters
+        ----------
+        `text_embeddings` : torch.Tensor
+            CLIP text embeddings, shape (batch_size, embedding_dim).
+        `image_embeddings` : torch.Tensor
+            CLIP image embeddings, shape (batch_size, embedding_dim).
+
+        Returns
+        -------
+        text_embeddings : torch.Tensor
+            Projected text embeddings, shape (batch_size, output_dim) if reduced, else unchanged.
+        image_embeddings : torch.Tensor
+            Projected image embeddings, shape (batch_size, output_dim) if reduced, else unchanged.
         """
         if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
             if not self.finetune_projections:
@@ -335,7 +471,21 @@ class TrainUnClipDecoder(nn.Module):
         return text_embeddings.to(self.device), image_embeddings.to(self.device)
 
     def _compute_mean_loss(self, losses: List[float]) -> float:
-        """compute mean loss with DDP synchronization if needed."""
+        """Computes mean loss with DDP synchronization if needed.
+
+        Calculates the mean of the provided losses and synchronizes the result across
+        processes in DDP mode.
+
+        Parameters
+        ----------
+        `losses` : List[float]
+            List of loss values for the current epoch.
+
+        Returns
+        -------
+        mean_loss : float
+            Mean loss value, synchronized if using DDP.
+        """
         if not losses:
             return 0.0
         mean_loss = sum(losses) / len(losses)
@@ -348,7 +498,22 @@ class TrainUnClipDecoder(nn.Module):
         return mean_loss
 
     def _save_checkpoint(self, epoch: int, loss: float, is_best: bool = False, suffix: str = ""):
-        """Save model checkpoint."""
+        """Saves model checkpoint.
+
+        Saves the state of the decoder model, its submodules, optimizer, and schedulers,
+        with options for best model and epoch-specific checkpoints.
+
+        Parameters
+        ----------
+        `epoch` : int
+            Current epoch number.
+        `loss` : float
+            Current loss value.
+        `is_best` : bool, optional
+            Whether to save as the best model checkpoint (default: False).
+        `suffix` : str, optional
+            Suffix to add to checkpoint filename, default "".
+        """
         if not self.master_process:
             return
         checkpoint = {
@@ -416,7 +581,23 @@ class TrainUnClipDecoder(nn.Module):
             print(f"Best model saved: {filepath}")
 
     def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, float]:
-        """Load model checkpoint."""
+        """Loads model checkpoint.
+
+        Restores the state of the decoder model, its submodules, optimizer, and schedulers
+        from a saved checkpoint, handling DDP compatibility.
+
+        Parameters
+        ----------
+        `checkpoint_path` : str
+            Path to the checkpoint file.
+
+        Returns
+        -------
+        epoch : int
+            The epoch at which the checkpoint was saved.
+        loss : float
+            The loss at the checkpoint.
+        """
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
@@ -527,6 +708,27 @@ class TrainUnClipDecoder(nn.Module):
         return epoch, loss
 
     def validate(self) -> Tuple[float, Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
+        """Validates the UnCLIP decoder model.
+
+        Computes validation loss and optional metrics (FID, MSE, PSNR, SSIM, LPIPS) by
+        encoding images and texts, applying forward diffusion, predicting noise, and
+        reconstructing images through reverse diffusion.
+
+        Returns
+        -------
+        val_loss : float
+            Mean validation loss.
+        fid_avg : float or None
+            Average FID score, if computed.
+        mse_avg : float or None
+            Average MSE score, if computed.
+        psnr_avg : float or None
+            Average PSNR score, if computed.
+        ssim_avg : float or None
+            Average SSIM score, if computed.
+        lpips_avg : float or None
+            Average LPIPS score, if computed.
+        """
 
         # set models to eval mode for evaluation
         self.decoder_model.eval()  # sets noise_predictor, conditional_model, variance_scheduler, clip_time_proj, decoder_projection to eval mode
@@ -629,11 +831,6 @@ class TrainUnClipDecoder(nn.Module):
             self.clip_model.eval()
 
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
-
-
-
-
-
 
 
 """

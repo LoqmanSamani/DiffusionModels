@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from typing import Optional, List, Tuple, Union, Callable, Any
 from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 import torch.distributed as dist
@@ -13,17 +12,63 @@ import os
 
 
 class TrainUnCLIPPrior(nn.Module):
+    """Trainer for the UnCLIPTransformerPrior model.
+
+    Handles the training of the UnCLIP prior model to predict clean image embeddings from
+    noisy image embeddings and text embeddings, with support for dimension reduction,
+    mixed precision training, and distributed training.
+
+    Parameters
+    ----------
+    `prior_model` : nn.Module
+        The UnCLIP prior model to be trained (e.g., UnCLIPTransformerPrior).
+    `clip_model` : nn.Module
+        CLIP model for encoding text and images.
+    `train_loader` : torch.utils.data.DataLoader
+        DataLoader for training data.
+    `optimizer` : torch.optim.Optimizer
+        Optimizer for training the prior model.
+    `objective` : Callable
+        Loss function to compute the difference between predicted and target embeddings.
+    `val_loader` : torch.utils.data.DataLoader, optional
+        DataLoader for validation data, default None.
+    `max_epochs` : int, optional
+        Maximum number of training epochs (default: 1000).
+    `device` : Union[str, torch.device], optional
+        Device for computation (default: CUDA if available, else CPU).
+    `store_path` : str, optional
+        Directory path to save model checkpoints, default None.
+    `patience` : int, optional
+        Number of epochs to wait for improvement before early stopping (default: 100).
+    `warmup_epochs` : int, optional
+        Number of epochs for learning rate warmup (default: 100).
+    `val_frequency` : int, optional
+        Frequency (in epochs) for validation (default: 10).
+    `use_ddp` : bool, optional
+        Whether to use Distributed Data Parallel training (default: False).
+    `num_grad_accumulation` : int, optional
+        Number of gradient accumulation steps before optimizer update (default: 1).
+    `progress_frequency` : int, optional
+        Frequency (in epochs) for printing training progress (default: 1).
+    `compilation` : bool, optional
+        Whether to compile models for optimization (default: False).
+    `output_range` : Tuple[float, float], optional
+        Range for clamping output embeddings (default: (-1.0, 1.0)).
+    `reduce_dim` : bool, optional
+        Whether to apply dimension reduction to embeddings (default: True).
+    `output_dim` : int, optional
+        Target dimensionality for reduced embeddings (default: 319).
+    `normalize` : bool, optional
+        Whether to normalize CLIP embeddings (default: True).
+    """
+
     def __init__(
             self,
             prior_model: nn.Module,
             clip_model: nn.Module,
-            hyper_params: nn.Module,
-            forward_diffusion: nn.Module,
             train_loader: torch.utils.data.DataLoader,
             optimizer: torch.optim.Optimizer,
             objective: Callable,
-            text_projection: Optional[nn.Module] = None,  # used instead of PCA in the main paper
-            image_projection: Optional[nn.Module] = None,  # used instead of PCA in the main paper
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epochs: int = 1000,
             device: Optional[Union[str, torch.device]] = None,
@@ -45,7 +90,12 @@ class TrainUnCLIPPrior(nn.Module):
         # Training configuration
         self.use_ddp = use_ddp
         self.num_grad_accumulation = num_grad_accumulation
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
 
         # Setup distributed training
         if self.use_ddp:
@@ -56,17 +106,6 @@ class TrainUnCLIPPrior(nn.Module):
         # Core models
         self.prior_model = prior_model.to(self.device)
         self.clip_model = clip_model.to(self.device)
-        self.hyper_params = hyper_params.to(self.device)
-        self.forward_diffusion = forward_diffusion.to(self.device)
-
-        # Projection models (for dimensionality reduction)
-        self.reduce_dim = reduce_dim
-        if self.reduce_dim and text_projection is not None and image_projection is not None:
-            self.text_projection = text_projection.to(self.device)
-            self.image_projection = image_projection.to(self.device)
-        else:
-            self.text_projection = None
-            self.image_projection = None
 
         # Training components
         self.optimizer = optimizer
@@ -99,6 +138,18 @@ class TrainUnCLIPPrior(nn.Module):
 
 
     def _setup_ddp(self) -> None:
+        """Sets up Distributed Data Parallel training configuration.
+
+        Initializes the process group, sets up rank information, and configures the CUDA
+        device for the current process.
+
+        Raises
+        ------
+        ValueError
+            If required DDP environment variables (RANK, LOCAL_RANK, WORLD_SIZE) are not set.
+        RuntimeError
+            If CUDA is not available when DDP is enabled.
+        """
 
         required_env_vars = ["RANK", "LOCAL_RANK", "WORLD_SIZE"]
         for var in required_env_vars:
@@ -131,7 +182,11 @@ class TrainUnCLIPPrior(nn.Module):
 
 
     def _setup_single_gpu(self) -> None:
-        """Setup single GPU or CPU training configuration."""
+        """Sets up single GPU or CPU training configuration.
+
+        Configures the training setup for single-device operation, setting rank and process
+        information for non-DDP training.
+        """
         self.ddp_rank = 0
         self.ddp_local_rank = 0
         self.ddp_world_size = 1
@@ -139,12 +194,32 @@ class TrainUnCLIPPrior(nn.Module):
 
     @staticmethod
     def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
+        """Creates a learning rate scheduler for warmup.
+
+        Generates a scheduler that linearly increases the learning rate from 0 to the
+        optimizer's initial value over the specified warmup epochs.
+
+        Parameters
+        ----------
+        `optimizer` : torch.optim.Optimizer
+            Optimizer to apply the scheduler to.
+        `warmup_epochs` : int
+            Number of epochs for the warmup phase.
+
+        Returns
+        -------
+        lr_scheduler : torch.optim.lr_scheduler.LambdaLR
+            Learning rate scheduler for warmup.
+        """
         def lr_lambda(epoch):
             return min(1.0, epoch / warmup_epochs) if warmup_epochs > 0 else 1.0
         return LambdaLR(optimizer, lr_lambda)
 
     def _wrap_models_for_ddp(self) -> None:
-        """Wrap models with DistributedDataParallel for multi-GPU training."""
+        """Wraps the prior model with DistributedDataParallel for multi-GPU training.
+
+        Configures the prior model for DDP, setting device IDs and handling unused parameters.
+        """
         if self.use_ddp:
             # Wrap prior with DDP
             self.prior_model = DDP(
@@ -152,18 +227,17 @@ class TrainUnCLIPPrior(nn.Module):
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
-            if self.reduce_dim:
-                self.text_projection = DDP(self.text_projection, device_ids=[self.ddp_local_rank])
-                self.image_projection = DDP(self.image_projection, device_ids=[self.ddp_local_rank])
 
     def _compile_models(self) -> None:
-        """Compile models for optimization if supported."""
+        """Compiles models for optimization if supported.
+
+        Attempts to compile the prior model using torch.compile for performance optimization,
+        with fallback to uncompiled models if compilation fails.
+        """
         if self.compilation:
             try:
                 self.prior_model = torch.compile(self.prior_model)
-                if self.reduce_dim:
-                    self.text_projection = torch.compile(self.text_projection)
-                    self.image_projection = torch.compile(self.image_projection)
+
                 if self.master_process:
                     print("Models compiled successfully")
             except Exception as e:
@@ -171,11 +245,21 @@ class TrainUnCLIPPrior(nn.Module):
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
     def forward(self) -> Tuple[List[float], float]:
+        """Trains the UnCLIP prior model.
+
+        Executes the training loop, optimizing the prior model to predict clean image embeddings
+        from noisy embeddings and text conditions, with support for validation, early stopping,
+        and checkpointing.
+
+        Returns
+        -------
+        train_losses : List[float]
+            List of mean training losses per epoch.
+        best_val_loss : float
+            Best validation or training loss achieved.
+        """
         # Set models to training mode
         self.prior_model.train()
-        if self.reduce_dim:
-            self.text_projection.train()
-            self.image_projection.train()
 
         # Compile and wrap models
         self._compile_models()
@@ -260,6 +344,23 @@ class TrainUnCLIPPrior(nn.Module):
 
 
     def _compute_training_loss(self, images: torch.Tensor, texts: List[str]) -> torch.Tensor:
+        """Computes the training loss for the UnCLIP prior model.
+
+        Calculates the loss by encoding images and text with CLIP, applying forward diffusion,
+        predicting clean embeddings, and comparing with target embeddings.
+
+        Parameters
+        ----------
+        `images` : torch.Tensor
+            Input images, shape (batch_size, channels, height, width).
+        `texts` : List[str]
+            List of text prompts for conditioning.
+
+        Returns
+        -------
+        loss : torch.Tensor
+            Loss value computed between predicted and target embeddings.
+        """
 
         with torch.no_grad():
             # Encode text and image with CLIP
@@ -271,14 +372,14 @@ class TrainUnCLIPPrior(nn.Module):
 
         # Reduce dimensionality (optional)
         if self.reduce_dim:
-            text_embeddings = self.text_projection(text_embeddings)
-            image_embeddings = self.image_projection(image_embeddings)
+            text_embeddings = self.prior_model.text_projection(text_embeddings)
+            image_embeddings = self.prior_model.image_projection(image_embeddings)
             #print("encoded images: ", image_embeddings.size())
             #print("encoded text: ", text_embeddings.size())
 
         # Sample timestep t ~ Uniform(1, T)
         batch_size = image_embeddings.shape[0]
-        timesteps = torch.randint(0, self.hyper_params.num_steps, (batch_size,), device=self.device)
+        timesteps = torch.randint(0, self.prior_model.forward_diffusion.variance_scheduler.num_steps, (batch_size,), device=self.device)
         #print("time ", timesteps.size())
 
         # Sample noise ε ~ N(0, I)
@@ -286,7 +387,7 @@ class TrainUnCLIPPrior(nn.Module):
         #print("noise ", noise.size())
 
         # Compute noised embedding z_{i,t}
-        noisy_image_embeddings = self.forward_diffusion(image_embeddings, noise, timesteps)
+        noisy_image_embeddings = self.prior_model.forward_diffusion(image_embeddings, noise, timesteps)
         #print("noisy image: ", noisy_image_embeddings.size())
 
         # Predict unnoised embedding ẑ_i
@@ -294,8 +395,8 @@ class TrainUnCLIPPrior(nn.Module):
 
         # Transform back to original space if using dimension reduction
         if self.reduce_dim:
-            predicted_image_embeddings = self.image_projection.inverse_transform(predicted_image_embeddings)
-            target_embeddings = self.image_projection.inverse_transform(image_embeddings)
+            predicted_image_embeddings = self.prior_model.image_projection.inverse_transform(predicted_image_embeddings)
+            target_embeddings = self.prior_model.image_projection.inverse_transform(image_embeddings)
         else:
             target_embeddings = image_embeddings
 
@@ -303,22 +404,42 @@ class TrainUnCLIPPrior(nn.Module):
         loss = self.objective(predicted_image_embeddings, target_embeddings)
         return loss
 
-    def _optimizer_step(self, scaler: torch.cuda.amp.GradScaler) -> None:
-        """Perform optimizer step with gradient clipping."""
+    def _optimizer_step(self, scaler: torch.GradScaler) -> None:
+        """Performs an optimizer step with gradient clipping.
+
+        Applies gradient clipping, updates the optimizer with scaled gradients, and resets
+        gradients for the next iteration.
+
+        Parameters
+        ----------
+        `scaler` : torch.GradScaler
+            Gradient scaler for mixed precision training.
+        """
         scaler.unscale_(self.optimizer)
 
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(self.prior_model.parameters(), max_norm=1.0)
-        if self.reduce_dim:
-            torch.nn.utils.clip_grad_norm_(self.image_projection.parameters(), max_norm=1.0)
-            torch.nn.utils.clip_grad_norm_(self.text_projection.parameters(), max_norm=1.0)
 
         scaler.step(self.optimizer)
         scaler.update()
         self.optimizer.zero_grad()
 
     def _compute_mean_loss(self, losses: List[float]) -> float:
-        """Compute mean loss and sync across processes if using DDP."""
+        """Computes the mean loss and synchronizes across processes if using DDP.
+
+        Calculates the mean of the provided loss values and performs an all-reduce operation
+        in DDP mode to synchronize the loss across processes.
+
+        Parameters
+        ----------
+        `losses` : List[float]
+            List of loss values from a training or validation epoch.
+
+        Returns
+        -------
+        mean_loss : float
+            Mean loss value, synchronized across processes if DDP is enabled.
+        """
         mean_loss = torch.tensor(losses).mean().item()
 
         if self.use_ddp:
@@ -330,12 +451,18 @@ class TrainUnCLIPPrior(nn.Module):
 
 
     def validate(self) -> float:
+        """Validates the UnCLIP prior model.
+
+        Computes the validation loss by encoding images and text, applying forward diffusion,
+        predicting clean embeddings, and comparing with target embeddings.
+
+        Returns
+        -------
+        val_loss : float
+            Mean validation loss, synchronized across processes if DDP is enabled.
+        """
 
         self.prior_model.eval()
-        if self.reduce_dim:
-            self.text_projection.eval()
-            self.image_projection.eval()
-
 
         val_losses = []
 
@@ -349,20 +476,20 @@ class TrainUnCLIPPrior(nn.Module):
                 original_image_embeddings = image_embeddings.clone()
 
                 if self.reduce_dim:
-                    text_embeddings = self.text_projection(text_embeddings)
-                    image_embeddings = self.image_projection(image_embeddings)
+                    text_embeddings = self.prior_model.text_projection(text_embeddings)
+                    image_embeddings = self.prior_model.image_projection(image_embeddings)
 
                 # Forward diffusion
                 batch_size = image_embeddings.shape[0]
-                timesteps = torch.randint(0, self.hyper_params.num_steps, (batch_size,), device=self.device)
+                timesteps = torch.randint(0, self.prior_model.forward_diffusion.variance_scheduler.num_steps, (batch_size,), device=self.device)
                 noise = torch.randn_like(image_embeddings)
-                noisy_image_embeddings = self.forward_diffusion(image_embeddings, noise, timesteps)
+                noisy_image_embeddings = self.prior_model.forward_diffusion(image_embeddings, noise, timesteps)
 
                 # Predict
                 predicted_embeddings = self.prior_model(text_embeddings, noisy_image_embeddings, timesteps)
 
                 if self.reduce_dim:
-                    predicted_embeddings = self.image_projection.inverse_transform(predicted_embeddings)
+                    predicted_embeddings = self.prior_model.image_projection.inverse_transform(predicted_embeddings)
 
                 # Compute loss
                 loss = self.objective(predicted_embeddings, original_image_embeddings)
@@ -374,15 +501,27 @@ class TrainUnCLIPPrior(nn.Module):
 
         # Return to training mode
         self.prior_model.train()
-        if self.reduce_dim:
-            self.text_projection.train()
-            self.image_projection.train()
 
         return val_loss
 
 
     def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "", is_best: bool = False) -> None:
-        """Save model checkpoint."""
+        """Saves a model checkpoint.
+
+        Saves the state of the prior model and optimizer to a checkpoint file, with options
+        for best model or early stopping checkpoints.
+
+        Parameters
+        ----------
+        `epoch` : int
+            Current epoch number.
+        `loss` : float
+            Current loss value.
+        `suffix` : str, optional
+            Suffix to append to the checkpoint filename, default "".
+        `is_best` : bool, optional
+            Whether to save the checkpoint as the best model, default False.
+        """
         try:
             # Get state dicts
             prior_state = (
@@ -395,24 +534,8 @@ class TrainUnCLIPPrior(nn.Module):
                 'prior_model_state_dict': prior_state,
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'loss': loss,
-                'hyper_params_model': (
-                    self.hyper_params.state_dict()
-                    if isinstance(self.hyper_params, nn.Module)
-                    else self.hyper_params
-                ),
                 'max_epochs': self.max_epochs,
             }
-
-            # Add projection models if used
-            if self.reduce_dim:
-                checkpoint['image_projection_state_dict'] = (
-                    self.image_projection.module.state_dict() if self.use_ddp
-                    else self.image_projection.state_dict()
-                )
-                checkpoint['text_projection_state_dict'] = (
-                    self.text_projection.module.state_dict() if self.use_ddp
-                    else self.text_projection.state_dict()
-                )
 
             # Create the directory if it doesn't exist
             os.makedirs(self.store_path, exist_ok=True)
@@ -435,7 +558,23 @@ class TrainUnCLIPPrior(nn.Module):
             print(f"Failed to save checkpoint: {e}")
 
     def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, float]:
-        """Load model checkpoint."""
+        """Loads a model checkpoint to resume training.
+
+        Restores the prior model and optimizer states from a saved checkpoint, handling
+        DDP compatibility for state dictionaries.
+
+        Parameters
+        ----------
+        `checkpoint_path` : str
+            Path to the checkpoint file.
+
+        Returns
+        -------
+        epoch : int
+            The epoch at which the checkpoint was saved.
+        loss : float
+            The loss value at the checkpoint.
+        """
         try:
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
@@ -453,33 +592,12 @@ class TrainUnCLIPPrior(nn.Module):
 
             self.prior_model.load_state_dict(state_dict)
 
-        # Load projection models
-        if self.reduce_dim:
-            for model_name, model in [('image_projection', self.image_projection),
-                                      ('text_projection', self.text_projection)]:
-                key = f'{model_name}_state_dict'
-                if key in checkpoint:
-                    try:
-                        model.load_state_dict(checkpoint[key])
-                    except Exception as e:
-                        warnings.warn(f"Failed to load {model_name}: {e}")
-
         # Load optimizer
         if 'optimizer_state_dict' in checkpoint:
             try:
                 self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             except Exception as e:
                 warnings.warn(f"Failed to load optimizer state: {e}")
-
-        # Load scheduler
-        if 'hyper_params_model' in checkpoint:
-            try:
-                if isinstance(self.hyper_params, nn.Module):
-                    self.hyper_params.load_state_dict(checkpoint['hyper_params_model'])
-                else:
-                    self.hyper_params = checkpoint['hyper_params_model']
-            except Exception as e:
-                warnings.warn(f"Failed to load hyperparams model: {e}")
 
         epoch = checkpoint.get('epoch', 0)
         loss = checkpoint.get('loss', float('inf'))
@@ -490,11 +608,12 @@ class TrainUnCLIPPrior(nn.Module):
         return epoch, loss
 
 
+
 """
-from prior_diff import ForwardDIF, HyperParamsDIF
+from prior_diff import ForwardUnCLIP, ReverseUnCLIP, VarianceSchedulerUnCLIP
 from prior_model import UnCLIPTransformerPrior
 from clip_model import CLIPEncoder
-from projection_layer import Projection
+from project_prior import Projection
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset, Dataset
 import torch
@@ -553,23 +672,12 @@ test_subset = Subset(test_dataset, test_subset_indices)
 t_loader = DataLoader(train_subset, batch_size=32, shuffle=True, pin_memory=True)
 val = DataLoader(test_subset, batch_size=10, shuffle=False, pin_memory=True)
 
-h_model = HyperParamsDIF(
+h_model = VarianceSchedulerUnCLIP(
     num_steps=1000,
     beta_start=1e-4,
     beta_end=0.02,
-    trainable_beta=False,
+    trainable_beta=True,
     beta_method="cosine"
-)
-
-d_model = ForwardDIF(h_model)
-
-p_model = UnCLIPTransformerPrior(
-    embedding_dim=320,
-    num_layers=12,
-    num_attention_heads=8,
-    feedforward_dim=512,
-    max_sequence_length=2,
-    dropout_rate=0.3
 )
 
 c_model = CLIPEncoder(model_name="openai/clip-vit-base-patch32")
@@ -590,11 +698,25 @@ ip = Projection(
     use_layer_norm=True
 )
 
-opt = torch.optim.AdamW(
-    [p for p in h_model.parameters() if p.requires_grad] +
-    [p for p in p_model.parameters() if p.requires_grad] +
-    [p for p in tp.parameters() if p.requires_grad] +
-    [p for p in ip.parameters() if p.requires_grad], lr=1e-3)
+d_model = ForwardUnCLIP(h_model)
+r_model = ReverseUnCLIP(h_model)
+
+p_model = UnCLIPTransformerPrior(
+    forward_diffusion=d_model,
+    reverse_diffusion=r_model, # will be used during training
+    text_projection=tp,  # used during training instead of PCA in the main paper
+    image_projection=ip,
+    embedding_dim=320,
+    num_layers=12,
+    num_attention_heads=8,
+    feedforward_dim=512,
+    max_sequence_length=2,
+    dropout_rate=0.3
+)
+
+
+
+opt = torch.optim.AdamW([p for p in p_model.parameters() if p.requires_grad], lr=1e-3)
 
 models = [h_model, p_model, tp, ip]
 
@@ -610,13 +732,9 @@ obj = nn.MSELoss()
 train = TrainUnCLIPPrior(
     prior_model=p_model,
     clip_model=c_model,
-    hyper_params=h_model,
-    forward_diffusion=d_model,
     train_loader=t_loader,
     optimizer=opt,
     objective=obj,
-    text_projection=tp,  # used instead of PCA in the main paper
-    image_projection=ip,  # used instead of PCA in the main paper
     val_loader=val,
     max_epochs=5,
     device="cuda",

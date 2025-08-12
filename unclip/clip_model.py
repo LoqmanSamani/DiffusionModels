@@ -9,28 +9,26 @@ from transformers import CLIPProcessor, CLIPModel
 
 
 class CLIPEncoder(nn.Module):
-    """A PyTorch module for encoding images or text using a CLIP model.
+    """Encodes images or text using a pre-trained CLIP model.
 
-    Attributes:
-        model_name (str): Name of the CLIP model (e.g., 'openai/clip-vit-base-patch32').
-        model (CLIPModel): The loaded CLIP model from transformers.
-        processor (CLIPProcessor): The CLIP processor for preprocessing inputs.
-        device (str): The device to run the model on (e.g., 'cuda' or 'cpu').
+    Loads a CLIP model and processor from the transformers library, providing methods to
+    encode images or text into embeddings and compute similarity scores between them.
+
+    Parameters
+    ----------
+    `model_name` : str, optional
+        Name of the CLIP model to load (default: 'openai/clip-vit-base-patch32').
+    `device` : str, optional
+        Device to run the model on (default: 'cuda' if available, else 'cpu').
+    `use_fast` : bool, optional
+        Whether to use the fast image processor (torchvision-based) (default: False).
     """
-
     def __init__(
         self,
         model_name: str = "openai/clip-vit-base-patch32",
         device: Optional[str] = None,
         use_fast: bool = False,
     ) -> None:
-        """Initialize the CLIP model, processor, and optional projection layer.
-
-        Args:
-            model_name (str): Name of the CLIP model to load. Defaults to 'openai/clip-vit-base-patch32'.
-            device (str, optional): Device to run the model on. If None, auto-selects 'cuda' if available, else 'cpu'.
-            use_fast (bool): Whether to use the fast image processor (torchvision-based). Defaults to False.
-        """
         super().__init__()
 
         # Set model name and device
@@ -56,17 +54,25 @@ class CLIPEncoder(nn.Module):
     ) -> torch.Tensor:
         """Encodes input data (image or text) using the CLIP model.
 
-        Args:
-            data: Input data to encode. Can be:
-                - torch.Tensor: Preprocessed image tensor (batch_size, channels, height, width).
-                - List[str] or str: Text or list of texts to encode.
-                - PIL.Image.Image or List[PIL.Image.Image]: Single or list of PIL images.
-            data_type (str): Type of input data ('img' or 'text').
-            normalize (bool): Whether to L2-normalize the output embeddings. Defaults to True.
+        Processes input data (images or text) to produce embeddings, with optional L2
+        normalization.
 
-        Returns:
-            torch.Tensor: Encoded features (image or text embeddings).
-                Shape: (batch_size, embedding_dim).
+        Parameters
+        ----------
+        `data` : Union[torch.Tensor, List[str], str, Image.Image, List[Image.Image]]
+            Input data to encode:
+                - torch.Tensor: Preprocessed image tensor (batch_size, channels, height, width).
+                - List[str] or str: Text or list of texts.
+                - PIL.Image.Image or List[PIL.Image.Image]: Single or list of PIL images.
+        `data_type` : str
+            Type of input data ('img' or 'text').
+        `normalize` : bool, optional
+            Whether to L2-normalize the output embeddings (default: True).
+
+        Returns
+        -------
+        outputs : torch.Tensor
+            Encoded embeddings, shape (batch_size, embedding_dim).
         """
         if data_type not in ["img", "text"]:
             raise ValueError(f"Invalid data_type: {data_type}. Must be 'img' or 'text'.")
@@ -84,7 +90,20 @@ class CLIPEncoder(nn.Module):
             return outputs
 
     def _encode_images(self, data: Union[torch.Tensor, Image.Image, List[Image.Image]]) -> torch.Tensor:
-        """Helper method to encode images."""
+        """Encodes images into embeddings using the CLIP model.
+
+        Processes image inputs (tensors or PIL images) to produce image embeddings.
+
+        Parameters
+        ----------
+        `data` : Union[torch.Tensor, Image.Image, List[Image.Image]]
+            Input images as a tensor or PIL image(s).
+
+        Returns
+        -------
+        image_features : torch.Tensor
+            Image embeddings, shape (batch_size, embedding_dim).
+        """
         if isinstance(data, torch.Tensor):
             if data.dim() == 3:
                 data = data.unsqueeze(0)
@@ -95,13 +114,24 @@ class CLIPEncoder(nn.Module):
             inputs = self.processor(images=data, return_tensors="pt", padding=True)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
         else:
-            raise ValueError(
-                f"Invalid image data type: {type(data)}. Expected torch.Tensor, PIL.Image.Image, or List[PIL.Image.Image]."
-            )
+            raise ValueError(f"Invalid image data type: {type(data)}. Expected torch.Tensor, PIL.Image.Image, or List[PIL.Image.Image].")
         return self.model.get_image_features(**inputs)
 
     def _encode_texts(self, data: Union[str, List[str], torch.Tensor]) -> torch.Tensor:
-        """Helper method to encode texts."""
+        """Encodes texts into embeddings using the CLIP model.
+
+        Processes text inputs (strings or tokenized tensors) to produce text embeddings.
+
+        Parameters
+        ----------
+        `data` : Union[str, List[str], torch.Tensor]
+            Input texts as strings or tokenized tensor.
+
+        Returns
+        -------
+        text_features : torch.Tensor
+            Text embeddings, shape (batch_size, embedding_dim).
+        """
         if isinstance(data, torch.Tensor):
             data = data.to(self.device)
             if data.dim() == 2:
@@ -125,14 +155,21 @@ class CLIPEncoder(nn.Module):
         return self.model.get_text_features(**inputs)
 
     def compute_similarity(self, image_features: torch.Tensor, text_features: torch.Tensor) -> torch.Tensor:
-        """Compute cosine similarity between image and text features.
+        """Computes cosine similarity between image and text embeddings.
 
-        Args:
-            image_features: Image embeddings (batch_size, output_dim or embedding_dim)
-            text_features: Text embeddings (batch_size, output_dim or embedding_dim)
+        Calculates the cosine similarity matrix between batches of image and text embeddings.
 
-        Returns:
-            torch.Tensor: Similarity scores (batch_size, batch_size)
+        Parameters
+        ----------
+        `image_features` : torch.Tensor
+            Image embeddings, shape (batch_size, embedding_dim).
+        `text_features` : torch.Tensor
+            Text embeddings, shape (batch_size, embedding_dim).
+
+        Returns
+        -------
+        similarity : torch.Tensor
+            Cosine similarity scores, shape (batch_size, batch_size).
         """
         image_features = F.normalize(image_features, p=2, dim=-1)
         text_features = F.normalize(text_features, p=2, dim=-1)
