@@ -268,36 +268,46 @@ class ForwardUnCLIP(nn.Module):
         xt = sqrt_alpha_cumprod_t * x0 + sqrt_one_minus_alpha_cumprod_t * noise
         return xt
 
+
 class ReverseUnCLIP(nn.Module):
     """Reverse diffusion process for UnCLIP diffusion models.
 
-    Denoises a noisy input `xt` using a predicted noise component and a subsampled time
-    step schedule, supporting both 2D (e.g., latent embeddings) and 4D (e.g., image) inputs.
+    Denoises a noisy input `xt` using either a predicted noise component or predicted clean image
+    and a subsampled time step schedule, supporting both 2D (e.g., latent embeddings) and 4D (e.g., image) inputs.
 
     Parameters
     ----------
     `variance_scheduler` : torch.nn.Module
         Variance scheduler module (e.g., VarianceSchedulerUnCLIP) containing the noise
         schedule parameters.
+    `prediction_type` : str, default "noise"
+        Type of prediction the model makes. Either "noise" (predicts noise like DDIM) or
+        "x0" (predicts clean image like UnCLIP prior).
     """
-    def __init__(self, variance_scheduler: torch.nn.Module):
+
+    def __init__(self, variance_scheduler: torch.nn.Module, prediction_type: str = "noise"):
         super().__init__()
         self.variance_scheduler = variance_scheduler
+        if prediction_type not in ["noise", "x0"]:
+            raise ValueError(f"prediction_type must be either 'noise' or 'x0', got {prediction_type}")
+        self.prediction_type = prediction_type
 
-    def forward(self, xt: torch.Tensor, predicted_noise: torch.Tensor, time_steps: torch.Tensor, prev_time_steps: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, xt: torch.Tensor, model_prediction: torch.Tensor, time_steps: torch.Tensor,
+                prev_time_steps: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Applies the reverse diffusion process to the noisy input.
 
         Denoises the input `xt` at time step `t` to produce the previous step `xt_prev`
-        at `prev_time_steps` using the predicted noise and the UnCLIP reverse process.
-        Supports both 2D and 4D inputs.
+        at `prev_time_steps` using either the predicted noise or predicted clean image
+        and the UnCLIP reverse process. Supports both 2D and 4D inputs.
 
         Parameters
         ----------
         `xt` : torch.Tensor
             Noisy input tensor at time step `t`, shape (batch_size, embedding_dim) for 2D
             or (batch_size, channels, height, width) for 4D.
-        `predicted_noise` : torch.Tensor
-            Predicted noise tensor, same shape as `xt`, typically output by a neural network.
+        `model_prediction` : torch.Tensor
+            Model prediction tensor, same shape as `xt`. Can be either predicted noise
+            or predicted clean image depending on `prediction_type`.
         `time_steps` : torch.Tensor
             Tensor of time step indices (long), shape (batch_size,), where each value
             is in the range [0, variance_scheduler.tau_num_steps - 1].
@@ -318,29 +328,60 @@ class ReverseUnCLIP(nn.Module):
             raise ValueError(f"prev_time_steps must be between 0 and {self.variance_scheduler.tau_num_steps - 1}")
 
         _, _, _, tau_sqrt_alpha_cumprod, tau_sqrt_one_minus_alpha_cumprod = self.variance_scheduler.get_tau_schedule()
-        # check input dimensions and adjust reshaping for 2D or 4D tensors
+
+        # Check input dimensions and adjust reshaping for 2D or 4D tensors
         is_2d = xt.dim() == 2  # check if input is 2D (batch_size, embedding_dim)
         if is_2d:
             # for 2D inputs, reshape to [batch_size, 1]
             tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[time_steps].to(xt.device).view(-1, 1)
             tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[time_steps].to(xt.device).view(-1, 1)
             prev_tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1)
-            prev_tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1)
+            prev_tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[prev_time_steps].to(
+                xt.device).view(-1, 1)
         else:
             # for 4D inputs, reshape to [batch_size, 1, 1, 1]
             tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[time_steps].to(xt.device).view(-1, 1, 1, 1)
-            tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[time_steps].to(xt.device).view(-1, 1, 1, 1)
+            tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[time_steps].to(xt.device).view(-1, 1,
+                                                                                                                 1, 1)
             prev_tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1, 1, 1)
-            prev_tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1, 1, 1)
+            prev_tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[prev_time_steps].to(
+                xt.device).view(-1, 1, 1, 1)
 
         eta = self.variance_scheduler.eta
-        x0 = (xt - tau_sqrt_one_minus_alpha_cumprod_t * predicted_noise) / tau_sqrt_alpha_cumprod_t
+
+        predicted_noise = None
+        x0 = None
+        # Handle different prediction types
+        if self.prediction_type == "noise":
+            # model predicts noise
+            predicted_noise = model_prediction
+            x0 = (xt - tau_sqrt_one_minus_alpha_cumprod_t * predicted_noise) / tau_sqrt_alpha_cumprod_t
+        elif self.prediction_type == "x0":
+            # model predicts clean image
+            x0 = model_prediction
+            # Calculate implied noise from the predicted clean image
+            predicted_noise = (xt - tau_sqrt_alpha_cumprod_t * x0) / tau_sqrt_one_minus_alpha_cumprod_t
+
+        # DDIM sampling step (same for both prediction types)
         noise_coeff = eta * ((tau_sqrt_one_minus_alpha_cumprod_t / prev_tau_sqrt_alpha_cumprod_t) *
-                             prev_tau_sqrt_one_minus_alpha_cumprod_t / torch.clamp(tau_sqrt_one_minus_alpha_cumprod_t, min=1e-8))
+                             prev_tau_sqrt_one_minus_alpha_cumprod_t / torch.clamp(tau_sqrt_one_minus_alpha_cumprod_t,
+                                                                                   min=1e-8))
         direction_coeff = torch.clamp(prev_tau_sqrt_one_minus_alpha_cumprod_t ** 2 - noise_coeff ** 2, min=1e-8).sqrt()
         xt_prev = prev_tau_sqrt_alpha_cumprod_t * x0 + noise_coeff * torch.randn_like(xt) + direction_coeff * predicted_noise
+
         return xt_prev, x0
 
+    def set_prediction_type(self, prediction_type: str):
+        """Change the prediction type after initialization.
+
+        Parameters
+        ----------
+        prediction_type : str
+            Type of prediction the model makes. Either "noise" or "x0".
+        """
+        if prediction_type not in ["noise", "x0"]:
+            raise ValueError(f"prediction_type must be either 'noise' or 'x0', got {prediction_type}")
+        self.prediction_type = prediction_type
 
 """
 hyp = VarianceSchedulerUnCLIP(

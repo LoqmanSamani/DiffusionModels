@@ -157,6 +157,8 @@ class UnClipDecoder(nn.Module):
         # print("predicted noise : ", predicted_noise.size())
 
         return predicted_noise, noise
+    def inference_forward(self, image_embeddings, prompt_embeddings):
+        pass
 
     def _apply_classifier_free_guidance(self, image_embeddings: torch.Tensor, p_value: float) -> torch.Tensor:
         """Applies classifier-free guidance to image embeddings.
