@@ -41,6 +41,7 @@ class UpsamplerUnCLIP(nn.Module):
     def __init__(
             self,
             forward_diffusion: nn.Module,
+            reverse_diffusion: nn.Module,
             in_channels: int = 3,
             out_channels: int = 3,
             model_channels: int = 192,
@@ -54,6 +55,7 @@ class UpsamplerUnCLIP(nn.Module):
         super().__init__()
 
         self.forward_diffusion = forward_diffusion # this will be used on training time inside 'TrainUpsamplerUnCLIP'
+        self.reverse_diffusion = reverse_diffusion # this module will be used in inference time
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.model_channels = model_channels
