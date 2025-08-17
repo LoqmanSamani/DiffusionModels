@@ -135,7 +135,7 @@ class UnClipDecoder(nn.Module):
         # encode text with GLIDE
         y_encoded = self._encode_text_with_glide(texts if text_embeddings is not None else None)
         # if y_encoded is not None:
-        # print("y_encodded : ", y_encoded.size())
+        #print("y_encodded : ", y_encoded.size())
 
         # concatenate embeddings
         context = self._concatenate_embeddings(y_encoded, c)
@@ -249,6 +249,7 @@ class UnClipDecoder(nn.Module):
         input_ids = tokenized["input_ids"]
         attention_mask = tokenized["attention_mask"]
         y_encoded = self.conditional_model(input_ids, attention_mask)
+        print("y shape: ", y_encoded.size())
 
         return y_encoded
 

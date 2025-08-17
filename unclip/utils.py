@@ -56,7 +56,7 @@ class TextEncoder(torch.nn.Module):
     model_name : str, optional
         Name of the pre-trained model to load (default: "bert-base-uncased").
     vocabulary_size : int, optional
-        Size of the vocabulary for the custom transformer’s embedding layer
+        Size of the vocabulary for the custom transformer's embedding layer
         (default: 30522).
     num_layers : int, optional
         Number of transformer encoder layers for the custom transformer (default: 6).
@@ -75,7 +75,7 @@ class TextEncoder(torch.nn.Module):
         If True, includes bias in query, key, and value projections for the custom
         transformer (default: False).
     scaling_value : int, optional
-        Scaling factor for the feedforward layer’s hidden dimension in the custom
+        Scaling factor for the feedforward layer's hidden dimension in the custom
         transformer (default: 4).
     epsilon : float, optional
         Epsilon for layer normalization in the custom transformer (default: 1e-5).
@@ -85,7 +85,7 @@ class TextEncoder(torch.nn.Module):
 
     **Notes**
 
-    - When `use_pretrained_model` is True, the BERT model’s parameters are frozen
+    - When `use_pretrained_model` is True, the BERT model's parameters are frozen
       (`requires_grad = False`), and a projection layer maps outputs to
       `output_dimension`.
     - The custom transformer uses `EncoderLayer` modules with multi-head attention and
@@ -134,6 +134,7 @@ class TextEncoder(torch.nn.Module):
                 )
                 for _ in range(num_layers)
             ])
+
     def forward(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Encodes text prompts into embeddings.
 
@@ -159,7 +160,7 @@ class TextEncoder(torch.nn.Module):
         - For the custom transformer, token embeddings are processed through
           `Embedding` and `EncoderLayer` modules.
         - The attention mask should be 0 for padding tokens and 1 for valid tokens when
-          using the custom transformer, or follow BERT’s convention for pre-trained
+          using the custom transformer, or follow BERT's convention for pre-trained
           models.
         """
         if self.use_pretrained_model:
@@ -171,7 +172,6 @@ class TextEncoder(torch.nn.Module):
             for layer in self.layers:
                 x = layer(x, attention_mask=attention_mask)
         return x
-
 ###==================================================================================================================###
 
 class EncoderLayer(torch.nn.Module):
@@ -748,6 +748,7 @@ class NoisePredictor(nn.Module):
         output = self.conv1(x)
         time_embed = GetEmbeddedTime(embed_dim=self.time_embed_dim)(time_steps=t)
         time_embed = self.time_projection(time_embed)
+        #print("time embedded size (before concat): ", time_embed.size())
         #print("time embed:", time_embed.size())
         #print("clip embed (before)", clip_embeddings.size())
         if clip_embeddings is not None:
@@ -758,6 +759,7 @@ class NoisePredictor(nn.Module):
 
                 #print("clip imbed (after)", clip_embeddings.size())
             time_embed = time_embed + clip_embeddings
+            #print("time embedded size (after concat): ", time_embed.size())
 
         skip_connections = []
         for i, down in enumerate(self.down_blocks):
