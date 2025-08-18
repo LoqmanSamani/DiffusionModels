@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class Projection(nn.Module):
+class CLIPEmbeddingProjection(nn.Module):
     """Projection module for dimensionality reduction and reconstruction.
 
     Implements a neural network with forward and inverse projections to reduce and
@@ -11,41 +11,41 @@ class Projection(nn.Module):
 
     Parameters
     ----------
-    `input_dim` : int, optional
+    `clip_embedding_dim` : int, optional
         Input dimensionality (default: 1024).
-    `output_dim` : int, optional
+    `transformer_embedding_dim` : int, optional
         Output dimensionality for forward projection (default: 320).
     `hidden_dim` : int, optional
         Hidden layer dimensionality (default: 512).
     `num_layers` : int, optional
         Number of layers in the projection network (default: 2).
-    `dropout` : float, optional
+    `dropout_rate` : float, optional
         Dropout probability for regularization (default: 0.2).
     `use_layer_norm` : bool, optional
         Whether to apply layer normalization after hidden layers (default: True).
     """
     def __init__(
         self,
-        input_dim: int = 1024,
-        output_dim: int = 320,
+        clip_embedding_dim: int = 1024,
+        transformer_embedding_dim: int = 320,
         hidden_dim: int = 512,
         num_layers: int = 2,
-        dropout: float = 0.2,
+        dropout_rate: float = 0.2,
         use_layer_norm: bool = True
     ) -> None:
         super().__init__()
 
-        self.input_dim = input_dim
-        self.output_dim = output_dim
+        self.clip_embedding_dim = clip_embedding_dim
+        self.transformer_embedding_dim = transformer_embedding_dim
 
         # Forward projection: input_dim -> output_dim
         self.forward_projection = self._build_projection_network(
-            input_dim, output_dim, hidden_dim, num_layers, dropout, use_layer_norm
+            clip_embedding_dim, transformer_embedding_dim, hidden_dim, num_layers, dropout_rate, use_layer_norm
         )
 
         # Inverse projection: output_dim -> input_dim
         self.inverse_projection = self._build_projection_network(
-            output_dim, input_dim, hidden_dim, num_layers, dropout, use_layer_norm
+            transformer_embedding_dim, clip_embedding_dim, hidden_dim, num_layers, dropout_rate, use_layer_norm
         )
     def _build_projection_network(
             self,

@@ -20,7 +20,7 @@ class TrainUnClipDecoder(nn.Module):
 
     Parameters
     ----------
-    `embedding_dim` : int
+    `clip_embedding_dim` : int
         Dimensionality of the input embeddings.
     `decoder_model` : nn.Module
         The UnCLIP decoder model (e.g., UnClipDecoder) to be trained.
@@ -32,15 +32,15 @@ class TrainUnClipDecoder(nn.Module):
         Optimizer for training the decoder model.
     `objective` : Callable
         Loss function to compute the difference between predicted and target noise.
-    `text_projection` : nn.Module, optional
+    `clip_text_projection` : nn.Module, optional
         Projection module for text embeddings, default None.
-    `image_projection` : nn.Module, optional
+    `clip_image_projection` : nn.Module, optional
         Projection module for image embeddings, default None.
     `val_loader` : torch.utils.data.DataLoader, optional
         DataLoader for validation data, default None.
     `metrics_` : Any, optional
         Object providing evaluation metrics (e.g., FID, MSE, PSNR, SSIM, LPIPS), default None.
-    `max_epoch` : int, optional
+    `max_epochs` : int, optional
         Maximum number of training epochs (default: 1000).
     `device` : Union[str, torch.device], optional
         Device for computation (default: CUDA if available, else CPU).
@@ -54,56 +54,56 @@ class TrainUnClipDecoder(nn.Module):
         Frequency (in epochs) for validation (default: 10).
     `use_ddp` : bool, optional
         Whether to use Distributed Data Parallel training (default: False).
-    `num_grad_accumulation` : int, optional
+    `grad_accumulation_steps` : int, optional
         Number of gradient accumulation steps before optimizer update (default: 1).
-    `progress_frequency` : int, optional
+    `log_frequency` : int, optional
         Frequency (in epochs) for printing progress (default: 1).
-    `compilation` : bool, optional
+    `use_compilation` : bool, optional
         Whether to compile the model using torch.compile (default: False).
-    `output_range` : Tuple[float, float], optional
+    `image_output_range` : Tuple[float, float], optional
         Range for clamping output images (default: (-1.0, 1.0)).
-    `reduce_dim` : bool, optional
+    `reduce_clip_embedding_dim` : bool, optional
         Whether to apply dimensionality reduction to embeddings (default: True).
-    `output_dim` : int, optional
+    `transformer_embedding_dim` : int, optional
         Output dimensionality for reduced embeddings (default: 312).
-    `normalize` : bool, optional
+    `normalize_clip_embeddings` : bool, optional
         Whether to normalize CLIP embeddings (default: True).
-    `finetune_projections` : bool, optional
+    `finetune_clip_projections` : bool, optional
         Whether to fine-tune projection layers (default: False).
     """
     def __init__(
             self,
-            embedding_dim: int,
+            clip_embedding_dim: int,
             decoder_model: nn.Module,
             clip_model: nn.Module,
             train_loader: torch.utils.data.DataLoader,
             optimizer: torch.optim.Optimizer,
             objective: Callable,
-            text_projection: Optional[nn.Module] = None,
-            image_projection: Optional[nn.Module] = None,
+            clip_text_projection: Optional[nn.Module] = None,
+            clip_image_projection: Optional[nn.Module] = None,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             metrics_: Optional[Any] = None,
-            max_epoch: int = 1000,
+            max_epochs: int = 1000,
             device: Optional[Union[str, torch.device]] = None,
             store_path: str = "unclip_decoder",
             patience: int = 100,
             warmup_epochs: int = 100,
             val_frequency: int = 10,
             use_ddp: bool = False,
-            num_grad_accumulation: int = 1,
-            progress_frequency: int = 1,
-            compilation: bool = False,
-            output_range: Tuple[float, float] = (-1.0, 1.0),
-            reduce_dim: bool = True,
-            output_dim: int = 312,
-            normalize: bool = True,
-            finetune_projections: bool = False # if text_projection and image_projection model should be finetune
+            grad_accumulation_steps: int = 1,
+            log_frequency: int = 1,
+            use_compilation: bool = False,
+            image_output_range: Tuple[float, float] = (-1.0, 1.0),
+            reduce_clip_embedding_dim: bool = True,
+            transformer_embedding_dim: int = 312,
+            normalize_clip_embeddings: bool = True,
+            finetune_clip_projections: bool = False # if text_projection and image_projection model should be finetune
     ):
         super().__init__()
         # training configuration
         self.use_ddp = use_ddp
-        self.num_grad_accumulation = num_grad_accumulation
-        self.compilation = compilation
+        self.grad_accumulation_steps = grad_accumulation_steps
+        self.use_compilation = use_compilation
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         elif isinstance(device, str):
@@ -115,7 +115,7 @@ class TrainUnClipDecoder(nn.Module):
         self.decoder_model = decoder_model.to(self.device)
         self.clip_model = clip_model.to(self.device)
 
-        self.reduce_dim = reduce_dim
+        self.reduce_clip_embedding_dim = reduce_clip_embedding_dim
 
         # setup distributed training
         if self.use_ddp:
@@ -128,15 +128,15 @@ class TrainUnClipDecoder(nn.Module):
         self._wrap_models_for_ddp()
 
         # projection models (PCA equivalent in the paper)
-        if self.reduce_dim and text_projection is not None and image_projection is not None:
-            self.text_projection = text_projection.to(self.device)
-            self.image_projection = image_projection.to(self.device)
+        if self.reduce_clip_embedding_dim and clip_text_projection is not None and clip_image_projection is not None:
+            self.clip_text_projection = clip_text_projection.to(self.device)
+            self.clip_image_projection = clip_image_projection.to(self.device)
         else:
-            self.text_projection = None
-            self.image_projection = None
+            self.clip_text_projection = None
+            self.clip_image_projection = None
 
         # training components
-        self.embedding_dim = output_dim if self.reduce_dim else embedding_dim
+        self.clip_embedding_dim = transformer_embedding_dim if self.reduce_clip_embedding_dim else clip_embedding_dim
         self.metrics_ = metrics_
         self.optimizer = optimizer
         self.objective = objective
@@ -144,15 +144,15 @@ class TrainUnClipDecoder(nn.Module):
         self.val_loader = val_loader
 
         # training parameters
-        self.max_epoch = max_epoch
+        self.max_epochs = max_epochs
         self.patience = patience
         self.val_frequency = val_frequency
-        self.progress_frequency = progress_frequency
-        self.output_range = output_range
-        self.reduce_dim = reduce_dim
-        self.normalize = normalize
-        self.output_dim = output_dim
-        self.finetune_projections = finetune_projections
+        self.log_frequency = log_frequency
+        self.image_output_range = image_output_range
+        self.reduce_clip_embedding_dim = reduce_clip_embedding_dim
+        self.normalize_clip_embeddings = normalize_clip_embeddings
+        self.transformer_embedding_dim = transformer_embedding_dim
+        self.finetune_clip_projections = finetune_clip_projections
 
 
         # checkpoint management
@@ -186,13 +186,13 @@ class TrainUnClipDecoder(nn.Module):
             self.decoder_model.forward_diffusion.variance_scheduler.eval()
 
         # set text_projection and image_projection to train mode if fine-tuning
-        if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
-            if self.finetune_projections:
-                self.text_projection.train()
-                self.image_projection.train()
+        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
+            if self.finetune_clip_projections:
+                self.clip_text_projection.train()
+                self.clip_image_projection.train()
             else:
-                self.text_projection.eval()
-                self.image_projection.eval()
+                self.clip_text_projection.eval()
+                self.clip_image_projection.eval()
 
         # set CLIP model to eval mode (frozen)
         if self.clip_model is not None:
@@ -205,7 +205,7 @@ class TrainUnClipDecoder(nn.Module):
         wait = 0
 
         # main training loop
-        for epoch in range(self.max_epoch):
+        for epoch in range(self.max_epochs):
             # set epoch for distributed sampler if using DDP
             if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
                 self.train_loader.sampler.set_epoch(epoch)
@@ -247,9 +247,9 @@ class TrainUnClipDecoder(nn.Module):
                     # clip gradients
                     scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.decoder_model.parameters(), max_norm=1.0)  # covers all submodules
-                    if self.reduce_dim and self.text_projection is not None and self.image_projection is not None and self.finetune_projections:
-                        torch.nn.utils.clip_grad_norm_(self.text_projection.parameters(), max_norm=1.0)
-                        torch.nn.utils.clip_grad_norm_(self.image_projection.parameters(), max_norm=1.0)
+                    if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None and self.finetune_clip_projections:
+                        torch.nn.utils.clip_grad_norm_(self.clip_text_projection.parameters(), max_norm=1.0)
+                        torch.nn.utils.clip_grad_norm_(self.clip_image_projection.parameters(), max_norm=1.0)
 
                     scaler.step(self.optimizer)
                     scaler.update()
@@ -262,9 +262,9 @@ class TrainUnClipDecoder(nn.Module):
             mean_train_loss = self._compute_mean_loss(train_losses_epoch)
             train_losses.append(mean_train_loss)
 
-            if self.master_process and (epoch + 1) % self.progress_frequency == 0:
+            if self.master_process and (epoch + 1) % self.log_frequency == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
-                print(f"Epoch {epoch + 1}/{self.max_epoch} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
+                print(f"Epoch {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
 
             current_loss = mean_train_loss
 
@@ -378,11 +378,11 @@ class TrainUnClipDecoder(nn.Module):
                 find_unused_parameters=True
             )
             # only wrap text_projection and image_projection if they are trainable
-            if self.reduce_dim and self.text_projection is not None and self.image_projection is not None and self.finetune_projections:
-                self.text_projection = self.text_projection.to(self.ddp_local_rank)
-                self.image_projection = self.image_projection.to(self.ddp_local_rank)
-                self.text_projection = DDP(self.text_projection, device_ids=[self.ddp_local_rank])
-                self.image_projection = DDP(self.image_projection, device_ids=[self.ddp_local_rank])
+            if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None and self.finetune_clip_projections:
+                self.clip_text_projection = self.clip_text_projection.to(self.ddp_local_rank)
+                self.clip_image_projection = self.clip_image_projection.to(self.ddp_local_rank)
+                self.clip_text_projection = DDP(self.clip_text_projection, device_ids=[self.ddp_local_rank])
+                self.clip_image_projection = DDP(self.clip_image_projection, device_ids=[self.ddp_local_rank])
 
     def _compile_models(self) -> None:
         """Compiles models for optimization if supported.
@@ -390,16 +390,16 @@ class TrainUnClipDecoder(nn.Module):
         Attempts to compile the decoder model and, if fine-tuning, the projection models using
         torch.compile for optimization, falling back to uncompiled execution if compilation fails.
         """
-        if self.compilation:
+        if self.use_compilation:
             try:
                 self.decoder_model = self.decoder_model.to(self.device)
                 self.decoder_model = torch.compile(self.decoder_model, mode="reduce-overhead")
                 # only compile text_projection and image_projection if they are trainable
-                if self.reduce_dim and self.text_projection is not None and self.image_projection is not None and self.finetune_projections:
-                    self.text_projection = self.text_projection.to(self.device)
-                    self.image_projection = self.image_projection.to(self.device)
-                    self.text_projection = torch.compile(self.text_projection, mode="reduce-overhead")
-                    self.image_projection = torch.compile(self.image_projection, mode="reduce-overhead")
+                if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None and self.finetune_clip_projections:
+                    self.clip_text_projection = self.clip_text_projection.to(self.device)
+                    self.clip_image_projection = self.clip_image_projection.to(self.device)
+                    self.clip_text_projection = torch.compile(self.clip_text_projection, mode="reduce-overhead")
+                    self.clip_image_projection = torch.compile(self.clip_image_projection, mode="reduce-overhead")
                 if self.master_process:
                     print("Models compiled successfully")
             except Exception as e:
@@ -460,14 +460,14 @@ class TrainUnClipDecoder(nn.Module):
         image_embeddings : torch.Tensor
             Projected image embeddings, shape (batch_size, output_dim) if reduced, else unchanged.
         """
-        if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
-            if not self.finetune_projections:
+        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
+            if not self.finetune_clip_projections:
                 with torch.no_grad():
-                    text_embeddings = self.text_projection(text_embeddings.to(self.device))
-                    image_embeddings = self.image_projection(image_embeddings.to(self.device))
+                    text_embeddings = self.clip_text_projection(text_embeddings.to(self.device))
+                    image_embeddings = self.clip_image_projection(image_embeddings.to(self.device))
             else:
-                text_embeddings = self.text_projection(text_embeddings.to(self.device))
-                image_embeddings = self.image_projection(image_embeddings.to(self.device))
+                text_embeddings = self.clip_text_projection(text_embeddings.to(self.device))
+                image_embeddings = self.clip_image_projection(image_embeddings.to(self.device))
         return text_embeddings.to(self.device), image_embeddings.to(self.device)
 
     def _compute_mean_loss(self, losses: List[float]) -> float:
@@ -523,9 +523,9 @@ class TrainUnClipDecoder(nn.Module):
             'noise_predictor_state_dict': self.decoder_model.module.noise_predictor.state_dict() if self.use_ddp else self.decoder_model.noise_predictor.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             # Training configuration
-            'embedding_dim': self.embedding_dim,
-            'output_dim': self.output_dim,
-            'reduce_dim': self.reduce_dim,
+            'embedding_dim': self.clip_embedding_dim,
+            'output_dim': self.transformer_embedding_dim,
+            'reduce_dim': self.reduce_clip_embedding_dim,
             'normalize': self.normalize
         }
 
@@ -555,14 +555,14 @@ class TrainUnClipDecoder(nn.Module):
         )
 
         # Save projection models (PCA equivalent)
-        if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
+        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
             checkpoint['text_projection_state_dict'] = (
-                self.text_projection.module.state_dict() if self.use_ddp
-                else self.text_projection.state_dict()
+                self.clip_text_projection.module.state_dict() if self.use_ddp
+                else self.clip_text_projection.state_dict()
             )
             checkpoint['image_projection_state_dict'] = (
-                self.image_projection.module.state_dict() if self.use_ddp
-                else self.image_projection.state_dict()
+                self.clip_image_projection.module.state_dict() if self.use_ddp
+                else self.clip_image_projection.state_dict()
             )
 
         # Save schedulers state
@@ -653,12 +653,12 @@ class TrainUnClipDecoder(nn.Module):
                 warnings.warn(f"Failed to load decoder projection: {e}")
 
         # Load projection models (PCA equivalent)
-        if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
+        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
             if 'text_projection_state_dict' in checkpoint:
-                _load_model_state_dict(self.text_projection, checkpoint['text_projection_state_dict'],
+                _load_model_state_dict(self.clip_text_projection, checkpoint['text_projection_state_dict'],
                                        'text_projection')
             if 'image_projection_state_dict' in checkpoint:
-                _load_model_state_dict(self.image_projection, checkpoint['image_projection_state_dict'],
+                _load_model_state_dict(self.clip_image_projection, checkpoint['image_projection_state_dict'],
                                        'image_projection')
 
         # Load optimizer
@@ -689,14 +689,14 @@ class TrainUnClipDecoder(nn.Module):
 
         # Verify configuration compatibility
         if 'embedding_dim' in checkpoint:
-            if checkpoint['embedding_dim'] != self.embedding_dim:
+            if checkpoint['embedding_dim'] != self.clip_embedding_dim:
                 warnings.warn(
-                    f"Embedding dimension mismatch: checkpoint={checkpoint['embedding_dim']}, current={self.embedding_dim}")
+                    f"Embedding dimension mismatch: checkpoint={checkpoint['embedding_dim']}, current={self.clip_embedding_dim}")
 
         if 'reduce_dim' in checkpoint:
-            if checkpoint['reduce_dim'] != self.reduce_dim:
+            if checkpoint['reduce_dim'] != self.reduce_clip_embedding_dim:
                 warnings.warn(
-                    f"Reduce dimension setting mismatch: checkpoint={checkpoint['reduce_dim']}, current={self.reduce_dim}")
+                    f"Reduce dimension setting mismatch: checkpoint={checkpoint['reduce_dim']}, current={self.reduce_clip_embedding_dim}")
 
         epoch = checkpoint.get('epoch', 0)
         loss = checkpoint.get('loss', float('inf'))
@@ -732,9 +732,9 @@ class TrainUnClipDecoder(nn.Module):
 
         # set models to eval mode for evaluation
         self.decoder_model.eval()  # sets noise_predictor, conditional_model, variance_scheduler, clip_time_proj, decoder_projection to eval mode
-        if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
-            self.text_projection.eval()
-            self.image_projection.eval()
+        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
+            self.clip_text_projection.eval()
+            self.clip_image_projection.eval()
         if self.clip_model is not None:
             self.clip_model.eval()
 
@@ -776,11 +776,11 @@ class TrainUnClipDecoder(nn.Module):
                         predicted_noise = self.decoder_model.noise_predictor(xt, time_steps, context, clip_image_embedding)
                         xt, _ = self.decoder_model.reverse_diffusion(xt, predicted_noise, time_steps, prev_time_steps)
 
-                    x_hat = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
+                    x_hat = torch.clamp(xt, min=self.image_output_range[0], max=self.image_output_range[1])
 
                     if self.normalize:
-                        x_hat = (x_hat - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
-                        x_orig = (images_orig - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+                        x_hat = (x_hat - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
+                        x_orig = (images_orig - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
 
                     metrics_result = self.metrics_.forward(x_orig, x_hat)
                     fid = metrics_result[0] if getattr(self.metrics_, 'fid', False) else float('inf')
@@ -820,13 +820,13 @@ class TrainUnClipDecoder(nn.Module):
         self.decoder_model.train()  # sets noise_predictor, conditional_model, variance_scheduler, clip_time_proj, decoder_projection to train mode
         if not self.decoder_model.variance_scheduler.trainable_beta:
             self.decoder_model.variance_scheduler.eval()
-        if self.reduce_dim and self.text_projection is not None and self.image_projection is not None:
-            if self.finetune_projections:
-                self.text_projection.train()
-                self.image_projection.train()
+        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
+            if self.finetune_clip_projections:
+                self.clip_text_projection.train()
+                self.clip_image_projection.train()
             else:
-                self.text_projection.eval()
-                self.image_projection.eval()
+                self.clip_text_projection.eval()
+                self.clip_image_projection.eval()
         if self.clip_model is not None:
             self.clip_model.eval()
 

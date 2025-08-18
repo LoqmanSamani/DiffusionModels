@@ -35,7 +35,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
         Loss function to compute the difference between predicted and target noise.
     `val_loader` : torch.utils.data.DataLoader, optional
         DataLoader for validation data, default None.
-    `max_epoch` : int, optional
+    `max_epochs` : int, optional
         Maximum number of training epochs (default: 1000).
     `device` : Union[str, torch.device], optional
         Device for computation (default: CUDA if available, else CPU).
@@ -49,15 +49,15 @@ class TrainUpsamplerUnCLIP(nn.Module):
         Frequency (in epochs) for validation (default: 10).
     `use_ddp` : bool, optional
         Whether to use Distributed Data Parallel training (default: False).
-    `num_grad_accumulation` : int, optional
+    `grad_accumulation_steps` : int, optional
         Number of gradient accumulation steps before optimizer update (default: 1).
-    `progress_frequency` : int, optional
+    `log_frequency` : int, optional
         Frequency (in epochs) for printing progress (default: 1).
-    `compilation` : bool, optional
+    `use_compilation` : bool, optional
         Whether to compile the model using torch.compile (default: False).
-    `output_range` : Tuple[float, float], optional
+    `image_output_range` : Tuple[float, float], optional
         Range for clamping output images (default: (-1.0, 1.0)).
-    `normalize` : bool, optional
+    `normalize_image_outputs` : bool, optional
         Whether to normalize inputs/outputs (default: True).
     `use_autocast` : bool, optional
         Whether to use automatic mixed precision training (default: True).
@@ -70,25 +70,25 @@ class TrainUpsamplerUnCLIP(nn.Module):
             optimizer: torch.optim.Optimizer,
             objective: Callable,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
-            max_epoch: int = 1000,
+            max_epochs: int = 1000,
             device: Optional[Union[str, torch.device]] = None,
             store_path: str = "unclip_upsampler",
             patience: int = 100,
             warmup_epochs: int = 100,
             val_frequency: int = 10,
             use_ddp: bool = False,
-            num_grad_accumulation: int = 1,
-            progress_frequency: int = 1,
-            compilation: bool = False,
-            output_range: Tuple[float, float] = (-1.0, 1.0),
-            normalize: bool = True,
+            grad_accumulation_steps: int = 1,
+            log_frequency: int = 1,
+            use_compilation: bool = False,
+            image_output_range: Tuple[float, float] = (-1.0, 1.0),
+            normalize_image_outputs: bool = True,
             use_autocast: bool = True
     ) -> None:
         super().__init__()
         # Training configuration
         self.use_ddp = use_ddp
-        self.num_grad_accumulation = num_grad_accumulation
-        self.compilation = compilation
+        self.grad_accumulation_steps = grad_accumulation_steps
+        self.use_compilation = use_compilation
         self.use_autocast = use_autocast  # Store autocast flag
 
         # Device initialization
@@ -120,12 +120,12 @@ class TrainUpsamplerUnCLIP(nn.Module):
         self.val_loader = val_loader
 
         # Training parameters
-        self.max_epoch = max_epoch
+        self.max_epochs = max_epochs
         self.patience = patience
         self.val_frequency = val_frequency
-        self.progress_frequency = progress_frequency
-        self.output_range = output_range
-        self.normalize = normalize
+        self.log_frequency = log_frequency
+        self.image_output_range = image_output_range
+        self.normalize_image_outputs = normalize_image_outputs
 
         # Checkpoint management
         self.store_path = store_path
@@ -166,7 +166,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
         wait = 0
 
         # Main training loop
-        for epoch in range(self.max_epoch):
+        for epoch in range(self.max_epochs):
             if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
                 self.train_loader.sampler.set_epoch(epoch)
 
@@ -189,7 +189,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
                         corruption_type = "gaussian_blur" if self.upsampler_model.low_res_size == 64 else "bsr_degradation"
                         low_res_images_corrupted = self.corrupt_conditioning_image(low_res_images, corruption_type)
                         predicted_noise = self.upsampler_model(high_res_images_noisy, timesteps, low_res_images_corrupted)
-                        loss = self.objective(predicted_noise, noise) / self.num_grad_accumulation
+                        loss = self.objective(predicted_noise, noise) / self.grad_accumulation_steps
                 else:
                     batch_size = high_res_images.shape[0]
                     timesteps = torch.randint(0, self.num_timesteps, (batch_size,), device=self.device)
@@ -198,7 +198,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
                     corruption_type = "gaussian_blur" if self.upsampler_model.low_res_size == 64 else "bsr_degradation"
                     low_res_images_corrupted = self.corrupt_conditioning_image(low_res_images, corruption_type)
                     predicted_noise = self.upsampler_model(high_res_images_noisy, timesteps, low_res_images_corrupted)
-                    loss = self.objective(predicted_noise, noise) / self.num_grad_accumulation
+                    loss = self.objective(predicted_noise, noise) / self.grad_accumulation_steps
 
                 # Backward pass
                 if self.use_autocast:
@@ -206,7 +206,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
                 else:
                     loss.backward()
 
-                if (step + 1) % self.num_grad_accumulation == 0:
+                if (step + 1) % self.grad_accumulation_steps == 0:
                     # Clip gradients
                     if self.use_autocast:
                         scaler.unscale_(self.optimizer)
@@ -222,7 +222,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
                     self.optimizer.zero_grad()
                     torch.cuda.empty_cache()  # Clear memory after optimizer step
 
-                train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
+                train_losses_epoch.append(loss.item() * self.grad_accumulation_steps)
 
             # Changed: Moved warmup_lr_scheduler.step() here to ensure it is called after optimizer.step()
             # and only once per epoch, matching the intent of warmup_epochs.
@@ -231,9 +231,9 @@ class TrainUpsamplerUnCLIP(nn.Module):
             mean_train_loss = self._compute_mean_loss(train_losses_epoch)
             train_losses.append(mean_train_loss)
 
-            if self.master_process and (epoch + 1) % self.progress_frequency == 0:
+            if self.master_process and (epoch + 1) % self.log_frequency == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
-                print(f"Epoch {epoch + 1}/{self.max_epoch} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
+                print(f"Epoch {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
 
             current_loss = mean_train_loss
 
@@ -373,7 +373,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
         Attempts to compile the upsampler model using torch.compile for optimization,
         falling back to uncompiled execution if compilation fails.
         """
-        if self.compilation:
+        if self.use_compilation:
             try:
                 self.upsampler_model = self.upsampler_model.to(self.device)
                 self.upsampler_model = torch.compile(self.upsampler_model, mode="reduce-overhead")
@@ -559,8 +559,8 @@ class TrainUpsamplerUnCLIP(nn.Module):
             # Training configuration
             'model_channels': self.upsampler_model.model_channels,
             'num_res_blocks': self.upsampler_model.num_res_blocks,
-            'normalize': self.normalize,
-            'output_range': self.output_range
+            'normalize': self.normalize_image_outputs,
+            'output_range': self.image_output_range
         }
 
         # Save variance scheduler (submodule of forward_diffusion)
@@ -673,9 +673,9 @@ class TrainUpsamplerUnCLIP(nn.Module):
                     f"Num res blocks mismatch: checkpoint={checkpoint['num_res_blocks']}, current={self.upsampler_model.num_res_blocks}")
 
         if 'normalize' in checkpoint:
-            if checkpoint['normalize'] != self.normalize:
+            if checkpoint['normalize'] != self.normalize_image_outputs:
                 warnings.warn(
-                    f"Normalize setting mismatch: checkpoint={checkpoint['normalize']}, current={self.normalize}")
+                    f"Normalize setting mismatch: checkpoint={checkpoint['normalize']}, current={self.normalize_image_outputs}")
 
         epoch = checkpoint.get('epoch', 0)
         loss = checkpoint.get('loss', float('inf'))

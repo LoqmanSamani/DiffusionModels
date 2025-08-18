@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Optional, List, Tuple, Union, Callable, Any
+from typing import Optional, List, Tuple, Union, Callable
 from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -48,15 +48,15 @@ class TrainUnCLIPPrior(nn.Module):
         Whether to use Distributed Data Parallel training (default: False).
     `num_grad_accumulation` : int, optional
         Number of gradient accumulation steps before optimizer update (default: 1).
-    `progress_frequency` : int, optional
+    `log_frequency` : int, optional
         Frequency (in epochs) for printing training progress (default: 1).
-    `compilation` : bool, optional
+    `use_compilation` : bool, optional
         Whether to compile models for optimization (default: False).
-    `output_range` : Tuple[float, float], optional
+    `embedding_output_range` : Tuple[float, float], optional
         Range for clamping output embeddings (default: (-1.0, 1.0)).
-    `reduce_dim` : bool, optional
+    `reduce_clip_embedding_dim` : bool, optional
         Whether to apply dimension reduction to embeddings (default: True).
-    `output_dim` : int, optional
+    `transformer_embedding_dim` : int, optional
         Target dimensionality for reduced embeddings (default: 319).
     `normalize` : bool, optional
         Whether to normalize CLIP embeddings (default: True).
@@ -77,19 +77,19 @@ class TrainUnCLIPPrior(nn.Module):
             warmup_epochs: int = 100,
             val_frequency: int = 10,
             use_ddp: bool = False,
-            num_grad_accumulation: int = 1,
-            progress_frequency: int = 1,
-            compilation: bool = False,
-            output_range: Tuple[float, float] = (-1.0, 1.0),
-            reduce_dim: bool = True,
-            output_dim: int = 319,
-            normalize: bool = True
+            grad_accumulation_steps: int = 1,
+            log_frequency: int = 1,
+            use_compilation: bool = False,
+            embedding_output_range: Tuple[float, float] = (-1.0, 1.0),
+            reduce_clip_embedding_dim: bool = True,
+            transformer_embedding_dim: int = 319,
+            normalize_clip_embeddings: bool = True
     ) -> None:
         super().__init__()
 
         # Training configuration
         self.use_ddp = use_ddp
-        self.num_grad_accumulation = num_grad_accumulation
+        self.grad_accumulation_steps = grad_accumulation_steps
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         elif isinstance(device, str):
@@ -117,12 +117,12 @@ class TrainUnCLIPPrior(nn.Module):
         self.max_epochs = max_epochs
         self.patience = patience
         self.val_frequency = val_frequency
-        self.progress_frequency = progress_frequency
-        self.compilation = compilation
-        self.output_range = output_range
-        self.reduce_dim = reduce_dim
-        self.normalize = normalize
-        self.output_dim = output_dim
+        self.log_frequency = log_frequency
+        self.use_compilation = use_compilation
+        self.embedding_output_range = embedding_output_range
+        self.reduce_clip_embedding_dim = reduce_clip_embedding_dim
+        self.normalize_clip_embeddings = normalize_clip_embeddings
+        self.transformer_embedding_dim = transformer_embedding_dim
 
         # Checkpoint management
         self.store_path = store_path
@@ -234,7 +234,7 @@ class TrainUnCLIPPrior(nn.Module):
         Attempts to compile the prior model using torch.compile for performance optimization,
         with fallback to uncompiled models if compilation fails.
         """
-        if self.compilation:
+        if self.use_compilation:
             try:
                 self.prior_model = torch.compile(self.prior_model)
 
@@ -286,26 +286,26 @@ class TrainUnCLIPPrior(nn.Module):
                 # Forward pass with mixed precision
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     loss = self._compute_training_loss(x, y)
-                    loss = loss / self.num_grad_accumulation
+                    loss = loss / self.grad_accumulation_steps
 
                 # Backward pass - ONLY ONCE!
                 scaler.scale(loss).backward()
 
                 # Optimizer step with gradient accumulation
-                if (step + 1) % self.num_grad_accumulation == 0:
+                if (step + 1) % self.grad_accumulation_steps == 0:
                     self._optimizer_step(scaler)
                     # Update learning rate (warmup scheduler)
                     self.warmup_lr_scheduler.step()
 
                 # Record loss (unscaled)
-                train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
+                train_losses_epoch.append(loss.item() * self.grad_accumulation_steps)
 
             # Compute and sync training loss
             mean_train_loss = self._compute_mean_loss(train_losses_epoch)
             train_losses.append(mean_train_loss)
 
             # Print training progress (only master process)
-            if self.master_process and (epoch + 1) % self.progress_frequency == 0:
+            if self.master_process and (epoch + 1) % self.log_frequency == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
                 print(f"Epoch {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}", end="")
 
@@ -364,14 +364,14 @@ class TrainUnCLIPPrior(nn.Module):
 
         with torch.no_grad():
             # Encode text and image with CLIP
-            text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize)
-            image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize)
+            text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize_clip_embeddings)
+            image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize_clip_embeddings)
 
             #print("encoded images: ", image_embeddings.size())
             #print("encoded text: ", text_embeddings.size())
 
         # Reduce dimensionality (optional)
-        if self.reduce_dim:
+        if self.reduce_clip_embedding_dim:
             text_embeddings = self.prior_model.text_projection(text_embeddings)
             image_embeddings = self.prior_model.image_projection(image_embeddings)
             #print("encoded images: ", image_embeddings.size())
@@ -394,7 +394,7 @@ class TrainUnCLIPPrior(nn.Module):
         predicted_image_embeddings = self.prior_model(text_embeddings, noisy_image_embeddings, timesteps)
 
         # Transform back to original space if using dimension reduction
-        if self.reduce_dim:
+        if self.reduce_clip_embedding_dim:
             predicted_image_embeddings = self.prior_model.image_projection.inverse_transform(predicted_image_embeddings)
             target_embeddings = self.prior_model.image_projection.inverse_transform(image_embeddings)
         else:
@@ -471,11 +471,11 @@ class TrainUnCLIPPrior(nn.Module):
                 images = images.to(self.device, non_blocking=True)
 
                 # Get embeddings
-                text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize)
-                image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize)
+                text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize_clip_embeddings)
+                image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize_clip_embeddings)
                 original_image_embeddings = image_embeddings.clone()
 
-                if self.reduce_dim:
+                if self.reduce_clip_embedding_dim:
                     text_embeddings = self.prior_model.text_projection(text_embeddings)
                     image_embeddings = self.prior_model.image_projection(image_embeddings)
 
@@ -488,7 +488,7 @@ class TrainUnCLIPPrior(nn.Module):
                 # Predict
                 predicted_embeddings = self.prior_model(text_embeddings, noisy_image_embeddings, timesteps)
 
-                if self.reduce_dim:
+                if self.reduce_clip_embedding_dim:
                     predicted_embeddings = self.prior_model.image_projection.inverse_transform(predicted_embeddings)
 
                 # Compute loss

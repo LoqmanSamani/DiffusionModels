@@ -20,13 +20,13 @@ class SampleUnCLIP(nn.Module):
         The UnCLIP decoder model for generating low-resolution images from embeddings.
     `clip_model` : nn.Module
         CLIP model for encoding text prompts into embeddings.
-    `first_upsampler_model` : nn.Module
+    `low_res_upsampler` : nn.Module
         First upsampler model for scaling images from 64x64 to 256x256.
-    `second_upsampler_model` : nn.Module, optional
+    `high_res_upsampler` : nn.Module, optional
         Second upsampler model for scaling images from 256x256 to 1024x1024, default None.
     `device` : Union[torch.device, str], optional
         Device for computation (default: CUDA if available, else CPU).
-    `embedding_dim` : int, optional
+    `clip_embedding_dim` : int, optional
         Dimensionality of CLIP embeddings (default: 512).
     `prior_guidance_scale` : float, optional
         Classifier-free guidance scale for the prior model (default: 4.0).
@@ -36,13 +36,13 @@ class SampleUnCLIP(nn.Module):
         Number of images to generate per batch (default: 1).
     `normalize` : bool, optional
         Whether to normalize CLIP embeddings (default: True).
-    `reduce_dim` : bool, optional
+    `prior_dim_reduction` : bool, optional
         Whether to apply dimensionality reduction in the prior model (default: True).
     `image_size` : Tuple[int, int, int], optional
         Size of the initial generated images (default: (3, 64, 64) for RGB 64x64).
-    `use_second_upsampler` : bool, optional
+    `use_high_res_upsampler` : bool, optional
         Whether to use the second upsampler for 1024x1024 output (default: True).
-    `output_range` : Tuple[float, float], optional
+    `image_output_range` : Tuple[float, float], optional
         Range for clamping output images (default: (-1.0, 1.0)).
     """
     def __init__(
@@ -50,18 +50,18 @@ class SampleUnCLIP(nn.Module):
             prior_model: nn.Module,
             decoder_model: nn.Module,
             clip_model: nn.Module,
-            first_upsampler_model: nn.Module,
+            low_res_upsampler: nn.Module,
             second_upsampler_model: Optional[nn.Module] = None,
             device: Optional[Union[torch.device, str]] = None,
-            embedding_dim: int = 512,  # CLIP embedding dimension
+            clip_embedding_dim: int = 512,  # CLIP embedding dimension
             prior_guidance_scale: float = 4.0,
             decoder_guidance_scale: float = 8.0,
             batch_size: int = 1,
-            normalize: bool = True,
-            reduce_dim: bool = True,
-            image_size: Tuple[int, int, int] = (3, 64, 64),
-            use_second_upsampler: bool = True,
-            output_range: Tuple[float, float] = (-1.0, 1.0)
+            normalize_clip_embeddings: bool = True,
+            prior_dim_reduction: bool = True,
+            initial_image_size: Tuple[int, int, int] = (3, 64, 64),
+            use_high_res_upsampler: bool = True,
+            image_output_range: Tuple[float, float] = (-1.0, 1.0)
     ) -> None:
         super().__init__()
 
@@ -75,18 +75,18 @@ class SampleUnCLIP(nn.Module):
         self.prior_model = prior_model.to(self.device)
         self.decoder_model = decoder_model.to(self.device)
         self.clip_model = clip_model.to(self.device)
-        self.first_upsampler_model = first_upsampler_model.to(self.device)
+        self.low_res_upsampler = low_res_upsampler.to(self.device)
         self.second_upsampler_model = second_upsampler_model.to(self.device) if second_upsampler_model else None
 
         self.prior_guidance_scale = prior_guidance_scale
         self.decoder_guidance_scale = decoder_guidance_scale
         self.batch_size = batch_size
-        self.normalize = normalize
-        self.reduce_dim = reduce_dim
-        self.embedding_dim = embedding_dim
-        self.image_size = image_size
-        self.use_second_upsampler = use_second_upsampler
-        self.output_range = output_range
+        self.normalize_clip_embeddings = normalize_clip_embeddings
+        self.prior_dim_reduction = prior_dim_reduction
+        self.clip_embedding_dim = clip_embedding_dim
+        self.initial_image_size = initial_image_size
+        self.use_high_res_upsampler = use_high_res_upsampler
+        self.image_output_range = image_output_range
         self.images_256 = None
         self.images_1024 = None
 
@@ -122,7 +122,7 @@ class SampleUnCLIP(nn.Module):
             or 1024x1024 depending on use_second_upsampler.
         """
         # initialize noise for prior sampling (image embedding space)
-        embedding_noise = torch.randn((self.batch_size, self.embedding_dim), device=self.device)
+        embedding_noise = torch.randn((self.batch_size, self.clip_embedding_dim), device=self.device)
         print("embedding noise: ", embedding_noise.size())
 
         with torch.no_grad():
@@ -131,13 +131,13 @@ class SampleUnCLIP(nn.Module):
             print("                           prior model                      ")
             print("############################################################")
             # encode text prompt using CLIP
-            text_embeddings = self.clip_model(data=prompts, data_type="text", normalize=self.normalize)
+            text_embeddings = self.clip_model(data=prompts, data_type="text", normalize=self.normalize_clip_embeddings)
             print("text embedding : ", text_embeddings.size())
 
             current_embeddings = embedding_noise.clone()
 
             # optionally reduce dimensionality for prior model
-            if self.reduce_dim:
+            if self.prior_dim_reduction:
                 text_embeddings_reduced = self.prior_model.text_projection(text_embeddings)
                 current_embeddings_reduced = self.prior_model.image_projection(current_embeddings)
                 print("text embedding reduced: ", text_embeddings_reduced.size())
@@ -174,7 +174,7 @@ class SampleUnCLIP(nn.Module):
                     print("current embedding reduced: ", current_embeddings_reduced.size())
 
             # convert back to full embedding dimension if needed
-            if self.reduce_dim:
+            if self.prior_dim_reduction:
                 final_image_embeddings = self.prior_model.image_projection.inverse_transform(current_embeddings_reduced)
                 print("final image embeddings: ", final_image_embeddings.size())
             else:
@@ -191,7 +191,7 @@ class SampleUnCLIP(nn.Module):
             print("############################################################")
 
             # initialize noise for decoder sampling
-            decoder_noise = torch.randn((self.batch_size, self.image_size[0], self.image_size[1], self.image_size[2]), device=self.device)
+            decoder_noise = torch.randn((self.batch_size, self.initial_image_size[0], self.initial_image_size[1], self.initial_image_size[2]), device=self.device)
             print("decoder noise: ", decoder_noise.size())
 
             # project image embeddings to 4 tokens
@@ -240,22 +240,22 @@ class SampleUnCLIP(nn.Module):
             print("############################################################")
             print("                         first upsampler                      ")
             print("############################################################")
-            upsampled_256_noise = torch.randn((self.batch_size, self.image_size[0], 256, 256), device=self.device)
+            upsampled_256_noise = torch.randn((self.batch_size, self.initial_image_size[0], 256, 256), device=self.device)
             current_256_images = upsampled_256_noise
             print("upsampled 256 noise: ", upsampled_256_noise.size())
 
             t_counter = 0
-            for t in reversed(range(self.first_upsampler_model.forward_diffusion.variance_scheduler.tau_num_steps)):
+            for t in reversed(range(self.low_res_upsampler.forward_diffusion.variance_scheduler.tau_num_steps)):
                 timesteps = torch.full((self.batch_size,), t, device=self.device)
                 prev_timesteps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
 
                 # predict noise for upsampling (conditioned on low-res image)
-                predicted_noise = self.first_upsampler_model(current_256_images, timesteps, generated_64x64)
+                predicted_noise = self.low_res_upsampler(current_256_images, timesteps, generated_64x64)
                 if t == 10:
                     print("predicted noise: ", predicted_noise.size())
 
                 # update using reverse diffusion
-                current_256_images, _ = self.first_upsampler_model.reverse_diffusion(
+                current_256_images, _ = self.low_res_upsampler.reverse_diffusion(
                     current_256_images, predicted_noise, timesteps, prev_timesteps
                 )
                 if t == 10:
@@ -269,8 +269,8 @@ class SampleUnCLIP(nn.Module):
             print("############################################################")
             print("                         second upsampler                   ")
             print("############################################################")
-            if self.use_second_upsampler and self.second_upsampler_model:
-                upsampled_1024_noise = torch.randn((self.batch_size, self.image_size[0], 1024, 1024), device=self.device)
+            if self.use_high_res_upsampler and self.second_upsampler_model:
+                upsampled_1024_noise = torch.randn((self.batch_size, self.initial_image_size[0], 1024, 1024), device=self.device)
                 current_1024_images = upsampled_1024_noise
 
                 t_counter = 0
@@ -297,11 +297,11 @@ class SampleUnCLIP(nn.Module):
             # ====== POST-PROCESSING ======
             # normalize output to [0, 1] range if requested
             if normalize_output:
-                final_256 = (self.images_256 - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+                final_256 = (self.images_256 - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
                 final_1024 = None
                 if self.images_1024 is not None:
-                    final_1024 = (self.images_1024 - self.output_range[0]) / (
-                            self.output_range[1] - self.output_range[0])
+                    final_1024 = (self.images_1024 - self.image_output_range[0]) / (
+                            self.image_output_range[1] - self.image_output_range[0])
             else:
                 final_256 = self.images_256
                 final_1024 = self.images_1024
@@ -422,7 +422,7 @@ class SampleUnCLIP(nn.Module):
         self.prior_model.to(device)
         self.decoder_model.to(device)
         self.clip_model.to(device)
-        self.first_upsampler_model.to(device)
+        self.low_res_upsampler.to(device)
 
         if self.second_upsampler_model is not None:
             self.second_upsampler_model.to(device)

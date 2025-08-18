@@ -47,7 +47,7 @@ class UpsamplerUnCLIP(nn.Module):
             model_channels: int = 192,
             num_res_blocks: int = 2,
             channel_mult: Tuple[int, ...] = (1, 2, 4, 8),
-            dropout: float = 0.1,
+            dropout_rate: float = 0.1,
             time_embed_dim: int = 768,
             low_res_size: int = 64,
             high_res_size: int = 256,
@@ -83,7 +83,7 @@ class UpsamplerUnCLIP(nn.Module):
         for level, mult in enumerate(channel_mult):
             for _ in range(num_res_blocks):
                 self.encoder_blocks.append(
-                    ResBlock(ch, model_channels * mult, time_embed_dim, dropout)
+                    ResBlock(ch, model_channels * mult, time_embed_dim, dropout_rate)
                 )
                 ch = model_channels * mult
 
@@ -92,8 +92,8 @@ class UpsamplerUnCLIP(nn.Module):
 
         # Middle blocks
         self.middle_blocks = nn.ModuleList([
-            ResBlock(ch, ch, time_embed_dim, dropout),
-            ResBlock(ch, ch, time_embed_dim, dropout),
+            ResBlock(ch, ch, time_embed_dim, dropout_rate),
+            ResBlock(ch, ch, time_embed_dim, dropout_rate),
         ])
 
         # Decoder (upsampling path)
@@ -107,7 +107,7 @@ class UpsamplerUnCLIP(nn.Module):
                 out_ch = model_channels * mult
 
                 self.decoder_blocks.append(
-                    ResBlock(in_ch, out_ch, time_embed_dim, dropout)
+                    ResBlock(in_ch, out_ch, time_embed_dim, dropout_rate)
                 )
                 ch = out_ch
 

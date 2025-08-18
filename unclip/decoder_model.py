@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Optional, List, Tuple, Union
-from project_decoder import ProjectDecoder
+from project_decoder import CLIPContextProjection
 from transformers import BertTokenizer
 
 
@@ -14,7 +14,7 @@ class UnClipDecoder(nn.Module):
 
     Parameters
     ----------
-    `embedding_dim` : int
+    `clip_embedding_dim` : int
         Dimensionality of the input embeddings.
     `noise_predictor` : nn.Module
         Model to predict noise during the denoising process.
@@ -22,37 +22,37 @@ class UnClipDecoder(nn.Module):
         Forward diffusion module (e.g., ForwardUnCLIP) for adding noise.
     `reverse_diffusion` : nn.Module
         Reverse diffusion module (e.g., ReverseUnCLIP) for denoising.
-    `conditional_model` : nn.Module, optional
+    `glide_text_encoder` : nn.Module, optional
         GLIDE text encoder for processing text prompts, default None.
-    `tokenizer` : BertTokenizer, optional
+    `bert_tokenizer` : BertTokenizer, optional
         Tokenizer for processing text prompts, default None (loads "bert-base-uncased").
     `device` : Union[str, torch.device], optional
         Device for computation (default: CUDA if available, else CPU).
-    `output_range` : Tuple[float, float], optional
+    `image_output_range` : Tuple[float, float], optional
         Range for clamping output images (default: (-1.0, 1.0)).
-    `normalize` : bool, optional
+    `normalize_clip_embeddings` : bool, optional
         Whether to normalize outputs (default: True).
-    `classifier_free` : float, optional
+    `classifier_free_prop` : float, optional
         Probability for classifier-free guidance (default: 0.1, per paper).
     `drop_caption` : float, optional
         Probability for text caption dropout (default: 0.5, per paper).
-    `max_length` : int, optional
+    `max_token_length` : int, optional
         Maximum length for tokenized prompts (default: 77).
     """
     def __init__(
             self,
-            embedding_dim: int,
+            clip_embedding_dim: int,
             noise_predictor: nn.Module,
             forward_diffusion: nn.Module,
             reverse_diffusion: nn.Module,
-            conditional_model: torch.nn.Module = None,  # GLIDE text encoder
-            tokenizer: Optional[BertTokenizer] = None,
+            glide_text_encoder: torch.nn.Module = None,  # GLIDE text encoder
+            bert_tokenizer: Optional[BertTokenizer] = None,
             device: Optional[Union[str, torch.device]] = None,
-            output_range: Tuple[float, float] = (-1.0, 1.0),
-            normalize: bool = True,
-            classifier_free: float = 0.1,  # paper specifies 10%
+            image_output_range: Tuple[float, float] = (-1.0, 1.0),
+            normalize_clip_embeddings: bool = True,
+            classifier_free_prop: float = 0.1,  # paper specifies 10%
             drop_caption: float = 0.5,  # paper specifies 50%
-            max_length: int = 77  # max_length for tokenization
+            max_token_length: int = 77  # max_token_length for tokenization
     ) -> None:
         super().__init__()
 
@@ -62,29 +62,30 @@ class UnClipDecoder(nn.Module):
             self.device = torch.device(device)
         else:
             self.device = device
-        self.embedding_dim = embedding_dim
+        self.clip_embedding_dim = clip_embedding_dim
 
         # core models
         self.noise_predictor = noise_predictor.to(self.device)
         self.forward_diffusion = forward_diffusion.to(self.device)
         self.reverse_diffusion = reverse_diffusion.to(self.device)
-        self.conditional_model = conditional_model.to(self.device) if conditional_model else None
+        self.glide_text_encoder = glide_text_encoder.to(self.device) if glide_text_encoder else None
 
         # paper: "projecting CLIP embeddings into four extra tokens of context"
-        self.decoder_projection = ProjectDecoder(input_dim=self.embedding_dim, num_tokens=4).to(self.device)
-        self.clip_time_proj = nn.Linear(self.embedding_dim, self.embedding_dim).to(self.device)
+        self.clip_decoder_projection = CLIPContextProjection(clip_embedding_dim=self.clip_embedding_dim,
+                                                             num_tokens=4).to(self.device)
+        self.clip_time_projection = nn.Linear(self.clip_embedding_dim, self.clip_embedding_dim).to(self.device)
 
         # training parameters
-        self.output_range = output_range
-        self.normalize = normalize
-        self.classifier_free = classifier_free
+        self.image_output_range = image_output_range
+        self.normalize_clip_embeddings = normalize_clip_embeddings
+        self.classifier_free_prop = classifier_free_prop
         self.drop_caption = drop_caption
-        self.max_length = max_length
+        self.max_token_length = max_token_length
 
         # initialize tokenizer
-        if tokenizer is None:
+        if bert_tokenizer is None:
             try:
-                self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+                self.bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
             except Exception as e:
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
 
@@ -129,7 +130,7 @@ class UnClipDecoder(nn.Module):
         text_embeddings = self._apply_text_dropout(text_embeddings, p_text_drop)
 
         # project z_i to 4 tokens
-        c = self.decoder_projection(image_embeddings)
+        c = self.clip_decoder_projection(image_embeddings)
         # print("z i to 4 tokens: ", c.size())
 
         # encode text with GLIDE
@@ -150,7 +151,7 @@ class UnClipDecoder(nn.Module):
         noisy_images = self.forward_diffusion(images, noise, t)
         # print("noisy images : ", noisy_images.size())
 
-        clip_image_embedding = self.clip_time_proj(image_embeddings)
+        clip_image_embedding = self.clip_time_projection(image_embeddings)
         # print("clip image embedded : ", clip_image_embedding.size())
 
         predicted_noise = self.noise_predictor(noisy_images, t, context, clip_image_embedding)
@@ -178,7 +179,7 @@ class UnClipDecoder(nn.Module):
         image_embeddings : torch.Tensor
             Modified image embeddings, shape (batch_size, embedding_dim).
         """
-        if p_value < self.classifier_free:
+        if p_value < self.classifier_free_prop:
             # set z_i ← 0 {classifier-free guidance}
             image_embeddings = torch.zeros_like(image_embeddings)
 
@@ -228,7 +229,7 @@ class UnClipDecoder(nn.Module):
         if texts is None:
             return None
 
-        if self.conditional_model is None:
+        if self.glide_text_encoder is None:
             return None
 
         # convert to string list if needed
@@ -237,18 +238,18 @@ class UnClipDecoder(nn.Module):
         texts = [str(item) for item in texts]
 
         # tokenize
-        tokenized = self.tokenizer(
+        tokenized = self.bert_tokenizer(
             texts,
             padding="max_length",
             truncation=True,
-            max_length=self.max_length,
+            max_length=self.max_token_length,
             return_tensors="pt"
         ).to(self.device)
 
         # get embeddings from GLIDE text encoder
         input_ids = tokenized["input_ids"]
         attention_mask = tokenized["attention_mask"]
-        y_encoded = self.conditional_model(input_ids, attention_mask)
+        y_encoded = self.glide_text_encoder(input_ids, attention_mask)
         print("y shape: ", y_encoded.size())
 
         return y_encoded

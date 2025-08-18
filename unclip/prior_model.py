@@ -17,11 +17,11 @@ class UnCLIPTransformerPrior(nn.Module):
         Forward diffusion module (e.g., ForwardUnCLIP) for adding noise during training.
     `reverse_diffusion` : nn.Module
         Reverse diffusion module (e.g., ReverseUnCLIP) for denoising during training.
-    `text_projection` : nn.Module, optional
+    `clip_text_projection` : nn.Module, optional
         Projection module for text embeddings, default None.
-    `image_projection` : nn.Module, optional
+    `clip_image_projection` : nn.Module, optional
         Projection module for image embeddings, default None.
-    `embedding_dim` : int, optional
+    `transformer_embedding_dim` : int, optional
         Dimensionality of embeddings (default: 320).
     `num_layers` : int, optional
         Number of Transformer layers (default: 12).
@@ -38,9 +38,9 @@ class UnCLIPTransformerPrior(nn.Module):
         self,
         forward_diffusion: nn.Module, # will be used during training
         reverse_diffusion: nn.Module, # will be used during training
-        text_projection: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
-        image_projection: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
-        embedding_dim: int = 320,
+        clip_text_projection: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
+        clip_image_projection: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
+        transformer_embedding_dim: int = 320,
         num_layers: int = 12,
         num_attention_heads: int = 8,
         feedforward_dim: int = 768,
@@ -51,30 +51,30 @@ class UnCLIPTransformerPrior(nn.Module):
 
         self.forward_diffusion = forward_diffusion
         self.reverse_diffusion = reverse_diffusion
-        self.text_projection = text_projection
-        self.image_projection = image_projection
+        self.clip_text_projection = clip_text_projection
+        self.clip_image_projection = clip_image_projection
 
-        self.embedding_dim = embedding_dim
+        self.transformer_embedding_dim = transformer_embedding_dim
         self.max_sequence_length = max_sequence_length
 
         # Time embedding network
         self.time_embedding_net = nn.Sequential(
-            nn.Linear(embedding_dim, embedding_dim),
+            nn.Linear(transformer_embedding_dim, transformer_embedding_dim),
             nn.GELU(),
-            nn.Linear(embedding_dim, embedding_dim)
+            nn.Linear(transformer_embedding_dim, transformer_embedding_dim)
         )
 
         # Positional embeddings
-        self.positional_embeddings = nn.Parameter(torch.randn(max_sequence_length, embedding_dim))
+        self.positional_embeddings = nn.Parameter(torch.randn(max_sequence_length, transformer_embedding_dim))
 
         # Transformer layers
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(embedding_dim, num_attention_heads, feedforward_dim, dropout_rate)
+            TransformerBlock(transformer_embedding_dim, num_attention_heads, feedforward_dim, dropout_rate)
             for _ in range(num_layers)
         ])
 
         # Final output projection
-        self.output_projection = nn.Linear(embedding_dim, embedding_dim)
+        self.output_projection = nn.Linear(transformer_embedding_dim, transformer_embedding_dim)
 
     def forward(
             self,
