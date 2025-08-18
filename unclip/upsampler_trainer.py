@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import random
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Union, Callable, Any, List
+from typing import Optional, Tuple, Union, Callable, List
 from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
