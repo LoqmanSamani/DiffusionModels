@@ -802,7 +802,7 @@ class TrainSDE(nn.Module):
             # print training progress (only master process)
             if self.master_process:
                 if (epoch + 1) % self.log_frequency == 0:
-                    print(f"\nEpoch: {epoch + 1} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
+                    print(f"\nEpoch: {epoch + 1}/{self.max_epochs} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
 
             # validation step
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
