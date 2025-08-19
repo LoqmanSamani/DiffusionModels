@@ -20,9 +20,9 @@ sampling. Supports both unconditional and conditional generation with text promp
 
 - Salimans, Tim, et al. "Pixelcnn++: Improving the pixelcnn with discretized logistic mixture likelihood and other modifications."
 arXiv preprint arXiv:1701.05517 (2017).
+
+-------------------------------------------------------------------------------
 """
-
-
 
 
 
@@ -30,7 +30,6 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple, Callable, List, Any, Union, Self
 from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
-# multi-GPU processor module
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
@@ -38,7 +37,6 @@ from tqdm import tqdm
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
-import os
 
 
 ###==================================================================================================================###

@@ -60,7 +60,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, Any, Callable, List, Union, Self
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-# multi-GPU processor module
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group

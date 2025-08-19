@@ -29,11 +29,8 @@ subsampled time step schedule for faster sampling compared to DDPM.
 
 
 
-
-
 import torch
 import torch.nn as nn
-# multi-GPU processor module
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
@@ -46,7 +43,7 @@ from typing import Optional, Tuple, Callable, List, Any, Union, Self
 import os
 
 
-
+###==================================================================================================================###
 
 
 class ForwardDDIM(nn.Module):
