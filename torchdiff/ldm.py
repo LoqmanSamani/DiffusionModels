@@ -812,7 +812,12 @@ class SampleLDM(nn.Module):
             image_output_range: Tuple[float, float] = (-1.0, 1.0)
     ) -> None:
         super().__init__()
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        elif isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
         self.diffusion_model = diffusion_model
         self.noise_predictor = noise_predictor.to(self.device)
         self.reverse = reverse_diffusion.to(self.device)
@@ -951,7 +956,7 @@ class SampleLDM(nn.Module):
             if save_images:
                 os.makedirs(save_path, exist_ok=True)
                 for i in range(generated_imgs.size(0)):
-                    img_path = os.path.join(save_path, f"image_{i}.png")
+                    img_path = os.path.join(save_path, f"image_{i+1}.png")
                     save_image(generated_imgs[i], img_path)
 
         return generated_imgs

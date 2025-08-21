@@ -2994,11 +2994,11 @@ class SampleUnCLIP(nn.Module):
                     os.makedirs(os.path.join(save_path, "images_1024"), exist_ok=True)
 
                 for i in range(self.batch_size):
-                    img_path_256 = os.path.join(save_path, "images_256", f"image_{i}.png")
+                    img_path_256 = os.path.join(save_path, "images_256", f"image_{i+1}.png")
                     torchvision.utils.save_image(final_256[i], img_path_256)
 
                     if final_1024 is not None:
-                        img_path_1024 = os.path.join(save_path, "images_1024", f"image_{i}.png")
+                        img_path_1024 = os.path.join(save_path, "images_1024", f"image_{i+1}.png")
                         torchvision.utils.save_image(final_1024[i], img_path_1024)
 
         # return final images
