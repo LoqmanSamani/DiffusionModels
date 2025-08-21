@@ -451,7 +451,7 @@ class TrainLDM(nn.Module):
         wait = 0
 
         # main training loop
-        for epoch in range(self.max_epoch):
+        for epoch in range(self.max_epochs):
             # set epoch for distributed sampler if using DDP
             if self.use_ddp and hasattr(self.data_loader.sampler, 'set_epoch'):
                 self.data_loader.sampler.set_epoch(epoch)
@@ -481,7 +481,7 @@ class TrainLDM(nn.Module):
                     noisy_x = self.forward_diffusion(x, noise, t)
 
                     # predict noise
-                    predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
+                    predicted_noise = self.noise_predictor(noisy_x, t, y_encoded, None)
 
                     # compute loss and scale for gradient accumulation
                     loss = self.objective(predicted_noise, noise) / self.grad_accumulation_steps
@@ -520,9 +520,9 @@ class TrainLDM(nn.Module):
             train_losses.append(mean_train_loss)
 
             # print training progress (only master process)
-            if self.master_process:
-                if (epoch + 1) % self.log_frequency == 0:
-                    print(f"\nEpoch: {epoch + 1}/{self.max_epochs} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
+            if self.master_process and (epoch + 1) % self.log_frequency == 0:
+                current_lr = self.optimizer.param_groups[0]['lr']
+                print(f"\nEpoch: {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
 
             # validation step
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
@@ -688,10 +688,9 @@ class TrainLDM(nn.Module):
                 t = torch.randint(0, self.forward_diffusion.variance_scheduler.num_steps, (x.shape[0],)).to(self.device)
 
                 noisy_x = self.forward_diffusion(x, noise, t)
-                predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
+                predicted_noise = self.noise_predictor(noisy_x, t, y_encoded, None)
                 loss = self.objective(predicted_noise, noise)
                 val_losses.append(loss.item())
-
                 # generate samples for metrics evaluation
                 if self.metrics_ is not None and self.reverse_diffusion is not None:
                     xt = torch.randn_like(x).to(self.device)
@@ -700,7 +699,7 @@ class TrainLDM(nn.Module):
                     for t in reversed(range(num_steps)):
                         time_steps = torch.full((xt.shape[0],), t, device=self.device)#, dtype=torch.long)
                         prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device)#, dtype=torch.long)
-                        predicted_noise = self.noise_predictor(xt, time_steps, y_encoded)
+                        predicted_noise = self.noise_predictor(xt, time_steps, y_encoded, None)
 
                         if self.diffusion_model == "sde":
                             noise = torch.randn_like(xt) if getattr(self.reverse_diffusion, "sde_method", None) != "ode" else None
@@ -715,7 +714,7 @@ class TrainLDM(nn.Module):
                     x_hat = self.compressor_model.decode(xt)
 
                     # clamp and normalize generated samples
-                    x_hat = torch.clamp(x_hat, min=self.output_range[0], max=self.output_range[1])
+                    x_hat = torch.clamp(x_hat, min=self.image_output_range[0], max=self.image_output_range[1])
                     if self.normalize_output:
                         x_hat = (x_hat - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
                         x_orig = (x_orig - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
@@ -2005,9 +2004,9 @@ class TrainAE(nn.Module):
             train_losses.append(mean_train_loss)
 
             # print training progress (only master process)
-            if self.master_process:
-                if (epoch + 1) % self.log_frequency == 0:
-                    print(f"\nEpoch: {epoch + 1}/{self.max_epochs} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
+            if self.master_process and (epoch + 1) % self.log_frequency == 0:
+                current_lr = self.optimizer.param_groups[0]['lr']
+                print(f"\nEpoch: {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
 
             # validation step
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
@@ -2163,16 +2162,16 @@ class ForwardSDE(nn.Module):
 
     Parameters
     ----------
-    hyper_params : object
-        Hyperparameter object (HyperParamsSDE) containing SDE-specific parameters. Expected to have
+    variance_scheduler : object
+        Hyperparameter object (VarianceSchedulerSDE) containing SDE-specific parameters. Expected to have
         attributes: `dt`, `sigmas`, `betas`, `cum_betas`.
-    method : str
+    sde_method : str
         SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
     """
-    def __init__(self, hyper_params: torch.nn.Module, method: str) -> None:
+    def __init__(self, variance_scheduler: torch.nn.Module, sde_method: str) -> None:
         super().__init__()
-        self.hyper_params = hyper_params
-        self.method = method
+        self.variance_scheduler = variance_scheduler
+        self.sde_method = sde_method
 
     def forward(self, x0: torch.Tensor, noise: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
         """Applies the forward SDE diffusion process to the input data.
@@ -2188,43 +2187,43 @@ class ForwardSDE(nn.Module):
             Gaussian noise tensor, same shape as `x0`.
         time_steps : torch.Tensor
             Tensor of time step indices (long), shape (batch_size,), where each value
-            is in the range [0, hyper_params.num_steps - 1].
+            is in the range [0, varinace_scheduler.num_steps - 1].
 
         Returns
         -------
         xt (torch.Tensor) - Noisy data tensor at the specified time steps, same shape as `x0`.
 
         """
-        dt = self.hyper_params.dt
-        if self.method == "ve":
-            # Use property to get sigmas (handles trainable case)
-            sigma_t = self.hyper_params.sigmas[time_steps]
-            sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
+        dt = self.variance_scheduler.dt
+        if self.sde_method == "ve":
+            # use property to get sigmas (handles trainable case)
+            sigma_t = self.variance_scheduler.sigmas[time_steps]
+            sigma_t_prev = self.variance_scheduler.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
             sigma_diff = torch.sqrt(torch.clamp(sigma_t ** 2 - sigma_t_prev ** 2, min=0))
             x0 = x0 + noise * sigma_diff.view(-1, 1, 1, 1)
 
-        elif self.method == "vp":
-            # Use property to get betas (handles trainable case)
-            betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
+        elif self.sde_method == "vp":
+            # use property to get betas (handles trainable case)
+            betas = self.variance_scheduler.betas[time_steps].view(-1, 1, 1, 1)
             drift = -0.5 * betas * x0 * dt
             diffusion = torch.sqrt(betas * dt) * noise
             x0 = x0 + drift + diffusion
 
-        elif self.method == "sub-vp":
-            # Use properties to get betas and cum_betas (handles trainable case)
-            betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
-            cum_betas = self.hyper_params._cum_betas[time_steps].view(-1, 1, 1, 1)
+        elif self.sde_method == "sub-vp":
+            # use properties to get betas and cum_betas (handles trainable case)
+            betas = self.variance_scheduler.betas[time_steps].view(-1, 1, 1, 1)
+            cum_betas = self.variance_scheduler._cum_betas[time_steps].view(-1, 1, 1, 1)
             drift = -0.5 * betas * x0 * dt
             diffusion = torch.sqrt(betas * (1 - torch.exp(-2 * cum_betas)) * dt) * noise
             x0 = x0 + drift + diffusion
 
-        elif self.method == "ode":
-            # Use property to get betas (handles trainable case)
-            betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
+        elif self.sde_method == "ode":
+            # use property to get betas (handles trainable case)
+            betas = self.variance_scheduler.betas[time_steps].view(-1, 1, 1, 1)
             drift = -0.5 * betas * x0 * dt
             x0 = x0 + drift
         else:
-            raise ValueError(f"Unknown method: {self.method}")
+            raise ValueError(f"Unknown method: {self.sde_method}")
         return x0
 
 ###==================================================================================================================###
@@ -2240,16 +2239,16 @@ class ReverseSDE(nn.Module):
 
     Parameters
     ----------
-    hyper_params : object
-        Hyperparameter object (HyperParamsSDE) containing SDE-specific parameters. Expected to have
+    variance_scheduler : object
+        Hyperparameter object (VarianceSchedulerSDE) containing SDE-specific parameters. Expected to have
         attributes: `dt`, `sigmas`, `betas`, `cum_betas`.
-    method : str
+    sde_method : str
         SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
     """
-    def __init__(self, hyper_params: torch.nn.Module, method: str) -> None:
+    def __init__(self, variance_scheduler: torch.nn.Module, sde_method: str) -> None:
         super().__init__()
-        self.hyper_params = hyper_params
-        self.method = method
+        self.variance_scheduler = variance_scheduler
+        self.sde_method = sde_method
 
     def forward(self, xt: torch.Tensor, noise: torch.Tensor, predicted_noise: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
         """Applies the reverse SDE diffusion process to the noisy input.
@@ -2269,7 +2268,7 @@ class ReverseSDE(nn.Module):
             Predicted noise tensor, same shape as `xt`, typically output by a neural network.
         time_steps : torch.Tensor
             Tensor of time step indices (long), shape (batch_size,), where each value
-            is in the range [0, hyper_params.num_steps - 1].
+            is in the range [0, variance_scheduler.num_steps - 1].
 
         Returns
         -------
@@ -2280,41 +2279,41 @@ class ReverseSDE(nn.Module):
         - For the "ve" and "ode" methods, the output is clamped to [-1e5, 1e5] to prevent numerical instability.
         - Stochastic noise (`noise`) is only added if provided and the method supports it (not applicable for "ode" in non-VE cases).
         """
-        dt = self.hyper_params.dt
-        # Use properties to get betas and cum_betas (handles trainable case)
-        betas = self.hyper_params.betas[time_steps].view(-1, 1, 1, 1)
-        cum_betas = self.hyper_params._cum_betas[time_steps].view(-1, 1, 1, 1)
-        if self.method == "ve":
-            # Use property to get sigmas (handles trainable case)
-            sigma_t = self.hyper_params.sigmas[time_steps]
-            sigma_t_prev = self.hyper_params.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
+        dt = self.variance_scheduler.dt
+        # use properties to get betas and cum_betas (handles trainable case)
+        betas = self.variance_scheduler.betas[time_steps].view(-1, 1, 1, 1)
+        cum_betas = self.variance_scheduler._cum_betas[time_steps].view(-1, 1, 1, 1)
+        if self.sde_method == "ve":
+            # use property to get sigmas (handles trainable case)
+            sigma_t = self.variance_scheduler.sigmas[time_steps]
+            sigma_t_prev = self.variance_scheduler.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
             sigma_diff = torch.sqrt(torch.clamp(sigma_t ** 2 - sigma_t_prev ** 2, min=0))
             drift = -(sigma_t ** 2 - sigma_t_prev ** 2).view(-1, 1, 1, 1) * predicted_noise * dt
             diffusion = sigma_diff.view(-1, 1, 1, 1) * noise if noise is not None else 0
             xt = xt + drift + diffusion
             xt = torch.clamp(xt, -1e5, 1e5)
 
-        elif self.method == "vp":
+        elif self.sde_method == "vp":
             drift = -0.5 * betas * xt * dt - betas * predicted_noise * dt
             diffusion = torch.sqrt(betas * dt) * noise if noise is not None else 0
             xt = xt + drift + diffusion
 
-        elif self.method == "sub-vp":
+        elif self.sde_method == "sub-vp":
             drift = -0.5 * betas * xt * dt - betas * (1 - torch.exp(-2 * cum_betas)) * predicted_noise * dt
             diffusion = torch.sqrt(betas * (1 - torch.exp(-2 * cum_betas)) * dt) * noise if noise is not None else 0
             xt = xt + drift + diffusion
 
-        elif self.method == "ode":
+        elif self.sde_method == "ode":
             drift = -0.5 * betas * xt * dt - 0.5 * betas * predicted_noise * dt
             xt = xt + drift
             xt = torch.clamp(xt, -1e5, 1e5)
         else:
-            raise ValueError(f"Unknown method: {self.method}")
+            raise ValueError(f"Unknown method: {self.sde_method}")
         return xt
 
 ###==================================================================================================================###
 
-class HyperParamsSDE(nn.Module):
+class VarianceSchedulerSDE(nn.Module):
     """Hyperparameters for SDE-based generative models.
 
     Manages the noise schedule and SDE-specific parameters for score-based generative
@@ -2380,8 +2379,8 @@ class HyperParamsSDE(nn.Module):
         self.dt = (self.end - self.start) / self.num_steps
 
         if trainable_beta:
-            # Use reparameterization trick for trainable betas
-            # Initialize unconstrained parameters and transform them to valid beta range
+            # use reparameterization trick for trainable betas
+            # initialize unconstrained parameters and transform them to valid beta range
             self.beta_raw = nn.Parameter(torch.logit((betas_init - beta_start) / (beta_end - beta_start)))
         else:
             self.register_buffer('betas_buffer', betas_init)
@@ -2392,7 +2391,7 @@ class HyperParamsSDE(nn.Module):
     def betas(self) -> torch.Tensor:
         """Returns the beta values, applying reparameterization if trainable."""
         if self.trainable_beta:
-            # Transform unconstrained parameters to valid beta range using sigmoid
+            # transform unconstrained parameters to valid beta range using sigmoid
             return self.beta_start + (self.beta_end - self.beta_start) * torch.sigmoid(self.beta_raw)
         else:
             return self._buffers['betas_buffer']
@@ -2409,8 +2408,6 @@ class HyperParamsSDE(nn.Module):
     def sigmas(self) -> torch.Tensor:
         """Returns the sigma values, computing dynamically if trainable."""
         if self.trainable_beta:
-            # For trainable case, sigmas still use the fixed time schedule
-            # but could be modified if needed for trainable sigma schedules
             return self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time
         else:
             return self._buffers['sigmas_buffer']
@@ -2481,7 +2478,6 @@ class HyperParamsSDE(nn.Module):
         else:
             raise ValueError(f"Unknown method: {method}")
 
-
 #########################################################################################################################
 
 
@@ -2500,7 +2496,7 @@ from torch.utils.data import DataLoader, Subset
 from utils import TextEncoder, NoisePredictor, Metrics
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 transform = transforms.Compose([
     transforms.Resize(96),
     transforms.CenterCrop(96),
@@ -2519,7 +2515,7 @@ test_subset = Subset(test_dataset, torch.randperm(len(test_dataset))[:20])
 
 # Create data loaders
 train_loader = DataLoader(train_subset, batch_size=32, shuffle=True)
-val_loader = DataLoader(test_subset, batch_size=20, shuffle=False)
+val_loader = DataLoader(test_subset, batch_size=10, shuffle=False)
 
 
 
@@ -2536,21 +2532,38 @@ compressor_model = AutoencoderLDM(
     num_layers_per_block=3,
     total_down_sampling_factor=3,
     num_embeddings=32
-).to(device)
+)#.to(device)
 
 compressor_metrics = Metrics(device="cpu", fid=True, metrics=True, lpips_=True)
 
-compressor_optimizer = torch.optim.Adam(compressor_model.parameters(), lr=1e-3)
+compressor_optimizer = torch.optim.Adam(compressor_model.parameters(), lr=1e-5)
 # loss function
 obj = nn.MSELoss()
 
-autoencoder_trainer = TrainAE(model=compressor_model, optimizer=compressor_optimizer, data_loader=train_loader,
-                              val_loader=val_loader, max_epochs=5, metrics_=compressor_metrics, device="cuda",
-                              store_path="vae_model", checkpoint=5, kl_warmup_epochs=2, patience=5, val_frequency=3,
-                              use_ddp=False, grad_accumulation_steps=2, log_frequency=3).to(device)
+
+
+autoencoder_trainer = TrainAE(
+    model=compressor_model,
+    optimizer=compressor_optimizer,
+    data_loader=train_loader,
+    val_loader=val_loader,
+    max_epochs=5,
+    metrics_=compressor_metrics,
+    device="cuda",
+    store_path="vae",
+    checkpoint=5,
+    kl_warmup_epochs=2,
+    patience=5,
+    val_frequency=3,
+    use_ddp=False,
+    grad_accumulation_steps=2,
+    log_frequency=1,
+    use_compilation=False
+)#.to(device)
 
 
 #train_losses, best_val_loss = autoencoder_trainer()
+
 
 noise_predictor = NoisePredictor(
     in_channels=2,  # number of latent space channels
@@ -2564,7 +2577,7 @@ noise_predictor = NoisePredictor(
     num_mid_blocks=2,
     num_up_blocks=2,
     down_sampling_factor=2
-).to(device)
+)#.to(device)
 
 # label conditional model
 text_encoder = TextEncoder(
@@ -2576,7 +2589,7 @@ text_encoder = TextEncoder(
     output_dimension=32,
     num_heads=2,
     context_length=77
-).to(device)
+)#.to(device)
 
 # Set up the AdamW optimizer for the NoisePredictor parameters plus TextEncoder trainable parameters with a learning rate of 1e-3
 optimizer = torch.optim.Adam(
@@ -2585,7 +2598,7 @@ optimizer = torch.optim.Adam(
 )
 
 # Initialize SDE hyperparameters for the noise schedule
-hyperparams_sde = HyperParamsSDE(
+hyperparams_sde = VarianceSchedulerSDE(
     num_steps=500,
     beta_start=1e-4,
     beta_end=0.02,
@@ -2598,36 +2611,37 @@ hyperparams_sde = HyperParamsSDE(
 
 # Set up the reverse diffusion process for sampling
 reverse_sde = ReverseSDE(
-    hyper_params=hyperparams_sde,
-    method="ode" # there are three stochastic methods and one deterministic method available ("ve", "vp", "sub-vp", "ode"). Here we will use the deterministic (ode) method
+    variance_scheduler=hyperparams_sde,
+    sde_method="ode" # there are three stochastic methods and one deterministic method available ("ve", "vp", "sub-vp", "ode"). Here we will use the deterministic (ode) method
 )
 
 # forward sde
 forward_sde = ForwardSDE(
-    hyper_params=hyperparams_sde,
-    method="ode"
+    variance_scheduler=hyperparams_sde,
+    sde_method="ode"
 )
 
 loss = nn.MSELoss()
-
 
 # Configure the LDM trainer for model training
 ldm_trainer = TrainLDM(diffusion_model="sde", forward_diffusion=forward_sde, reverse_diffusion=reverse_sde,
                        noise_predictor=noise_predictor, compressor_model=compressor_model, optimizer=optimizer,
                        objective=loss, data_loader=train_loader, val_loader=val_loader, conditional_model=text_encoder,
-                       metrics_=compressor_metrics, device=torch.device("cuda"), store_path="test_ldm", val_frequency=5,
+                       metrics_=compressor_metrics, device="cpu", max_epochs=5, store_path="test_l", val_frequency=5,
                        use_ddp=False, grad_accumulation_steps=1, log_frequency=1, use_compilation=False)
 
-train_losses, best_val_loss = ldm_trainer()
+#train_losses, best_val_loss = ldm_trainer()
 
 sampler = SampleLDM(diffusion_model="sde", reverse_diffusion=reverse_sde, noise_predictor=noise_predictor,
                     compressor_model=compressor_model, image_shape=(96, 96), conditional_model=text_encoder,
-                    bert_tokenizer="bert-base-uncased", batch_size=10, in_channels=3, device="cuda",
+                    bert_tokenizer="bert-base-uncased", batch_size=5, in_channels=3, device="cuda",
                     max_token_length=77, image_output_range=(-1, 1))
 
-#gen_imgs = sampler(
-#    conditions=['airplane', 'bird', 'car', 'cat', 'deer',
-#                'dog', 'horse', 'monkey', 'ship', 'truck'], # 10 labels as conditions
-#    save_images=True,
-#    save_path="ldm_generated"
-#)
+gen_imgs = sampler(
+    conditions=['airplane', 'bird', 'car', 'cat', 'deer'],
+                #'dog', 'horse', 'monkey', 'ship', 'truck'], # 10 labels as conditions
+    save_images=True,
+    save_path="ldm_generated"
+)
+
+

@@ -481,7 +481,7 @@ class TrainSDE(nn.Module):
         self.metrics_ = metrics_
         self.optimizer = optimizer
         self.objective = objective
-        self.store_path = store_path or "ddpm_model"
+        self.store_path = store_path or "sde_model"
         self.data_loader = data_loader
         self.val_loader = val_loader
         self.max_epochs = max_epochs
@@ -763,7 +763,7 @@ class TrainSDE(nn.Module):
                     noisy_x = self.forward_diffusion(x, noise, t)
 
                     # predict noise
-                    predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
+                    predicted_noise = self.noise_predictor(noisy_x, t, y_encoded, None)
 
                     # compute loss and scale for gradient accumulation
                     loss = self.objective(predicted_noise, noise) / self.grad_accumulation_steps
@@ -800,9 +800,9 @@ class TrainSDE(nn.Module):
                 mean_train_loss = loss_tensor.item()
 
             # print training progress (only master process)
-            if self.master_process:
-                if (epoch + 1) % self.log_frequency == 0:
-                    print(f"\nEpoch: {epoch + 1}/{self.max_epochs} | Learning Rate: {self.optimizer.param_groups[0]['lr']} | Train Loss: {mean_train_loss:.4f}", end="")
+            if self.master_process and (epoch + 1) % self.log_frequency == 0:
+                current_lr = self.optimizer.param_groups[0]['lr']
+                print(f"\nEpoch: {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
 
             # validation step
             if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
@@ -978,7 +978,7 @@ class TrainSDE(nn.Module):
                 t = torch.randint(0, self.forward_diffusion.variance_scheduler.num_steps, (x.shape[0],)).to(self.device)
 
                 noisy_x = self.forward_diffusion(x, noise, t)
-                predicted_noise = self.noise_predictor(noisy_x, t, y_encoded)
+                predicted_noise = self.noise_predictor(noisy_x, t, y_encoded, None)
                 loss = self.objective(predicted_noise, noise)
                 val_losses.append(loss.item())
 
@@ -989,7 +989,7 @@ class TrainSDE(nn.Module):
                     # reverse diffusion sampling
                     for t in reversed(range(self.forward_diffusion.variance_scheduler.num_steps)):
                         time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
-                        predicted_noise = self.noise_predictor(xt, time_steps, y_encoded)
+                        predicted_noise = self.noise_predictor(xt, time_steps, y_encoded, None)
                         noise = torch.randn_like(xt) if getattr(self.reverse_diffusion, "method", None) != "ode" else None
                         xt = self.reverse_diffusion(xt, noise, predicted_noise, time_steps)
 
@@ -1247,8 +1247,8 @@ train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, trans
 test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
 
 # Subsets
-train_subset = Subset(train_dataset, torch.randperm(len(train_dataset))[:100])
-test_subset = Subset(test_dataset, torch.randperm(len(test_dataset))[:10])
+train_subset = Subset(train_dataset, torch.randperm(len(train_dataset))[:300])
+test_subset = Subset(test_dataset, torch.randperm(len(test_dataset))[:30])
 
 # DataLoaders
 train_loader = DataLoader(train_subset, batch_size=32, shuffle=True, pin_memory=True)
@@ -1288,7 +1288,7 @@ text_encoder = TextEncoder(
 # Optimizer and loss
 optimizer = torch.optim.Adam(
     [p for p in noise_predictor.parameters() if p.requires_grad] +
-    [p for p in text_encoder.parameters() if p.requires_grad], lr=1e-3
+    [p for p in text_encoder.parameters() if p.requires_grad], lr=1e-5
 )
 loss = nn.MSELoss()
 
@@ -1334,7 +1334,7 @@ trainer = TrainSDE(
 )
 
 
-#train_losses, best_val_loss = trainer()
+train_losses, best_val_loss = trainer()
 
 sampler = SampleSDE(
     reverse_diffusion = reverse_sde,
