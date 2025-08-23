@@ -372,8 +372,8 @@ class TrainUnCLIPPrior(nn.Module):
 
         # Reduce dimensionality (optional)
         if self.reduce_clip_embedding_dim:
-            text_embeddings = self.prior_model.text_projection(text_embeddings)
-            image_embeddings = self.prior_model.image_projection(image_embeddings)
+            text_embeddings = self.prior_model.clip_text_projection(text_embeddings)
+            image_embeddings = self.prior_model.clip_image_projection(image_embeddings)
             #print("encoded images: ", image_embeddings.size())
             #print("encoded text: ", text_embeddings.size())
 

@@ -2567,7 +2567,7 @@ autoencoder_trainer = TrainAE(
 )#.to(device)
 
 
-#train_losses, best_val_loss = autoencoder_trainer()
+train_losses, best_val_loss = autoencoder_trainer()
 
 
 noise_predictor = NoisePredictor(
@@ -2635,7 +2635,7 @@ ldm_trainer = TrainLDM(diffusion_model="sde", forward_diffusion=forward_sde, rev
                        metrics_=compressor_metrics, device="cpu", max_epochs=5, store_path="test_l", val_frequency=5,
                        use_ddp=False, grad_accumulation_steps=1, log_frequency=1, use_compilation=False)
 
-#train_losses, best_val_loss = ldm_trainer()
+train_losses, best_val_loss = ldm_trainer()
 
 sampler = SampleLDM(diffusion_model="sde", reverse_diffusion=reverse_sde, noise_predictor=noise_predictor,
                     compressor_model=compressor_model, image_shape=(96, 96), conditional_model=text_encoder,

@@ -1007,7 +1007,7 @@ class UnCLIPTransformerPrior(nn.Module):
         """
         device = text_embeddings.device
         # create sinusoidal time embeddings
-        time_embeddings = self._get_sinusoidal_embeddings(timesteps, self.embedding_dim, device)
+        time_embeddings = self._get_sinusoidal_embeddings(timesteps, self.transformer_embedding_dim, device)
         time_embeddings = self.time_embedding_net(time_embeddings)
         # add time information to image embeddings
         conditioned_image_embeddings = noisy_image_embeddings + time_embeddings
@@ -2512,8 +2512,8 @@ class TrainUnCLIPPrior(nn.Module):
 
         # reduce dimensionality (optional)
         if self.reduce_clip_embedding_dim:
-            text_embeddings = self.prior_model.text_projection(text_embeddings)
-            image_embeddings = self.prior_model.image_projection(image_embeddings)
+            text_embeddings = self.prior_model.clip_text_projection(text_embeddings)
+            image_embeddings = self.prior_model.clip_image_projection(image_embeddings)
 
         # sample timestep t ~ Uniform(1, T)
         batch_size = image_embeddings.shape[0]
@@ -2530,8 +2530,8 @@ class TrainUnCLIPPrior(nn.Module):
 
         # transform back to original space if using dimension reduction
         if self.reduce_clip_embedding_dim:
-            predicted_image_embeddings = self.prior_model.image_projection.inverse_transform(predicted_image_embeddings)
-            target_embeddings = self.prior_model.image_projection.inverse_transform(image_embeddings)
+            predicted_image_embeddings = self.prior_model.clip_image_projection.inverse_transform(predicted_image_embeddings)
+            target_embeddings = self.prior_model.clip_image_projection.inverse_transform(image_embeddings)
         else:
             target_embeddings = image_embeddings
 
@@ -2611,8 +2611,8 @@ class TrainUnCLIPPrior(nn.Module):
                 original_image_embeddings = image_embeddings.clone()
 
                 if self.reduce_clip_embedding_dim:
-                    text_embeddings = self.prior_model.text_projection(text_embeddings)
-                    image_embeddings = self.prior_model.image_projection(image_embeddings)
+                    text_embeddings = self.prior_model.clip_text_projection(text_embeddings)
+                    image_embeddings = self.prior_model.clip_image_projection(image_embeddings)
 
                 # forward diffusion
                 batch_size = image_embeddings.shape[0]
@@ -2624,7 +2624,7 @@ class TrainUnCLIPPrior(nn.Module):
                 predicted_embeddings = self.prior_model(text_embeddings, noisy_image_embeddings, timesteps)
 
                 if self.reduce_clip_embedding_dim:
-                    predicted_embeddings = self.prior_model.image_projection.inverse_transform(predicted_embeddings)
+                    predicted_embeddings = self.prior_model.clip_image_projection.inverse_transform(predicted_embeddings)
 
                 # compute loss
                 loss = self.objective(predicted_embeddings, original_image_embeddings)
