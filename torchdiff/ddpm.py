@@ -10,7 +10,7 @@ sampling. Supports both unconditional and conditional generation with text promp
 
 - **ForwardDDPM**: Forward diffusion process to add noise.
 - **ReverseDDPM**: Reverse diffusion process to denoise.
-- **HyperParamsDDPM**: Noise schedule management.
+- **VarianceSchedulerDDPM**: Noise schedule management.
 - **TrainDDPM**: Training loop with mixed precision and scheduling.
 - **SampleDDPM**: Image generation from trained models.
 
@@ -37,6 +37,7 @@ from tqdm import tqdm
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
+import os
 
 
 ###==================================================================================================================###
@@ -1153,7 +1154,7 @@ class SampleDDPM(nn.Module):
 
 
 
-
+"""
 from utils import NoisePredictor, Metrics
 import os
 import matplotlib.pyplot as plt
@@ -1262,5 +1263,6 @@ sampler = SampleDDPM(
     image_output_range = (-1.0, 1.0)
 )
 sampler(save_path = "ddpm_gggg")
+"""
 
 
