@@ -51,7 +51,7 @@ class SampleUnCLIP(nn.Module):
             decoder_model: nn.Module,
             clip_model: nn.Module,
             low_res_upsampler: nn.Module,
-            second_upsampler_model: Optional[nn.Module] = None,
+            high_res_upsampler: Optional[nn.Module] = None,
             device: Optional[Union[torch.device, str]] = None,
             clip_embedding_dim: int = 512,  # CLIP embedding dimension
             prior_guidance_scale: float = 4.0,
@@ -76,7 +76,7 @@ class SampleUnCLIP(nn.Module):
         self.decoder_model = decoder_model.to(self.device)
         self.clip_model = clip_model.to(self.device)
         self.low_res_upsampler = low_res_upsampler.to(self.device)
-        self.second_upsampler_model = second_upsampler_model.to(self.device) if second_upsampler_model else None
+        self.high_res_upsampler = high_res_upsampler.to(self.device) if high_res_upsampler else None
 
         self.prior_guidance_scale = prior_guidance_scale
         self.decoder_guidance_scale = decoder_guidance_scale
@@ -269,22 +269,22 @@ class SampleUnCLIP(nn.Module):
             print("############################################################")
             print("                         second upsampler                   ")
             print("############################################################")
-            if self.use_high_res_upsampler and self.second_upsampler_model:
+            if self.use_high_res_upsampler and self.high_res_upsampler:
                 upsampled_1024_noise = torch.randn((self.batch_size, self.initial_image_size[0], 1024, 1024), device=self.device)
                 current_1024_images = upsampled_1024_noise
 
                 t_counter = 0
-                for t in reversed(range(self.second_upsampler_model.forward_diffusion.variance_scheduler.tau_num_steps)):
+                for t in reversed(range(self.high_res_upsampler.forward_diffusion.variance_scheduler.tau_num_steps)):
                     timesteps = torch.full((self.batch_size,), t, device=self.device)
                     prev_timesteps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
 
                     # predict noise for upsampling (conditioned on 256x256 image)
-                    predicted_noise = self.second_upsampler_model(current_1024_images, timesteps, self.images_256)
+                    predicted_noise = self.high_res_upsampler(current_1024_images, timesteps, self.images_256)
                     if t == 10:
                         print("predicted noise: ", predicted_noise.size())
 
                     # update using reverse diffusion
-                    current_1024_images, _ = self.second_upsampler_model.reverse_diffusion(
+                    current_1024_images, _ = self.high_res_upsampler.reverse_diffusion(
                         current_1024_images, predicted_noise, timesteps, prev_timesteps
                     )
                     if t == 10:
@@ -424,8 +424,8 @@ class SampleUnCLIP(nn.Module):
         self.clip_model.to(device)
         self.low_res_upsampler.to(device)
 
-        if self.second_upsampler_model is not None:
-            self.second_upsampler_model.to(device)
+        if self.high_res_upsampler is not None:
+            self.high_res_upsampler.to(device)
 
         return super().to(device)
 

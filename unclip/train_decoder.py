@@ -11,6 +11,7 @@ import warnings
 
 
 
+
 class TrainUnClipDecoder(nn.Module):
     """Trainer for the UnCLIP decoder model.
 

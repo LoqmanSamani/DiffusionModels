@@ -752,10 +752,10 @@ class NoisePredictor(nn.Module):
         #print("time embed:", time_embed.size())
         #print("clip embed (before)", clip_embeddings.size())
         if clip_embeddings is not None:
-            if len(clip_embeddings.shape) == 3:  # [batch_size, seq_len, time_embed_dim]
-                #clip_embeddings = clip_embeddings.mean(dim=1)
-                time_embed = time_embed.unsqueeze(1)
-                #print("please print it", time_embed.size())
+        #    if len(clip_embeddings.shape) == 3:  # [batch_size, seq_len, time_embed_dim]
+        #        #clip_embeddings = clip_embeddings.mean(dim=1)
+        #        time_embed = time_embed.unsqueeze(1)
+        #        #print("please print it", time_embed.size())
 
                 #print("clip imbed (after)", clip_embeddings.size())
             time_embed = time_embed + clip_embeddings

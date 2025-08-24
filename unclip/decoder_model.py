@@ -71,8 +71,10 @@ class UnClipDecoder(nn.Module):
         self.glide_text_encoder = glide_text_encoder.to(self.device) if glide_text_encoder else None
 
         # paper: "projecting CLIP embeddings into four extra tokens of context"
-        self.clip_decoder_projection = CLIPContextProjection(clip_embedding_dim=self.clip_embedding_dim,
-                                                             num_tokens=4).to(self.device)
+        self.clip_decoder_projection = CLIPContextProjection(
+            clip_embedding_dim=self.clip_embedding_dim,
+            num_tokens=4).to(self.device
+        )
         self.clip_time_projection = nn.Linear(self.clip_embedding_dim, self.clip_embedding_dim).to(self.device)
 
         # training parameters

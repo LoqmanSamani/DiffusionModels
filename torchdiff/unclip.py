@@ -847,7 +847,7 @@ class UnClipDecoder(nn.Module):
         input_ids = tokenized["input_ids"]
         attention_mask = tokenized["attention_mask"]
         y_encoded = self.glide_text_encoder(input_ids, attention_mask)
-        print("y shape: ", y_encoded.size())
+        # print("y shape: ", y_encoded.size())
 
         return y_encoded
 
@@ -1561,11 +1561,11 @@ class TrainUnClipDecoder(nn.Module):
                     )
 
                     # compute loss
-                    loss = self.objective(predicted_noise, noise) / self.num_grad_accumulation
+                    loss = self.objective(predicted_noise, noise) / self.grad_accumulation_steps
 
                 scaler.scale(loss).backward()
 
-                if (step + 1) % self.num_grad_accumulation == 0:
+                if (step + 1) % self.grad_accumulation_steps == 0:
                     # clip gradients
                     scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.decoder_model.parameters(), max_norm=1.0)  # covers all submodules
@@ -1579,7 +1579,7 @@ class TrainUnClipDecoder(nn.Module):
                     self.warmup_lr_scheduler.step()
                     torch.cuda.empty_cache()  # clear memory after optimizer step
 
-                train_losses_epoch.append(loss.item() * self.num_grad_accumulation)
+                train_losses_epoch.append(loss.item() * self.grad_accumulation_steps)
 
             mean_train_loss = self._compute_mean_loss(train_losses_epoch)
             train_losses.append(mean_train_loss)
@@ -1753,9 +1753,9 @@ class TrainUnClipDecoder(nn.Module):
         """
         with torch.no_grad():
             # encode text y with CLIP text encoder: z_t ← CLIP_text(y)
-            text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize)
+            text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize_clip_embeddings)
             # encode image x with CLIP image encoder: z_i ← CLIP_image(x)
-            image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize)
+            image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize_clip_embeddings)
         return text_embeddings, image_embeddings
 
     def _apply_dimensionality_reduction(
@@ -1848,14 +1848,14 @@ class TrainUnClipDecoder(nn.Module):
             'embedding_dim': self.clip_embedding_dim,
             'output_dim': self.transformer_embedding_dim,
             'reduce_dim': self.reduce_clip_embedding_dim,
-            'normalize': self.normalize
+            'normalize': self.normalize_clip_embeddings
         }
 
         # save conditional model (submodule of decoder_model)
-        if self.decoder_model.conditional_model is not None:
+        if self.decoder_model.glide_text_encoder is not None:
             checkpoint['conditional_model_state_dict'] = (
-                self.decoder_model.module.conditional_model.state_dict() if self.use_ddp
-                else self.decoder_model.conditional_model.state_dict()
+                self.decoder_model.module.glide_text_encoder.state_dict() if self.use_ddp
+                else self.decoder_model.glide_text_encoder.state_dict()
             )
 
         # save variance scheduler (submodule of decoder_model, always saved)
@@ -1866,14 +1866,19 @@ class TrainUnClipDecoder(nn.Module):
 
         # save CLIP time projection layer (submodule of decoder_model)
         checkpoint['clip_time_proj_state_dict'] = (
-            self.decoder_model.module.clip_time_proj.state_dict() if self.use_ddp
-            else self.decoder_model.clip_time_proj.state_dict()
+            self.decoder_model.module.clip_time_projection.state_dict() if self.use_ddp
+            else self.decoder_model.clip_time_projection.state_dict()
         )
 
         # save decoder projection layer (submodule of decoder_model)
         checkpoint['decoder_projection_state_dict'] = (
-            self.decoder_model.module.decoder_projection.state_dict() if self.use_ddp
-            else self.decoder_model.decoder_projection.state_dict()
+            self.decoder_model.module.clip_decoder_projection.state_dict() if self.use_ddp
+            else self.decoder_model.clip_decoder_projection.state_dict()
+        )
+        # a nn.Linear projection layer
+        checkpoint['clip_time_projection_state_dict'] = (
+            self.decoder_model.module.clip_time_projection.state_dict() if self.use_ddp
+            else self.decoder_model.clip_time_projection.state_dict()
         )
 
         # save projection models (PCA equivalent)
@@ -1945,34 +1950,41 @@ class TrainUnClipDecoder(nn.Module):
             _load_model_state_dict(self.decoder_model.noise_predictor, checkpoint['noise_predictor_state_dict'],
                                    'noise_predictor')
 
-        # load conditional model (submodule of decoder_model)
-        if self.decoder_model.conditional_model is not None and 'conditional_model_state_dict' in checkpoint:
-            _load_model_state_dict(self.decoder_model.conditional_model, checkpoint['conditional_model_state_dict'],
-                                   'conditional_model')
+        # load conditional model (submodule of decoder_model) - matches your save logic
+        if self.decoder_model.glide_text_encoder is not None and 'conditional_model_state_dict' in checkpoint:
+            _load_model_state_dict(self.decoder_model.glide_text_encoder, checkpoint['conditional_model_state_dict'],
+                                   'glide_text_encoder')
 
         # load variance scheduler (submodule of decoder_model)
         if 'variance_scheduler_state_dict' in checkpoint:
-            state_dict = checkpoint.get('variance_scheduler_state_dict')
             try:
-                _load_model_state_dict(self.decoder_model.forward_diffusion.variance_scheduler, state_dict, 'variance_scheduler')
+                _load_model_state_dict(self.decoder_model.forward_diffusion.variance_scheduler,
+                                       checkpoint['variance_scheduler_state_dict'], 'variance_scheduler')
             except Exception as e:
                 warnings.warn(f"Failed to load variance scheduler: {e}")
 
         # load CLIP time projection layer (submodule of decoder_model)
         if 'clip_time_proj_state_dict' in checkpoint:
             try:
-                _load_model_state_dict(self.decoder_model.clip_time_proj, checkpoint['clip_time_proj_state_dict'],
-                                       'clip_time_proj')
+                _load_model_state_dict(self.decoder_model.clip_time_projection,
+                                       checkpoint['clip_time_proj_state_dict'], 'clip_time_projection')
             except Exception as e:
                 warnings.warn(f"Failed to load CLIP time projection: {e}")
 
         # load decoder projection layer (submodule of decoder_model)
         if 'decoder_projection_state_dict' in checkpoint:
             try:
-                _load_model_state_dict(self.decoder_model.decoder_projection,
-                                       checkpoint['decoder_projection_state_dict'], 'decoder_projection')
+                _load_model_state_dict(self.decoder_model.clip_decoder_projection,
+                                       checkpoint['decoder_projection_state_dict'], 'clip_decoder_projection')
             except Exception as e:
                 warnings.warn(f"Failed to load decoder projection: {e}")
+
+        # handle the duplicate clip_time_projection_state_dict (from your save function)
+        # This loads the same thing as clip_time_proj_state_dict above, so we'll skip it
+        # to avoid overwriting, but add a warning if it exists
+        if 'clip_time_projection_state_dict' in checkpoint and self.master_process:
+            warnings.warn(
+                "Found duplicate 'clip_time_projection_state_dict' in checkpoint - skipping to avoid conflict")
 
         # load projection models (PCA equivalent)
         if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
@@ -2028,6 +2040,7 @@ class TrainUnClipDecoder(nn.Module):
             print(f"Epoch: {epoch}, Loss: {loss:.4f}")
 
         return epoch, loss
+
 
     def validate(self) -> Tuple[float, Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
         """Validates the UnCLIP decoder model.
@@ -2091,16 +2104,16 @@ class TrainUnClipDecoder(nn.Module):
                         prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
                         image_embeddings = self.decoder_model._apply_classifier_free_guidance(image_embeddings, p_classifier_free)
                         text_embeddings = self.decoder_model._apply_text_dropout(text_embeddings, p_text_drop)
-                        c = self.decoder_model.decoder_projection(image_embeddings)  # updated to submodule
+                        c = self.decoder_model.clip_decoder_projection(image_embeddings)
                         y_encoded = self.decoder_model._encode_text_with_glide(texts if text_embeddings is not None else None)
                         context = self.decoder_model._concatenate_embeddings(y_encoded, c)
-                        clip_image_embedding = self.decoder_model.clip_time_proj(image_embeddings)
+                        clip_image_embedding = self.decoder_model.clip_time_projection(image_embeddings)
                         predicted_noise = self.decoder_model.noise_predictor(xt, time_steps, context, clip_image_embedding)
                         xt, _ = self.decoder_model.reverse_diffusion(xt, predicted_noise, time_steps, prev_time_steps)
 
                     x_hat = torch.clamp(xt, min=self.image_output_range[0], max=self.image_output_range[1])
 
-                    if self.normalize:
+                    if self.normalize_clip_embeddings:
                         x_hat = (x_hat - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
                         x_orig = (images_orig - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
 
@@ -2140,8 +2153,9 @@ class TrainUnClipDecoder(nn.Module):
 
         # return to training mode
         self.decoder_model.train()  # sets noise_predictor, conditional_model, variance_scheduler, clip_time_proj, decoder_projection to train mode
-        if not self.decoder_model.variance_scheduler.trainable_beta:
-            self.decoder_model.variance_scheduler.eval()
+        if not self.decoder_model.forward_diffusion.variance_scheduler.trainable_beta:
+            self.decoder_model.forward_diffusion.variance_scheduler.eval()
+            self.decoder_model.reverse_diffusion.variance_scheduler.eval()
         if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
             if self.finetune_clip_projections:
                 self.clip_text_projection.train()
@@ -2790,7 +2804,7 @@ class SampleUnCLIP(nn.Module):
             decoder_model: nn.Module,
             clip_model: nn.Module,
             low_res_upsampler: nn.Module,
-            second_upsampler_model: Optional[nn.Module] = None,
+            high_res_upsampler: Optional[nn.Module] = None,
             device: Optional[Union[torch.device, str]] = None,
             clip_embedding_dim: int = 512,  # CLIP embedding dimension
             prior_guidance_scale: float = 4.0,
@@ -2811,11 +2825,11 @@ class SampleUnCLIP(nn.Module):
         else:
             self.device = device
 
-        self.prior_model = prior_model.to(self.device)
-        self.decoder_model = decoder_model.to(self.device)
-        self.clip_model = clip_model.to(self.device)
-        self.low_res_upsampler = low_res_upsampler.to(self.device)
-        self.second_upsampler_model = second_upsampler_model.to(self.device) if second_upsampler_model else None
+        self.prior_model = prior_model.to(self.device).eval()
+        self.decoder_model = decoder_model.to(self.device).eval()
+        self.clip_model = clip_model.to(self.device).eval()
+        self.low_res_upsampler = low_res_upsampler.to(self.device).eval()
+        self.high_res_upsampler = high_res_upsampler.to(self.device).eval() if high_res_upsampler else None
 
         self.prior_guidance_scale = prior_guidance_scale
         self.decoder_guidance_scale = decoder_guidance_scale
@@ -2872,8 +2886,8 @@ class SampleUnCLIP(nn.Module):
 
             # optionally reduce dimensionality for prior model
             if self.prior_dim_reduction:
-                text_embeddings_reduced = self.prior_model.text_projection(text_embeddings)
-                current_embeddings_reduced = self.prior_model.image_projection(current_embeddings)
+                text_embeddings_reduced = self.prior_model.clip_text_projection(text_embeddings)
+                current_embeddings_reduced = self.prior_model.clip_image_projection(current_embeddings)
             else:
                 text_embeddings_reduced = text_embeddings
                 current_embeddings_reduced = current_embeddings
@@ -2898,7 +2912,7 @@ class SampleUnCLIP(nn.Module):
 
             # convert back to full embedding dimension if needed
             if self.prior_dim_reduction:
-                final_image_embeddings = self.prior_model.image_projection.inverse_transform(current_embeddings_reduced)
+                final_image_embeddings = self.prior_model.clip_image_projection.inverse_transform(current_embeddings_reduced)
             else:
                 final_image_embeddings = current_embeddings_reduced
 
@@ -2907,7 +2921,7 @@ class SampleUnCLIP(nn.Module):
             decoder_noise = torch.randn((self.batch_size, self.initial_image_size[0], self.initial_image_size[1], self.initial_image_size[2]), device=self.device)
 
             # project image embeddings to 4 tokens
-            projected_embeddings = self.decoder_model.decoder_projection(final_image_embeddings)
+            projected_embeddings = self.decoder_model.clip_decoder_projection(final_image_embeddings)
 
             # encode text with GLIDE/decoder's text encoder
             glide_text_embeddings = self.decoder_model._encode_text_with_glide(prompts)
@@ -2956,19 +2970,19 @@ class SampleUnCLIP(nn.Module):
             self.images_256 = current_256_images
 
             # ====== SECOND UPSAMPLER: 256x256 -> 1024x1024 (if enabled) ======
-            if self.use_high_res_upsampler and self.second_upsampler_model:
+            if self.use_high_res_upsampler and self.high_res_upsampler:
                 upsampled_1024_noise = torch.randn((self.batch_size, self.initial_image_size[0], 1024, 1024), device=self.device)
                 current_1024_images = upsampled_1024_noise
 
-                for t in reversed(range(self.second_upsampler_model.forward_diffusion.variance_scheduler.tau_num_steps)):
+                for t in reversed(range(self.high_res_upsampler.forward_diffusion.variance_scheduler.tau_num_steps)):
                     timesteps = torch.full((self.batch_size,), t, device=self.device)
                     prev_timesteps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
 
                     # predict noise for upsampling (conditioned on 256x256 image)
-                    predicted_noise = self.second_upsampler_model(current_1024_images, timesteps, self.images_256)
+                    predicted_noise = self.high_res_upsampler(current_1024_images, timesteps, self.images_256)
 
                     # update using reverse diffusion
-                    current_1024_images, _ = self.second_upsampler_model.reverse_diffusion(
+                    current_1024_images, _ = self.high_res_upsampler.reverse_diffusion(
                         current_1024_images, predicted_noise, timesteps, prev_timesteps
                     )
 
