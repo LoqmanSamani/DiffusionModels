@@ -37,6 +37,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
+import os
 
 
 ###==================================================================================================================###
@@ -792,6 +793,7 @@ class TrainSDE(nn.Module):
 
             # compute mean training loss
             mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
+            train_losses.append(mean_train_loss)
 
             # all-reduce loss across processes for DDP
             if self.use_ddp:
@@ -1227,136 +1229,3 @@ class SampleSDE(nn.Module):
         if self.conditional_model:
             self.conditional_model.to(device)
         return super().to(device)
-
-
-from utils import NoisePredictor, Metrics, TextEncoder
-import os
-import torch
-import torch.nn as nn
-import transformers
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset
-
-# Set device and optimize for FP16
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.set_float32_matmul_precision('high')  # Optimize for FP16
-
-# Data transforms
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # For RGB
-])
-
-# Load CIFAR-10 datasets
-train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
-
-# Subsets
-train_subset = Subset(train_dataset, torch.randperm(len(train_dataset))[:300])
-test_subset = Subset(test_dataset, torch.randperm(len(test_dataset))[:30])
-
-# DataLoaders
-train_loader = DataLoader(train_subset, batch_size=32, shuffle=True, pin_memory=True)
-val_loader = DataLoader(test_subset, batch_size=10, shuffle=False, pin_memory=True)
-
-# Initialize tokenizer for text labels
-tokenizer = transformers.BertTokenizer.from_pretrained("bert-base-uncased")
-class_names = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
-
-# Initialize NoisePredictor
-noise_predictor = NoisePredictor(
-    in_channels=3,
-    down_channels=[16, 32],
-    mid_channels=[32, 32],
-    up_channels=[32, 16],
-    down_sampling=[True, True],
-    time_embed_dim=64,
-    y_embed_dim=64,
-    num_down_blocks=2,
-    num_mid_blocks=2,
-    num_up_blocks=2,
-    down_sampling_factor=2
-).to(device)
-
-# Initialize TextEncoder
-text_encoder = TextEncoder(
-    use_pretrained_model=True,
-    model_name="bert-base-uncased",
-    vocabulary_size=30522,
-    num_layers=2,
-    input_dimension=64,
-    output_dimension=64,
-    num_heads=2,
-    context_length=77
-).to(device)
-
-# Optimizer and loss
-optimizer = torch.optim.Adam(
-    [p for p in noise_predictor.parameters() if p.requires_grad] +
-    [p for p in text_encoder.parameters() if p.requires_grad], lr=1e-5
-)
-loss = nn.MSELoss()
-
-# Metrics
-metrics = Metrics(device="cuda", fid=True, metrics=True, lpips_=True)
-
-# SDE hyperparameters
-hyperparams_sde = VarianceSchedulerSDE(
-    num_steps=500,
-    beta_start=1e-4,
-    beta_end=0.02,
-    trainable_beta=False,
-    sigma_start=1e-3,
-    sigma_end=10.0,
-    start=0.0,
-    end=1.0,
-    beta_method="linear"
-)
-
-# forward and reverse sde
-forward_sde = ForwardSDE(variance_scheduler=hyperparams_sde, sde_method="ode")
-reverse_sde = ReverseSDE(variance_scheduler=hyperparams_sde, sde_method="ode")
-
-# TrainSDE with compilation
-trainer = TrainSDE(
-    noise_predictor=noise_predictor,
-    forward_diffusion=forward_sde,
-    reverse_diffusion=reverse_sde,
-    data_loader=train_loader,
-    optimizer=optimizer,
-    objective=loss,
-    val_loader=val_loader,
-    max_epochs=5,
-    device="cuda",
-    conditional_model=text_encoder,
-    metrics_=metrics,
-    store_path="test_sde",
-    val_frequency=3,
-    use_ddp=False,
-    grad_accumulation_steps=1,
-    log_frequency=1,
-    use_compilation=False
-)
-
-
-train_losses, best_val_loss = trainer()
-
-sampler = SampleSDE(
-    reverse_diffusion = reverse_sde,
-    noise_predictor = noise_predictor,
-    image_shape = (32, 32),
-    conditional_model = text_encoder,
-    tokenizer = "bert-base-uncased",
-    max_token_length  = 77,
-    batch_size  = 10,
-    in_channels  = 3,
-    device = "cuda",
-    image_output_range = (-1.0, 1.0)
-)
-#sampler(class_names)
-
-
-
-
-
-

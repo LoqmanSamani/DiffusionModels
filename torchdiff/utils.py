@@ -25,16 +25,12 @@ SDE, and are designed for standalone use in model training and sampling.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.attention import sdpa_kernel, SDPBackend
 from pytorch_fid import fid_score
-from torchvision.utils import save_image
 from transformers import BertModel
 import os
-import lpips
 import math
 import shutil
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-from torchmetrics.image.fid import FrechetInceptionDistance
 from torchvision.utils import save_image
 from typing import Optional, Tuple, List
 
@@ -756,8 +752,8 @@ class NoisePredictor(nn.Module):
         time_embed = self.time_projection(time_embed)
 
         if clip_embeddings is not None:
-            if len(clip_embeddings.shape) == 3:  # [batch_size, seq_len, time_embed_dim]
-                time_embed = time_embed.unsqueeze(1)
+            #if len(clip_embeddings.shape) == 3:  # [batch_size, seq_len, time_embed_dim]
+            #    time_embed = time_embed.unsqueeze(1)
             time_embed = time_embed + clip_embeddings
 
         skip_connections = []
@@ -1662,133 +1658,3 @@ class Metrics:
             lpips_score = self.compute_lpips(x, x_hat)
 
         return fid, mse, psnr, ssim, lpips_score
-
-
-import time
-
-
-"""
-# Ensure GPU usage
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-x = torch.randn(5, 3, 50, 50).to(device)
-t = torch.rand(5).to(device)
-
-np_ = NoisePredictor(
-    in_channels=3,
-    down_channels=[16, 32],
-    mid_channels=[32, 32],
-    up_channels=[32, 16],
-    down_sampling=[True, True],
-    time_embed_dim=20,
-    y_embed_dim=20,
-    num_down_blocks=2,
-    num_mid_blocks=2,
-    num_up_blocks=2,
-    down_sampling_factor=2
-).to(device)
-
-# Uncompiled
-times = []
-for i in range(50):
-    st = time.time()
-    np_(x, t)
-    torch.cuda.synchronize()  # Ensure GPU operations complete
-    ft = time.time()
-    times.append(ft - st)
-    print(f"Uncompiled iter: {i+1} finished in {ft - st:.4f} s")
-print(f"Uncompiled average: {sum(times)/len(times):.4f} s")
-
-# Compiled with warm-up
-cm = torch.compile(np_, mode="reduce-overhead")
-for _ in range(5):  # Warm-up
-    cm(x, t)
-torch.cuda.synchronize()
-
-times = []
-for i in range(50):
-    st = time.time()
-    cm(x, t)
-    torch.cuda.synchronize()
-    ft = time.time()
-    times.append(ft - st)
-    print(f"Compiled iter: {i+1} finished in {ft - st:.4f} s")
-print(f"Compiled average: {sum(times)/len(times):.4f} s")
-
-
-import transformers
-import time
-
-# Set up device and inputs
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-x = torch.randn(5, 3, 50, 50).to(device)  # Image input (not used in TextEncoder)
-t = torch.rand(5).to(device)  # Time embedding (not used)
-y = ["do", "not to do", "correctly", "wrong", "it is true"]  # Text inputs
-
-# Initialize tokenizer and TextEncoder
-tokenizer = transformers.BertTokenizer.from_pretrained("bert-base-uncased")
-te = TextEncoder(
-    use_pretrained_model=True,
-    model_name="bert-base-uncased",
-    num_layers=2,
-    vocabulary_size=30522,
-    input_dimension=768,
-    output_dimension=768,
-    dropout_rate=0.2,
-    num_heads=6,
-    context_length=77
-).to(device)  # Use FP16 for better performance
-
-# Tokenize inputs
-y_list = y  # Already a list of strings
-y_encoded = tokenizer(
-    y_list,
-    padding="max_length",
-    truncation=True,
-    max_length=77,
-    return_tensors="pt"
-).to(device)  # Convert to FP16
-input_ids = y_encoded["input_ids"]  # Shape: [5, 77]
-attention_mask = y_encoded["attention_mask"]  # Shape: [5, 77]
-
-# Uncompiled TextEncoder
-times = []
-for i in range(50):
-    st = time.time()
-    with torch.no_grad():  # Disable gradients
-        y_encoded = te(input_ids, attention_mask)
-    torch.cuda.synchronize()
-    ft = time.time()
-    times.append(ft - st)
-    print(f"Uncompiled iter: {i+1} finished in {ft - st:.4f} s")
-print(f"Uncompiled average: {sum(times)/len(times):.4f} s")
-
-# Compiled TextEncoder with warm-up
-cm = torch.compile(te, mode="reduce-overhead")
-for _ in range(5):  # Warm-up runs
-    with torch.no_grad():
-        cm(input_ids, attention_mask)
-torch.cuda.synchronize()
-
-times = []
-for i in range(50):
-    st = time.time()
-    with torch.no_grad():  # Disable gradients
-        y_encoded = cm(input_ids, attention_mask)
-    torch.cuda.synchronize()
-    ft = time.time()
-    times.append(ft - st)
-    print(f"Compiled iter: {i+1} finished in {ft - st:.4f} s")
-print(f"Compiled average: {sum(times)/len(times):.4f} s")
-
-# Verify output shape
-print(f"Output shape: {y_encoded.shape}")
-"""
-
-
-
-
-
-
-
-
-
