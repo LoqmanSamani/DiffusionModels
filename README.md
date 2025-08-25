@@ -183,7 +183,7 @@ Training UnCLIP is significantly more complex than other diffusion families, and
 ---
 
 ## 🔐 License  
-Released under the [MIT License](https://opensource.org/licenses/MIT).  
+Released under the [MIT License](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/LICENSE).  
 
 ---
 
