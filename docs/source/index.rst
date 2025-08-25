@@ -16,6 +16,7 @@ Welcome to TorchDiff's Documentation
    ddim
    sde
    ldm
+   unclip
    utils
 
 Indices and tables
