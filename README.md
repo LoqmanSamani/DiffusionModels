@@ -192,7 +192,6 @@ TorchDiff is under active development. Planned features include:
 - 🧠 New diffusion variants and improved training algorithms.  
 - ⚡ Faster and more memory-efficient sampling.  
 - 🎯 Additional utilities to simplify experimentation.  
-- 📦 Pretrained models for quick benchmarking.  
 
 ---
 
