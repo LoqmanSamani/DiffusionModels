@@ -1,3 +1,5 @@
+# TorchDiff
+
 <div align="center">
   <img src="imgs/logo_.png" alt="TorchDiff Logo" width="300"/>
 </div>
@@ -6,9 +8,9 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-red?style=plastic)](https://opensource.org/licenses/MIT)
 [![PyTorch](https://img.shields.io/badge/PyTorch-white?style=plastic&logo=pytorch&logoColor=red)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue?style=plastic)](https://pypi.org/project/torchdiff/)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue?style=plastic)](https://pypi.org/project/torchdiff/)
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue?style=plastic&logo=python&logoColor=white)](https://www.python.org/)
-[![Downloads](https://img.shields.io/pypi/dm/torchdiff?style=plastic&color=green)](https://pypi.org/project/torchdiff/)
+[![Downloads](https://pepy.tech/badge/torchdiff)](https://pepy.tech/project/torchdiff)
 [![Stars](https://img.shields.io/github/stars/LoqmanSamani/TorchDiff?style=plastic&color=yellow)](https://github.com/LoqmanSamani/TorchDiff)
 [![Forks](https://img.shields.io/github/forks/LoqmanSamani/TorchDiff?style=plastic&color=orange)](https://github.com/LoqmanSamani/TorchDiff)
 [![Issues](https://img.shields.io/github/issues/LoqmanSamani/TorchDiff?style=plastic&color=red)](https://github.com/LoqmanSamani/TorchDiff/issues)
@@ -17,10 +19,19 @@
 
 ---
 
-### Overview
+## 🔎 Overview  
 
-TorchDiff is a PyTorch-based library for building diffusion models, inspired by original research papers. The first release, **TorchDiff 1.0.0**, includes four model families: **DDPM**, **DDIM**, **SDE**, and **LDM**. These models support both **conditional** (e.g., text-prompt-based) and **unconditional** generation.
-<br>
+**TorchDiff** is a PyTorch-based library for building and experimenting with diffusion models, inspired by leading research papers.  
+
+The **TorchDiff 2.0.0** release includes implementations of five major diffusion model families:  
+- **DDPM** (Denoising Diffusion Probabilistic Models)  
+- **DDIM** (Denoising Diffusion Implicit Models)  
+- **SDE-based Diffusion**  
+- **LDM** (Latent Diffusion Models)  
+- **UnCLIP** (the model powering OpenAI’s *DALL·E 2*)  
+
+These models support both **conditional** (e.g., text-to-image) and **unconditional** generation.  
+
 <div align="center">
   <img src="imgs/mount.png" alt="Diffusion Model Process" width="1000"/>
   <br>
@@ -28,273 +39,227 @@ TorchDiff is a PyTorch-based library for building diffusion models, inspired by 
   <br><br>
 </div>
 
-Each model is organized into modular components:
-- **Forward Diffusion**: Adds noise to images (e.g., `ForwardDDPM` for DDPM).
-- **Reverse Diffusion**: Removes noise to generate images (e.g., `ReverseDDPM`).
-- **Hyperparameters**: Manages noise schedules and related settings (e.g., `HyperParamsDDPM`).
-- **Training**: Handles model training (e.g., `TrainDDPM`).
-- **Sampling**: Generates images during inference (e.g., `SampleDDPM`).
+TorchDiff is designed with **modularity** in mind. Each model is broken down into reusable components:  
+- **Forward Diffusion**: Adds noise (e.g., `ForwardDDPM`).  
+- **Reverse Diffusion**: Removes noise to recover data (e.g., `ReverseDDPM`).  
+- **Variance Scheduler**: Controls noise schedules (e.g., `VarianceSchedulerDDPM`).  
+- **Training**: Full training pipelines (e.g., `TrainDDPM`).  
+- **Sampling**: Efficient inference and generation (e.g., `SampleDDPM`).  
 
-Additional utilities include:
-- **Noise Predictor**: A U-Net-like neural network with time embedding and attention to denoise images (`NoisePredictor`).
-- **Text Encoder**: A transformer-based model (e.g., BERT) for text-conditioned generation (`TextEncoder`).
-- **Metrics**: Evaluates image quality with metrics like MSE, PSNR, SSIM, FID, and LPIPS (`Metrics`).
-
----
-
-
-
-### Resources
-
-- **Webpage**: [TorchDiff Webpage](https://loqmansamani.github.io/torchdiff/)
-- **API Reference**: [Official API Reference](https://torchdiff.readthedocs.io/en/latest/index.html)
+Additional utilities:  
+- **Noise Predictor**: A U-Net-like model with attention and time embeddings.  
+- **Text Encoder**: Transformer-based (e.g., BERT) for conditional generation.  
+- **Metrics**: Evaluation suite including MSE, PSNR, SSIM, FID, and LPIPS.  
 
 ---
 
-### Installation
+## ⚡ Quick Start  
 
-TorchDiff is available on PyPI and can be installed using pip. Alternatively, you can clone the repository for development purposes. The library depends on the packages listed in `requirements.txt`, which are automatically installed when using pip.
+Here’s a minimal working example to train and sample with **DDPM** on dummy data:  
 
-#### Install via PyPI (Recommended)
+```python
+import torch
+import torch.nn as nn
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+
+from torchdiff.ddpm import VarianceSchedulerDDPM, ForwardDDPM, ReverseDDPM, TrainDDPM, SampleDDPM
+from torchdiff.utils import NoisePredictor
+
+# Dataset (CIFAR10 for demo)
+transform = transforms.Compose([
+    transforms.Resize(32),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
+train_dataset = datasets.CIFAR10(root="./data", train=True, download=True, transform=transform)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+
+# Model components
+noise_pred = NoisePredictor(in_channels=3)
+vs = VarianceSchedulerDDPM(num_steps=1000)
+fwd, rev = ForwardDDPM(vs), ReverseDDPM(vs)
+
+# Optimizer & loss
+optim = torch.optim.Adam(noise_pred.parameters(), lr=1e-4)
+loss_fn = nn.MSELoss()
+
+# Training
+trainer = TrainDDPM(
+    noise_predictor=noise_pred, forward_diffusion=fwd, reverse_diffusion=rev,
+    conditional_model=None, optimizer=optim, objective=loss_fn,
+    data_loader=train_loader, max_epochs=1, device="cpu"
+)
+trainer()
+
+# Sampling
+sampler = SampleDDPM(reverse_diffusion=rev, noise_predictor=noise_pred,
+                     image_shape=(32, 32), batch_size=4, in_channels=3, device="cpu")
+images = sampler()
+print("Generated images shape:", images.shape)
+```
+
+For detailed examples, check the [examples/](https://github.com/LoqmanSamani/TorchDiff/tree/systembiology/examples) directory.  
+
+---
+
+## 📚 Resources  
+- 🌐 [Project Website](https://loqmansamani.github.io/torchdiff/)  
+- 📖 [API Reference](https://torchdiff.readthedocs.io/en/latest/index.html)  
+
+---
+
+## ⚡ Installation  
+
+Install from **PyPI (recommended):**
 ```bash
 pip install torchdiff
 ```
 
-#### Install via Repository (Optional)
+Or install from source for development:  
 ```bash
-# Clone the repository
+# Clone repository
 git clone https://github.com/LoqmanSamani/TorchDiff.git
 cd TorchDiff
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Install the package
+# Install package
 pip install .
 ```
 
-Ensure you have Python 3.8+ installed. For GPU acceleration, install a compatible CUDA version for PyTorch.
+> Requires **Python 3.8+**. For GPU acceleration, ensure PyTorch is installed with the correct CUDA version.  
 
 ---
 
-### Implemented Models
+## 🧩 Implemented Models  
 
-1. **Denoising Diffusion Probabilistic Models (DDPM)**
+### 1. Denoising Diffusion Probabilistic Models (DDPM)  
+**Paper**: [Ho et al., 2020](https://arxiv.org/abs/2006.11239)  
 
-    Paper: [Ho et al., 2020](https://arxiv.org/abs/2006.11239)
+DDPMs learn to reverse a gradual noise-adding process to generate high-quality images. TorchDiff provides a modular implementation for both unconditional and conditional (text-guided) generation.  
 
-    DDPM, introduced by Ho et al., is a foundational diffusion model that generates high-quality images by learning to reverse a gradual noise-adding process. It supports both unconditional generation and conditional generation with text prompts. The model consists of a forward process (adding noise over many steps) and a reverse process (denoising to recover the original image). TorchDiff provides a complete implementation with modular components for training and sampling.
-
-    #### Data Preparation
-    ```python
-    import torch
-    import torch.nn as nn
-    from torchvision import datasets, transforms
-    from torch.utils.data import DataLoader
-    from torchdiff.ddpm import HyperParamsDDPM, ReverseDDPM, TrainDDPM, SampleDDPM
-    from torchdiff.utils import TextEncoder, NoisePredictor, Metrics
-    
-    # Normalize images to [-1, 1]
-    transform = transforms.Compose([
-        transforms.Resize(224),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-    ])
-    # Load dataset (e.g., ImageNet)
-    train_dataset = datasets.ImageFolder(
-        root='./imagenet/train', transform=transform
-    )
-    val_dataset = datasets.ImageFolder(
-        root='./imagenet/val', transform=transform
-    )
-    # Create data loaders
-    train_loader = DataLoader(
-        train_dataset, batch_size=64, shuffle=True, num_workers=8, pin_memory=True
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=64, shuffle=False, num_workers=8, pin_memory=True
-    )
-    ```
-   
-   #### Training and Sampling a Conditional DDPM
-    ```python
-    # Noise predictor (U-Net for denoising)
-    noise_pred = NoisePredictor(
-        in_channels=3, down_channels=[32, 64, 128, 256],
-        mid_channels=[256, 256, 256, 256], up_channels=[256, 128, 64, 32],
-        time_embed_dim=256, y_embed_dim=256
-    )
-    # Text encoder for text prompts
-    text_enc = TextEncoder(model_name="bert-base-uncased", output_dimension=256)
-    # DDPM hyperparameters
-    hp_ddpm = HyperParamsDDPM(
-        num_steps=1000, beta_start=1e-4, beta_end=0.02, beta_method="linear"
-    )
-    # Reverse diffusion for sampling
-    rev_ddpm = ReverseDDPM(hp_ddpm)
-    # Optimizer and loss
-    optim = torch.optim.Adam(
-        list(noise_pred.parameters()) + list(text_enc.parameters()), lr=1e-4
-    )
-    loss_fn = nn.MSELoss()
-    # Metrics for evaluation
-    metrics = Metrics(device="cuda", fid=True, ssim=True, lpips_=True)
-    # Train DDPM
-    trainer = TrainDDPM(
-        noise_predictor=noise_pred, hyper_params=hp_ddpm,
-        conditional_model=text_enc, metrics_=metrics, optimizer=optim,
-        objective=loss_fn, data_loader=train_loader, val_loader=val_loader,
-        max_epoch=100, device="cuda", store_path="ddpm_model.pth", val_frequency=5
-    )
-    trainer()  # Start training
-    # Generate images from text prompts
-    sampler = SampleDDPM(
-        reverse_diffusion=rev_ddpm, noise_predictor=noise_pred,
-        image_shape=(224, 224), conditional_model=text_enc, tokenizer="bert-base-uncased",
-        batch_size=3, in_channels=3, device="cuda", output_range=(-1, 1)
-    )
-    images = sampler(
-        conditions=["a cat", "a dog", "a box"], save_images=True,
-        save_path="ddpm_generated"
-    )
-    ```
-
-2. **Denoising Diffusion Implicit Models (DDIM)**
-
-    Paper: [Song et al., 2021](https://arxiv.org/abs/2010.02502)
-
-    DDIM, proposed by Song et al., is a faster variant of DDPM that achieves high-quality image generation with fewer denoising steps by taking a more direct path from noise to images. TorchDiff implements DDIM with the same noise predictor and optional text encoder as DDPM, enabling both unconditional and conditional generation. The reduced number of steps makes DDIM significantly faster during inference.
-
-    #### Training and Sampling DDIM
-
-    ```python
-    from torchdiff.ddim import HyperParamsDDIM, ReverseDDIM, ForwardDDIM, TrainDDIM, SampleDDIM
-
-    # DDIM hyperparameters
-    hp_ddim = HyperParamsDDIM(
-        num_steps=500, tau_num_steps=100, beta_start=1e-4,
-        beta_end=0.02, beta_method="linear"
-    )
-    # Reverse and forward diffusion
-    rev_ddim = ReverseDDIM(hp_ddim)
-    fwd_ddim = ForwardDDIM(hp_ddim)
-    # Optimizer
-    optim = torch.optim.Adam(noise_pred.parameters(), lr=1e-4)
-    # Train DDIM (unconditional)
-    trainer = TrainDDIM(
-        noise_predictor=noise_pred, hyper_params=hp_ddim, conditional_model=None,
-        metrics_=None, optimizer=optim, objective=loss_fn, data_loader=train_loader,
-        val_loader=None, max_epoch=100, device="cuda", store_path="ddim_model.pth"
-    )
-    trainer()  # Start training
-    # Generate 10 images
-    sampler = SampleDDIM(
-        reverse_diffusion=rev_ddim, noise_predictor=noise_pred,
-        image_shape=(224, 224), conditional_model=None,
-        batch_size=10, in_channels=3, device="cuda"
-    )
-    images = sampler()  # Generate images
-    ```
-
-3. **Score-Based Generative Modeling through Stochastic Differential Equations (SDE)**
- 
-    Paper: [Song et al., 2021](https://arxiv.org/abs/2011.13456) 
-    
-    SDE-based models, introduced by Song et al., offer a flexible framework for diffusion using stochastic differential equations to control noise addition and removal. TorchDiff supports four SDE variants: **Variance Exploding (VE)**, **Variance Preserving (VP)**, **sub-Variance Preserving (sub-VP)**, and a **deterministic ODE** method. These models support both conditional and unconditional generation, with customizable noise schedules.
-
-    ```python
-    from torchdiff.sde import HyperParamsSDE, ReverseSDE, TrainSDE, SampleSDE
-
-    # SDE hyperparameters
-    hp_sde = HyperParamsSDE(
-        num_steps=500, beta_start=1e-4, beta_end=0.02, sigma_start=1e-3, sigma_end=10.0
-    )
-    # Reverse diffusion (ODE method)
-    rev_sde = ReverseSDE(hp_sde, method="ode")
-    # Train SDE
-    trainer = TrainSDE(
-        method="ode", noise_predictor=noise_pred, hyper_params=hp_sde,
-        conditional_model=text_enc, metrics_=metrics, optimizer=optim,
-        objective=loss_fn, data_loader=train_loader, val_loader=val_loader,
-        max_epoch=100, device="cuda", store_path="sde_model.pth", val_frequency=10
-    )
-    trainer()  # Start training
-    # Generate an image
-    sampler = SampleSDE(
-        reverse_diffusion=rev_sde, noise_predictor=noise_pred,
-        image_shape=(224, 224), conditional_model=text_enc,
-        batch_size=1, in_channels=3, device="cuda"
-    )
-    image = sampler(conditions="nothing!!!")  # Generate one conditioned image
-    ```
-
-4. **Latent Diffusion Models (LDM)**
-
-    Paper: [Rombach et al., 2022](https://arxiv.org/abs/2112.10752)
-
-    LDMs, proposed by Rombach et al., perform diffusion in a compressed latent space using a variational autoencoder (VAE) to reduce computational cost while maintaining image quality. The VAE encodes images into a smaller latent representation and decodes them back, using perceptual and adversarial losses for training. TorchDiff allows LDMs to use DDPM, DDIM, or SDE as the diffusion backbone, with the noise predictor operating in the latent space.
-
-    #### Training and Sampling LDM
-    ```python
-    from torchdiff.ldm import AutoencoderLDM, TrainAE, TrainLDM, SampleLDM
-    
-    # Train the VAE
-    vae = AutoencoderLDM(
-        in_channels=3, down_channels=[16, 32, 64, 128],
-        up_channels=[128, 64, 32, 16], out_channels=3,
-        latent_channels=3, num_layers_per_block=2
-    )
-    vae_trainer = TrainAE(
-        model=vae, optimizer=optim, data_loader=train_loader,
-        val_loader=val_loader, max_epoch=100, metrics_=metrics,
-        device="cuda", save_path="vae_model.pth", val_frequency=5
-    )
-    vae_trainer()  # Start training
-    
-    # Train LDM with DDIM
-    ldm_trainer = TrainLDM(
-        model="ddim", forward_model=fwd_ddim, noise_predictor=noise_pred,
-        hyper_params=hp_ddim, compressor_model=vae, conditional_model=text_enc,
-        reverse_diffusion=rev_ddim, metrics_=metrics, optimizer=optim,
-        objective=loss_fn, data_loader=train_loader, val_loader=val_loader,
-        max_epoch=100, device="cuda", store_path="ldm_model.pth", val_frequency=10
-    )
-    ldm_trainer()  # Start training
-   
-    sampler = SampleLDM(
-        model="ddim", reverse_diffusion=rev_ddim,
-        noise_predictor=noise_pred, compressor_model=vae,
-        image_shape=(224, 224), conditional_model=text_enc,
-        batch_size=1, in_channels=3, device="cuda"
-    )
-    # Generate an image
-    imgs = sampler(conditions="nothing") # Generate one conditioned image
-    ```
+📓 [DDPM Example Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddpm.ipynb)  
 
 ---
 
-### 🔐 License
+### 2. Denoising Diffusion Implicit Models (DDIM)  
+**Paper**: [Song et al., 2021](https://arxiv.org/abs/2010.02502)  
 
-This project is licensed under the [MIT License](https://opensource.org/licenses/MIT). You are free to use, modify, and distribute this software with proper attribution.
+DDIM accelerates sampling by reducing the number of denoising steps while maintaining image quality. TorchDiff supports both conditional and unconditional DDIM generation.  
 
----
-
-### 🚧 Future Work
-
-TorchDiff is under active development. Here's what's planned:
-
-- 🧠 Integration of new diffusion variants and improved training techniques.
-- 🎯 Additional utilities and tools to streamline experimentation.
-- 🛠️ Support for distributed training and mixed precision.
-
-Stay tuned for regular updates!
+📓 [DDIM Example Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddim.ipynb)  
 
 ---
 
-### 🤝 Contributing
+### 3. Score-Based Generative Models via Stochastic Differential Equations (SDE)  
+**Paper**: [Song et al., 2021](https://arxiv.org/abs/2011.13456)  
 
-Contributions are welcome! If you have ideas, spot a bug, or want to improve the library:
-- Open an issue or start a discussion in the GitHub [Issues](../../issues) section.
+SDE-based models generalize diffusion via stochastic processes, supporting multiple formulations: **VE, VP, sub-VP**, and deterministic **ODE** variants. TorchDiff includes full training and sampling pipelines for both conditional and unconditional use cases.  
 
-Your feedback and suggestions help make TorchDiff better for everyone.
+📓 [SDE Example Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/sde.ipynb)  
+
+---
+
+### 4. Latent Diffusion Models (LDM)  
+**Paper**: [Rombach et al., 2022](https://arxiv.org/abs/2112.10752)  
+
+LDMs operate in a compressed latent space using a VAE, enabling **efficient high-resolution image synthesis** with reduced computational cost. TorchDiff supports using DDPM, DDIM, or SDE as the diffusion backbone in latent space.  
+
+📓 [LDM Example Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ldm.ipynb)  
+
+---
+
+### 5. UnCLIP (Hierarchical Text-Conditional Image Generation with CLIP Latents)  
+**Paper**: [Ramesh et al., 2022](https://arxiv.org/abs/2204.06125)  
+
+UnCLIP, the architecture behind *DALL·E 2*, leverages **CLIP latents** to enable hierarchical text-to-image generation. It first maps text into CLIP’s multimodal embedding space, then performs diffusion-based generation in that space, followed by refinement in pixel space.  
+
+Training UnCLIP is significantly more complex than other diffusion families, and thus a minimal example is not shown here.  
+
+📓 [UnCLIP Example Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/unclip.ipynb)  
+
+---
+
+## 🔐 License  
+Released under the [MIT License](https://opensource.org/licenses/MIT).  
+
+---
+
+## 🚧 Roadmap / Future Work  
+TorchDiff is under active development. Planned features include:  
+- 🧠 New diffusion variants and improved training algorithms.  
+- ⚡ Faster and more memory-efficient sampling.  
+- 🎯 Additional utilities to simplify experimentation.  
+- 📦 Pretrained models for quick benchmarking.  
+
+---
+
+## 🤝 Contributing  
+Contributions are welcome!  
+
+- Open an [Issue](../../issues) to report bugs or request features.  
+- Submit a PR with improvements or new features.  
+
+Your feedback helps make TorchDiff better for the community.  
+
+
+---
+
+## 📖 Citation  
+
+If you use **TorchDiff** in your research or project, please cite the original papers and this repository.  
+
+### Core Diffusion Papers  
+
+```bibtex
+@article{ho2020denoising,
+  title={Denoising Diffusion Probabilistic Models},
+  author={Ho, Jonathan and Jain, Ajay and Abbeel, Pieter},
+  journal={Advances in Neural Information Processing Systems},
+  year={2020}
+}
+
+@article{song2021denoising,
+  title={Denoising Diffusion Implicit Models},
+  author={Song, Jiaming and Meng, Chenlin and Ermon, Stefano},
+  journal={International Conference on Learning Representations (ICLR)},
+  year={2021}
+}
+
+@article{song2021score,
+  title={Score-Based Generative Modeling through Stochastic Differential Equations},
+  author={Song, Yang and Sohl-Dickstein, Jascha and Kingma, Diederik P and Kumar, Abhishek and Ermon, Stefano and Poole, Ben},
+  journal={International Conference on Learning Representations (ICLR)},
+  year={2021}
+}
+
+@article{rombach2022high,
+  title={High-Resolution Image Synthesis with Latent Diffusion Models},
+  author={Rombach, Robin and Blattmann, Andreas and Lorenz, Dominik and Esser, Patrick and Ommer, Björn},
+  journal={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2022}
+}
+
+@article{ramesh2022hierarchical,
+  title={Hierarchical Text-Conditional Image Generation with CLIP Latents},
+  author={Ramesh, Aditya and Pavlov, Mikhail and Goh, Gabriel and Gray, Scott and Voss, Chelsea and Radford, Alec and Chen, Mark and Sutskever, Ilya},
+  journal={arXiv preprint arXiv:2204.06125},
+  year={2022}
+}
+```
+
+### TorchDiff Repository  
+
+```bibtex
+@misc{torchdiff2025,
+  author = {Samani, Loghman},
+  title = {TorchDiff: A Modular Diffusion Modeling Library in PyTorch},
+  year = {2025},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/LoqmanSamani/TorchDiff}},
+}
+```
+
