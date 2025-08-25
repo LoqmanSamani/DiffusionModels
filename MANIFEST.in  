@@ -1,0 +1,4 @@
+include README.md
+include LICENSE
+recursive-include torchdiff/data *.txt
+recursive-include torchdiff/models *.pt
