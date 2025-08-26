@@ -18,7 +18,7 @@ subsampled time step schedule for faster sampling compared to DDPM.
 **Notes**
 
 - The subsampled time step schedule (tau) enables faster sampling, controlled by the
-  `tau_num_steps` parameter in HyperParamsDDIM.
+  `tau_num_steps` parameter in VarianceSchedulerDDIM.
 
 **References**:
 
@@ -26,6 +26,9 @@ subsampled time step schedule for faster sampling compared to DDPM.
 
 -------------------------------------------------------------------------------
 """
+
+
+###==================================================================================================================###
 
 
 import torch

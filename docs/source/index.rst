@@ -6,10 +6,11 @@
 Welcome to TorchDiff's Documentation
 ======================================
 
-**TorchDiff** is a PyTorch-based library designed for building and experimenting with diffusion models, offering modular and flexible implementations of state-of-the-art generative models, including Denoising Diffusion Probabilistic Models (DDPM), Denoising Diffusion Implicit Models (DDIM), Latent Diffusion Models (LDM), and Score-Based Generative Modeling through Stochastic Differential Equations (SDE). It supports both conditional (e.g., text-prompt-based) and unconditional image generation, with components like noise predictors, text encoders, and image quality metrics (MSE, PSNR, SSIM, FID, LPIPS) to streamline model training, sampling, and evaluation. Ideal for researchers and practitioners, TorchDiff provides a robust foundation for developing and customizing diffusion-based generative pipelines.
+**TorchDiff** is a PyTorch-based library for building and experimenting with diffusion models, inspired by leading research in generative AI. It provides modular and flexible implementations of state-of-the-art diffusion-based generative models, including Denoising Diffusion Probabilistic Models (DDPM), Denoising Diffusion Implicit Models (DDIM), Score-Based Generative Models through Stochastic Differential Equations (SDE), Latent Diffusion Models (LDM), and UnCLIP (Hierarchical Text-Conditional Image Generation with CLIP Latents). The library supports both conditional (e.g., text-to-image) and unconditional generation, with key components such as forward and reverse diffusion processes, variance schedulers, U-Net-like noise predictors with attention and time embeddings, transformer-based text encoders (e.g., BERT), and a comprehensive evaluation suite featuring image quality metrics (MSE, PSNR, SSIM, FID, LPIPS). Designed for researchers and practitioners, TorchDiff offers a robust, extensible foundation for training, sampling, and customizing advanced generative pipelines.
+
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
    :caption: Contents:
 
    ddpm
