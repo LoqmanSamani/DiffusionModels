@@ -1,7 +1,5 @@
-.. _unclip:
-
-unclip
-=====
+UnCLIP Module
+=============
 
 .. automodule:: torchdiff.unclip
    :members:
