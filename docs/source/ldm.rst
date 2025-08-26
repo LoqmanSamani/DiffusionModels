@@ -1,4 +1,4 @@
-LDM Module
+LDM
 ==========
 
 .. automodule:: torchdiff.ldm

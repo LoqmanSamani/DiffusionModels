@@ -1,4 +1,4 @@
-UnCLIP Module
+UnCLIP
 =============
 
 .. automodule:: torchdiff.unclip

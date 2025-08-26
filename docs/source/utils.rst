@@ -1,4 +1,4 @@
-Utils Module
+Utils
 ============
 
 .. automodule:: torchdiff.utils

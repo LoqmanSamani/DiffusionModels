@@ -1,4 +1,4 @@
-DDPM Module
+DDPM
 ===========
 
 .. automodule:: torchdiff.ddpm
