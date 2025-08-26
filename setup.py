@@ -1,10 +1,13 @@
 from setuptools import setup, find_packages
+from pathlib import Path
+
+long_description = Path("README.md").read_text(encoding="utf-8") if Path("README.md").exists() else ""
 
 setup(
     name="TorchDiff",
     version="2.0.0",
     description="A PyTorch-based library for diffusion models",
-    long_description=open("README.md", encoding="utf-8").read(),
+    long_description=long_description,
     long_description_content_type="text/markdown",
     author="Loghman Samani",
     author_email="samaniloqman91@gmail.com",
@@ -14,22 +17,20 @@ setup(
         "Documentation": "https://torchdiff.readthedocs.io",
         "Source": "https://github.com/LoqmanSamani/TorchDiff",
     },
+    license="MIT",
     packages=find_packages(),
     install_requires=[
-        "lpips>=0.1.4",
-        "pytorch-fid>=0.3.0",
-        "torch>=2.3.0,<3.0.0",  # Adjusted to a realistic version range
-        "torchvision>=0.18.0,<0.19.0",  # Aligned with torch version
-        "tqdm>=4.67.1",
-        "transformers>=4.44.2",
+        "lpips==0.1.4",
+        "pytorch-fid==0.3.0",
+        "torch==2.7.0",
+        "torchvision==0.22.0",
+        "tqdm==4.67.1",
+        "transformers==4.51.3",
     ],
     extras_require={
         "test": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
     },
-    include_package_data=True,
-    package_data={
-        "torchdiff": ["LICENSE", "data/*.txt", "models/*.pt"],
-    },
+    include_package_data=True,  # controlled via MANIFEST.in
     classifiers=[
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",
