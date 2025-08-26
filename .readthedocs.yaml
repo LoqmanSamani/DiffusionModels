@@ -6,9 +6,10 @@ build:
     python: "3.11"
 
 sphinx:
-  configuration: docs/source/conf.py  # tell RTD where conf.py lives
+  configuration: docs/source/conf.py
 
 python:
   install:
-    - requirements: docs/requirements.txt
-
+    - method: pip
+      path: .  # This installs your torchdiff package
+    - requirements: docs/requirements.txt  # Fixed path to match your file location
