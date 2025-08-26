@@ -34,4 +34,14 @@ autodoc_mock_imports = [
     "lpips", "pytorch_fid", "transformers"
 ]
 
+# Add more verbose autodoc settings
+autodoc_default_options = {
+    'members': True,
+    'undoc-members': True,
+    'show-inheritance': True,
+    'imported-members': True,
+}
+
+# Show more warnings
+suppress_warnings = []
 
