@@ -13,11 +13,11 @@ Welcome to TorchDiff's Documentation
    :maxdepth: 1
    :caption: Contents:
 
-   DDPM
-   DDIM
-   SDE
-   LDM
-   UnCLIP
+   ddpm
+   ddim
+   sde
+   ldm
+   unclip
    utils
 
 Indices and tables

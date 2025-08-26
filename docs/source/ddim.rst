@@ -1,7 +1,8 @@
-DDPM
+
+ddim
 ===========
 
-.. automodule:: torchdiff.ddpm
+.. automodule:: torchdiff.ddim
    :members:
    :undoc-members:
    :show-inheritance:

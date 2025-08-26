@@ -1,4 +1,4 @@
-SDE
+sde
 ==========
 
 .. automodule:: torchdiff.sde
