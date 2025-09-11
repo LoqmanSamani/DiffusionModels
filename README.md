@@ -97,7 +97,6 @@ trainer()
 sampler = SampleDDPM(reverse_diffusion=rev, noise_predictor=noise_pred,
                      image_shape=(32, 32), batch_size=4, in_channels=3, device="cpu")
 images = sampler()
-print("Generated images shape:", images.shape)
 ```
 
 For detailed examples, check the [examples/](https://github.com/LoqmanSamani/TorchDiff/tree/systembiology/examples) directory.  
