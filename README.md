@@ -24,7 +24,7 @@
 
 **TorchDiff** is a PyTorch-based library for building and experimenting with diffusion models, inspired by leading research papers.  
 
-The **TorchDiff 2.0.0** release includes implementations of five major diffusion model families:  
+The **TorchDiff 2.1.0** release includes implementations of five major diffusion model families:  
 - **DDPM** (Denoising Diffusion Probabilistic Models)  
 - **DDIM** (Denoising Diffusion Implicit Models)  
 - **SDE-based Diffusion**  
