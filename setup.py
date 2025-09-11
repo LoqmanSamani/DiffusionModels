@@ -5,7 +5,7 @@ long_description = Path("README.md").read_text(encoding="utf-8") if Path("README
 
 setup(
     name="TorchDiff",
-    version="2.0.0",
+    version="2.1.0",
     description="A PyTorch-based library for diffusion models",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -14,23 +14,25 @@ setup(
     url="https://github.com/LoqmanSamani/TorchDiff",
     project_urls={
         "Homepage": "https://loqmansamani.github.io/torchdiff",
-        "Documentation": "https://torchdiff.readthedocs.io",
+        "Documentation": "https://torchdiff.readthedio",
         "Source": "https://github.com/LoqmanSamani/TorchDiff",
     },
     license="MIT",
     packages=find_packages(),
     install_requires=[
-        "lpips==0.1.4",
-        "pytorch-fid==0.3.0",
-        "torch==2.7.0",
-        "torchvision==0.22.0",
-        "tqdm==4.67.1",
-        "transformers==4.51.3",
+        "lpips>=0.1.4",
+        "pytorch-fid>=0.3.0",
+        "torch>=2.0.0",
+        "torchvision>=0.15.0",
+        "tqdm>=4.60.0",
+        "transformers>=4.20.0",
+        "torchmetrics>=1.0.0"
     ],
     extras_require={
         "test": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
+        "dev": ["black", "flake8", "mypy"],
     },
-    include_package_data=True,  # controlled via MANIFEST.in
+    include_package_data=True,
     classifiers=[
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",
