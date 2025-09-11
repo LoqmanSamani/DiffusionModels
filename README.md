@@ -1,10 +1,11 @@
 # TorchDiff
 
-<div align="center">
-  <img src="https://raw.githubusercontent.com/LoqmanSamani/TorchDiff/main/imgs/logo_.png" alt="TorchDiff Logo" width="300"/>
-</div>
-<div align="center">
 
+<div align="center">
+  <img src="imgs/logo_.png" alt="TorchDiff Logo" width="300"/>
+</div>
+
+<div align="center">
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-red?style=plastic)](https://opensource.org/licenses/MIT)
 [![PyTorch](https://img.shields.io/badge/PyTorch-white?style=plastic&logo=pytorch&logoColor=red)](https://pytorch.org/)
