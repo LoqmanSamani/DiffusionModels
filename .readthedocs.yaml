@@ -11,5 +11,5 @@ sphinx:
 python:
   install:
     - method: pip
-      path: .  # This installs your torchdiff package
-    - requirements: docs/requirements.txt  # Fixed path to match your file location
+      path: .
+    - requirements: docs/requirements.txt

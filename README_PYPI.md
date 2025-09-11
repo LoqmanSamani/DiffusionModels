@@ -37,11 +37,6 @@ These models support both **conditional** (e.g., text-to-image) and **unconditio
 pip install torchdiff
 ```
 
-For full features with all dependencies:
-```bash
-pip install torchdiff[full]
-```
-
 Requires **Python 3.8+**. For GPU acceleration, ensure PyTorch is installed with the correct CUDA version.
 
 ---
