@@ -42,7 +42,7 @@ import os
 
 ###==================================================================================================================###
 
-class ForwardDiffusion(nn.Module):
+class ForwardSDE(nn.Module):
     """
     Unified forward diffusion process for continuous-time diffusion models.
 
