@@ -42,331 +42,454 @@ import os
 
 ###==================================================================================================================###
 
-class ForwardSDE(nn.Module):
-    """Forward diffusion process for SDE-based generative models.
+class ForwardDiffusion(nn.Module):
+    """
+    Unified forward diffusion process for continuous-time diffusion models.
 
-    Implements the forward diffusion process for score-based generative models using
-    Stochastic Differential Equations (SDEs), supporting Variance Exploding (VE),
-    Variance Preserving (VP), sub-Variance Preserving (sub-VP), and ODE methods, as
-    described in Song et al. (2021).
+    This module implements the marginal forward noising process
+    p(x_t | x_0) for several commonly used stochastic differential equation
+    (SDE) formulations, including:
+
+        • Variance Preserving (VP-SDE)
+        • Variance Exploding (VE-SDE)
+        • Sub-Variance Preserving (Sub-VP-SDE)
+        • Probability Flow ODE (ODE)
+
+    Given clean data x₀, Gaussian noise ε ~ N(0, I), and continuous time
+    t ∈ [0, 1], the forward process samples x_t and provides the *true score*
+    ∇ₓ log p(x_t | x₀), which is commonly used for score matching objectives.
+
+    Supported forward marginals:
+
+    1. VP-SDE:
+        p(x_t | x_0) = N(α(t) x_0, σ²(t) I)
+
+    2. VE-SDE:
+        p(x_t | x_0) = N(x_0, σ²(t) I),
+        where σ(t) = σ_min (σ_max / σ_min)^t
+
+    3. Sub-VP-SDE:
+        p(x_t | x_0) = N(x_0, σ²(t) I),
+        where σ²(t) = 1 - exp(-∫₀ᵗ β(s) ds)
+
+    4. Probability Flow ODE:
+        Shares the same marginals as VP-SDE but corresponds to a
+        deterministic dynamics during sampling.
+
+    The returned score is analytically computed as:
+
+        ∇ₓ log p(x_t | x₀) = -(x_t - μ(t)) / σ²(t) = -ε / σ(t)
+
+    where μ(t) is the mean of the forward transition.
 
     Parameters
     ----------
-    variance_scheduler : object
-        Hyperparameter object (VarianceSchedulerSDE) containing SDE-specific parameters. Expected to have
-        attributes: `dt`, `sigmas`, `betas`, `cum_betas`.
-    sde_method : str
-        SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
+    variance_scheduler : VarianceSchedulerSDE
+        Scheduler providing β(t), α(t), and σ(t) for VP and Sub-VP processes.
+
+    sde_method : str, default="vp"
+        Forward process type. Must be one of:
+        {"vp", "ve", "sub-vp", "ode"}.
+
+    sigma_min : float, default=0.01
+        Minimum noise scale for the VE-SDE.
+
+    sigma_max : float, default=50.0
+        Maximum noise scale for the VE-SDE.
+
+    eps : float, default=1e-8
+        Small constant for numerical stability when computing the score.
+
+    Notes
+    -----
+    • Time t is assumed to be normalized to [0, 1].
+    • All operations are vectorized and support arbitrary data dimensions.
+    • Broadcasting is handled automatically to match the shape of x₀.
+    • For the ODE method, noise is still used to compute the analytical
+      score during training, even though sampling is deterministic.
+
+    References
+    ----------
+    - Song et al., "Score-Based Generative Modeling through SDEs", ICLR 2021
+    - Ho et al., "Denoising Diffusion Probabilistic Models", NeurIPS 2020
+    - Kingma et al., "Variational Diffusion Models", NeurIPS 2021
     """
-    def __init__(self, variance_scheduler: torch.nn.Module, sde_method: str) -> None:
+    def __init__(
+            self,
+            variance_scheduler: nn.Module,
+            sde_method: str = "vp",
+            sigma_min: float = 0.01,
+            sigma_max: float = 50.0,
+            eps: float = 1e-8
+    ):
         super().__init__()
-        self.variance_scheduler = variance_scheduler
+
+        valid_methods = ["vp", "ve", "sub-vp", "ode"]
+        if sde_method not in valid_methods:
+            raise ValueError(f"sde_method must be one of {valid_methods}, got {sde_method}")
+
+        self.vs = variance_scheduler
         self.sde_method = sde_method
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.eps = eps
 
-    def forward(self, x0: torch.Tensor, noise: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
-        """Applies the forward SDE diffusion process to the input data.
+    def _broadcast_to_shape(self, tensor: torch.Tensor, target_shape: torch.Size) -> torch.Tensor:
+        """Broadcast tensor to target shape by adding trailing dimensions"""
+        while tensor.dim() < len(target_shape):
+            tensor = tensor.unsqueeze(-1)
+        return tensor
 
-        Perturbs the input data `x0` by adding noise according to the specified SDE
-        method at given time steps, incorporating drift and diffusion terms as applicable.
+    def get_forward_params(self, t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get mean coefficient and std for the forward process based on SDE method
 
-        Parameters
-        ----------
-        x0 : torch.Tensor
-            Input data tensor, shape (batch_size, channels, height, width).
-        noise : torch.Tensor
-            Gaussian noise tensor, same shape as `x0`.
-        time_steps : torch.Tensor
-            Tensor of time step indices (long), shape (batch_size,), where each value
-            is in the range [0, varinace_scheduler.num_steps - 1].
-
-        Returns
-        -------
-        xt (torch.Tensor) - Noisy data tensor at the specified time steps, same shape as `x0`.
-
+        Returns:
+            mean_coeff: coefficient for clean data x_0
+            std: standard deviation of noise
         """
-        dt = self.variance_scheduler.dt
-        if self.sde_method == "ve":
-            # use property to get sigmas (handles trainable case)
-            sigma_t = self.variance_scheduler.sigmas[time_steps]
-            sigma_t_prev = self.variance_scheduler.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
-            sigma_diff = torch.sqrt(torch.clamp(sigma_t ** 2 - sigma_t_prev ** 2, min=0))
-            x0 = x0 + noise * sigma_diff.view(-1, 1, 1, 1)
+        mean_coeff = None
+        std = None
+        if self.sde_method == "vp":
+            # VP-SDE: p(x_t | x_0) = N(α(t)x_0, σ²(t)I)
+            mean_coeff = self.vs.alpha(t)
+            std = self.vs.std(t)
 
-        elif self.sde_method == "vp":
-            # use property to get betas (handles trainable case)
-            betas = self.variance_scheduler.betas[time_steps].view(-1, 1, 1, 1)
-            drift = -0.5 * betas * x0 * dt
-            diffusion = torch.sqrt(betas * dt) * noise
-            x0 = x0 + drift + diffusion
+        elif self.sde_method == "ve":
+            # VE-SDE: p(x_t | x_0) = N(x_0, σ²(t)I)
+            # σ(t) grows from sigma_min to sigma_max
+            mean_coeff = torch.ones_like(t)
+            sigma_t = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
+            std = sigma_t
 
         elif self.sde_method == "sub-vp":
-            # use properties to get betas and cum_betas (handles trainable case)
-            betas = self.variance_scheduler.betas[time_steps].view(-1, 1, 1, 1)
-            cum_betas = self.variance_scheduler._cum_betas[time_steps].view(-1, 1, 1, 1)
-            drift = -0.5 * betas * x0 * dt
-            diffusion = torch.sqrt(betas * (1 - torch.exp(-2 * cum_betas)) * dt) * noise
-            x0 = x0 + drift + diffusion
+            # Sub-VP-SDE: p(x_t | x_0) = N(x_0, σ²(t)I) where σ²(t) = 1 - e^(-∫β(s)ds)
+            mean_coeff = torch.ones_like(t)
+            std = self.vs.std(t)
 
         elif self.sde_method == "ode":
-            # use property to get betas (handles trainable case)
-            betas = self.variance_scheduler.betas[time_steps].view(-1, 1, 1, 1)
-            drift = -0.5 * betas * x0 * dt
-            x0 = x0 + drift
-        else:
-            raise ValueError(f"Unknown method: {self.sde_method}")
-        return x0
+            # Probability flow ODE: same marginals as VP-SDE but deterministic
+            mean_coeff = self.vs.alpha(t)
+            std = self.vs.std(t)
+
+        return mean_coeff, std
+
+    def forward(self, x0: torch.Tensor, noise: torch.Tensor, t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sample from transition kernel and compute true score
+
+        Args:
+            x0: (batch, ..., dims) clean data
+            noise: (batch, ..., dims) standard Gaussian noise
+            t: (batch,) continuous time in [0, 1]
+
+        Returns:
+            xt: (batch, ..., dims) noised data
+            score: (batch, ..., dims) true score ∇_x log p(x_t | x_0)
+        """
+        mean_coeff, std = self.get_forward_params(t)
+        # broadcast to match x0 shape
+        mean_coeff = self._broadcast_to_shape(mean_coeff, x0.shape)
+        std = self._broadcast_to_shape(std, x0.shape)
+        # x_t = mean_coeff * x_0 + std * ε
+        xt = mean_coeff * x0 + std * noise
+        # ∇_x log p(x_t | x_0) = -(x_t - mean_coeff*x_0) / σ²(t) = -ε / σ(t)
+        score = -noise / (std + self.eps)
+        return xt, score
 
 ###==================================================================================================================###
 
 class ReverseSDE(nn.Module):
-    """Reverse diffusion process for SDE-based generative models.
+    """
+    Unified reverse-time diffusion process for continuous-time diffusion models.
 
-    Implements the reverse diffusion process for score-based generative models using
-    Stochastic Differential Equations (SDEs), supporting Variance Exploding (VE),
-    Variance Preserving (VP), sub-Variance Preserving (sub-VP), and ODE methods, as
-    described in Song et al. (2021). The reverse process denoises a noisy input using
-    predicted noise estimates.
+    This module implements a single-step numerical solver for the *reverse-time*
+    stochastic differential equation (SDE) or probability flow ordinary
+    differential equation (ODE) corresponding to a trained score-based model.
+
+    Given a noisy sample x_t at time t and an estimate of the score
+    ∇ₓ log p_t(x), the reverse process evolves the system backward in time
+    (t → 0) using an Euler–Maruyama discretization.
+
+    Supported reverse dynamics:
+
+        • Variance Preserving (VP-SDE)
+        • Variance Exploding (VE-SDE)
+        • Sub-Variance Preserving (Sub-VP-SDE)
+        • Probability Flow ODE (ODE)
+
+    General reverse SDE form:
+        dx = [f(x, t) - g²(t) ∇ₓ log p_t(x)] dt + g(t) dW̄_t
+
+    where:
+        • f(x, t) is the forward drift
+        • g(t) is the diffusion coefficient
+        • dW̄_t denotes reverse-time Brownian motion
+
+    For the probability flow ODE, the diffusion term vanishes and the dynamics
+    become deterministic while preserving the same marginals as the VP-SDE.
 
     Parameters
     ----------
-    variance_scheduler : object
-        Hyperparameter object (VarianceSchedulerSDE) containing SDE-specific parameters. Expected to have
-        attributes: `dt`, `sigmas`, `betas`, `cum_betas`.
-    sde_method : str
-        SDE method to use. Supported methods: "ve", "vp", "sub-vp", "ode".
+    variance_scheduler : nn.Module
+        Scheduler providing β(t) and related quantities for VP and Sub-VP
+        dynamics. Typically an instance of `VarianceSchedulerSDE`.
+
+    sde_method : str, default="vp"
+        Type of reverse-time dynamics. Must be one of:
+        {"vp", "ve", "sub-vp", "ode"}.
+
+    sigma_min : float, default=0.01
+        Minimum noise scale for the VE-SDE.
+
+    sigma_max : float, default=50.0
+        Maximum noise scale for the VE-SDE.
+
+    Notes
+    -----
+    • Time t is assumed to be normalized to [0, 1].
+    • Reverse integration proceeds with a *negative* time step dt < 0.
+    • The score ∇ₓ log p_t(x) is typically predicted by a neural network.
+    • For the final step or ODE-based sampling, stochastic noise can be disabled.
+    • All tensor operations support broadcasting over arbitrary data shapes.
+
+    Numerical Integration
+    ---------------------
+    The update rule implemented is the Euler–Maruyama scheme:
+
+        x_{t+dt} = x_t
+                   + [f(x_t, t) - g²(t)·score(x_t, t)] dt
+                   + g(t) √|dt| ε
+
+    where ε ~ N(0, I). For ODE sampling, the stochastic term is omitted.
+
+    References
+    ----------
+    - Anderson, "Reverse-Time Diffusion Equation Models", 1982
+    - Song et al., "Score-Based Generative Modeling through SDEs", ICLR 2021
+    - Kingma et al., "Variational Diffusion Models", NeurIPS 2021
     """
-    def __init__(self, variance_scheduler: torch.nn.Module, sde_method: str) -> None:
+    def __init__(
+            self,
+            variance_scheduler: nn.Module,
+            sde_method: str = "vp",
+            sigma_min: float = 0.01,
+            sigma_max: float = 50.0
+    ):
         super().__init__()
-        self.variance_scheduler = variance_scheduler
+
+        valid_methods = ["vp", "ve", "sub-vp", "ode"]
+        if sde_method not in valid_methods:
+            raise ValueError(f"sde_method must be one of {valid_methods}, got {sde_method}")
+
+        self.vs = variance_scheduler
         self.sde_method = sde_method
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
 
-    def forward(self, xt: torch.Tensor, noise: torch.Tensor, predicted_noise: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
-        """Applies the reverse SDE diffusion process to the noisy input.
+    def _broadcast_to_shape(self, tensor: torch.Tensor, target_shape: torch.Size) -> torch.Tensor:
+        """Broadcast tensor to target shape by adding trailing dimensions"""
+        while tensor.dim() < len(target_shape):
+            tensor = tensor.unsqueeze(-1)
+        return tensor
 
-        Denoises the input `xt` by applying the reverse SDE process, using predicted
-        noise estimates and optional stochastic noise, according to the specified SDE
-        method at given time steps. Incorporates drift and diffusion terms as applicable.
+    def get_reverse_coeffs(self, t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Get drift and diffusion coefficients for reverse SDE
 
-        Parameters
-        ----------
-        xt : torch.Tensor
-            Noisy input tensor at time step `t`, shape (batch_size, channels, height, width).
-        noise : torch.Tensor or None
-            Gaussian noise tensor, same shape as `xt`, used for stochasticity. If None,
-            no stochastic noise is added (e.g., for deterministic ODE).
-        predicted_noise : torch.Tensor
-            Predicted noise tensor, same shape as `xt`, typically output by a neural network.
-        time_steps : torch.Tensor
-            Tensor of time step indices (long), shape (batch_size,), where each value
-            is in the range [0, variance_scheduler.num_steps - 1].
-
-        Returns
-        -------
-        xt (torch.Tensor) - Denoised tensor at the previous time step, same shape as `xt`.
-
-        **Notes**
-
-        - For the "ve" and "ode" methods, the output is clamped to [-1e5, 1e5] to prevent numerical instability.
-        - Stochastic noise (`noise`) is only added if provided and the method supports it (not applicable for "ode" in non-VE cases).
+        Returns:
+            drift_coeff: coefficient for drift term
+            g_squared: squared diffusion coefficient (for score term)
+            diffusion_coeff: coefficient for diffusion term
         """
-        dt = self.variance_scheduler.dt
-        # use properties to get betas and cum_betas (handles trainable case)
-        betas = self.variance_scheduler.betas[time_steps].view(-1, 1, 1, 1)
-        cum_betas = self.variance_scheduler._cum_betas[time_steps].view(-1, 1, 1, 1)
-        if self.sde_method == "ve":
-            # use property to get sigmas (handles trainable case)
-            sigma_t = self.variance_scheduler.sigmas[time_steps]
-            sigma_t_prev = self.variance_scheduler.sigmas[time_steps - 1] if time_steps.min() > 0 else torch.zeros_like(sigma_t)
-            sigma_diff = torch.sqrt(torch.clamp(sigma_t ** 2 - sigma_t_prev ** 2, min=0))
-            drift = -(sigma_t ** 2 - sigma_t_prev ** 2).view(-1, 1, 1, 1) * predicted_noise * dt
-            diffusion = sigma_diff.view(-1, 1, 1, 1) * noise if noise is not None else 0
-            xt = xt + drift + diffusion
-            xt = torch.clamp(xt, -1e5, 1e5)
+        if self.sde_method == "vp":
+            # VP-SDE: dx = [-½β(t)x - β(t)∇log p_t(x)]dt + √β(t)dw̄
+            drift_coeff = -0.5 * self.vs.beta(t)
+            g_squared = self.vs.beta(t)
+            diffusion_coeff = torch.sqrt(self.vs.beta(t))
 
-        elif self.sde_method == "vp":
-            drift = -0.5 * betas * xt * dt - betas * predicted_noise * dt
-            diffusion = torch.sqrt(betas * dt) * noise if noise is not None else 0
-            xt = xt + drift + diffusion
+        elif self.sde_method == "ve":
+            # VE-SDE: dx = [-σ(t)dσ/dt ∇log p_t(x)]dt + √(2σ(t)dσ/dt)dw̄
+            sigma_t = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
+            dsigma_dt = sigma_t * torch.log(torch.tensor(self.sigma_max / self.sigma_min))
+            drift_coeff = torch.zeros_like(t)
+            g_squared = 2 * sigma_t * dsigma_dt
+            diffusion_coeff = torch.sqrt(g_squared)
 
         elif self.sde_method == "sub-vp":
-            drift = -0.5 * betas * xt * dt - betas * (1 - torch.exp(-2 * cum_betas)) * predicted_noise * dt
-            diffusion = torch.sqrt(betas * (1 - torch.exp(-2 * cum_betas)) * dt) * noise if noise is not None else 0
-            xt = xt + drift + diffusion
+            # Sub-VP-SDE: dx = [-β(t)∇log p_t(x)]dt + √β(t)dw̄
+            drift_coeff = torch.zeros_like(t)
+            g_squared = self.vs.beta(t)
+            diffusion_coeff = torch.sqrt(self.vs.beta(t))
 
         elif self.sde_method == "ode":
-            drift = -0.5 * betas * xt * dt - 0.5 * betas * predicted_noise * dt
-            xt = xt + drift
-            xt = torch.clamp(xt, -1e5, 1e5)
+            # Probability flow ODE: deterministic (no diffusion)
+            drift_coeff = -0.5 * self.vs.beta(t)
+            g_squared = self.vs.beta(t)
+            diffusion_coeff = torch.zeros_like(t)
+
+        return drift_coeff, g_squared, diffusion_coeff
+
+    def forward(self, xt: torch.Tensor, score: torch.Tensor, t: torch.Tensor, dt: float, last_step: bool = False) -> torch.Tensor:
+        """Single reverse Euler-Maruyama step
+        Args:
+            xt: (batch, ..., dims) current state
+            score: (batch, ..., dims) score estimate ∇_x log p_t(x)
+            t: (batch,) current time
+            dt: scalar time step (negative for reverse)
+            last_step: if True, skip noise for deterministic final step
+
+        Returns:
+            x_prev: (batch, ..., dims) previous state
+        """
+        if not torch.is_tensor(dt):
+            assert dt < 0.0, "dt must be negative for reverse diffusion!"
+            dt = torch.tensor(dt, device=xt.device, dtype=xt.dtype)
+
+        drift_coeff, g_squared, diffusion_coeff = self.get_reverse_coeffs(t)
+        # Broadcast to match xt shape
+        drift_coeff = self._broadcast_to_shape(drift_coeff, xt.shape)
+        g_squared = self._broadcast_to_shape(g_squared, xt.shape)
+        diffusion_coeff = self._broadcast_to_shape(diffusion_coeff, xt.shape)
+        # Reverse drift: f(x,t) - g²(t)·score
+        drift = drift_coeff * xt - g_squared * score
+        # Diffusion term
+        if last_step or self.sde_method == "ode":
+            noise = torch.zeros_like(xt)
         else:
-            raise ValueError(f"Unknown method: {self.sde_method}")
-        return xt
+            noise = torch.randn_like(xt)
+        diffusion = diffusion_coeff * noise
+        # Euler-Maruyama step
+        x_prev = xt + drift * dt + diffusion * torch.sqrt(torch.abs(dt))
+        return x_prev
 
 ###==================================================================================================================###
 
 class VarianceSchedulerSDE(nn.Module):
-    """Hyperparameters for SDE-based generative models.
+    """
+    Continuous-time variance (noise) scheduler for diffusion models formulated
+    as stochastic differential equations (SDEs).
 
-    Manages the noise schedule and SDE-specific parameters for score-based generative
-    models, including beta and sigma schedules, time steps, and variance computations,
-    as described in Song et al. (2021). Supports trainable or fixed beta schedules and
-    multiple scheduling methods for flexible noise control.
+    This class defines the time-dependent noise rate β(t) and its derived
+    quantities used in forward diffusion processes of the form:
+
+        dx = -½ β(t) x dt + √β(t) dW_t
+
+    where t ∈ [0, 1] is continuous time and W_t is standard Brownian motion.
+
+    Supported schedules:
+        • Linear schedule:
+            β(t) = β_min + t (β_max - β_min)
+
+        • Cosine schedule:
+            Defined implicitly via the cumulative signal power
+            ᾱ(t) = cos²((t + s) / (1 + s) · π / 2),
+            following Nichol & Dhariwal (2021).
+
+    The scheduler provides convenient access to commonly used quantities:
+        • β(t)             — instantaneous noise rate
+        • ∫₀ᵗ β(s) ds      — cumulative noise
+        • α(t)             — signal scaling factor
+        • σ²(t)            — noise variance
+        • SNR(t)           — signal-to-noise ratio
+
+    All methods operate on PyTorch tensors and support broadcasting.
 
     Parameters
     ----------
-    num_steps : int, optional
-        Number of diffusion steps (default: 1000).
-    beta_start : float, optional
-        Starting value for beta schedule (default: 1e-4).
-    beta_end : float, optional
-        Ending value for beta schedule (default: 0.02).
-    trainable_beta : bool, optional
-        Whether the beta schedule is trainable (default: False).
-    beta_method : str, optional
-        Method for computing the beta schedule (default: "linear").
-        Supported methods: "linear", "sigmoid", "quadratic", "constant", "inverse_time".
-    sigma_start : float, optional
-        Starting value for sigma schedule for VE method (default: 1e-3).
-    sigma_end : float, optional
-        Ending value for sigma schedule for VE method (default: 10.0).
-    start : float, optional
-        Start of the time interval for SDE integration (default: 0.0).
-    end : float, optional
-        End of the time interval for SDE integration (default: 1.0).
+    schedule_type : str, default="linear"
+        Type of noise schedule. Must be one of {"linear", "cosine"}.
+
+    beta_min : float, default=0.1
+        Minimum noise rate for the linear schedule. Must satisfy
+        0 < beta_min < beta_max. Ignored for cosine schedule.
+
+    beta_max : float, default=20.0
+        Maximum noise rate for the linear schedule. Ignored for cosine schedule.
+
+    cosine_s : float, default=0.008
+        Small offset used in the cosine schedule to prevent singularities
+        near t = 0. Matches the formulation from improved DDPMs.
+
+    Notes
+    -----
+    • Time t is assumed to be normalized to [0, 1].
+    • α(t) and σ(t) satisfy:
+          α²(t) + σ²(t) = 1
+      for both schedules.
+    • The cosine schedule defines β(t) implicitly through α²(t); the β(t)
+      returned in this case is an approximation derived from finite differences.
+
+    References
+    ----------
+    - Ho et al., "Denoising Diffusion Probabilistic Models", NeurIPS 2020
+    - Song et al., "Score-Based Generative Modeling through SDEs", ICLR 2021
+    - Nichol & Dhariwal, "Improved Denoising Diffusion Probabilistic Models", ICML 2021
     """
     def __init__(
             self,
-            num_steps: int = 1000,
-            beta_start: float = 1e-4,
-            beta_end: float = 0.02,
-            trainable_beta: bool = False,
-            beta_method: str = "linear",
-            sigma_start: float = 1e-3,
-            sigma_end: float = 10.0,
-            start: float = 0.0,
-            end: float = 1.0
-    ) -> None:
+            schedule_type: str = "linear",
+            beta_min: float = 0.1,
+            beta_max: float = 20.0,
+            cosine_s: float = 0.008
+    ):
         super().__init__()
-        self.num_steps = num_steps
-        self.beta_start = beta_start
-        self.beta_end = beta_end
-        self.trainable_beta = trainable_beta
-        self.beta_method = beta_method
-        self.sigma_start = sigma_start
-        self.sigma_end = sigma_end
-        self.start = start
-        self.end = end
+        valid_schedules = ["linear", "cosine"]
+        if schedule_type not in valid_schedules:
+            raise ValueError(f"schedule_type must be one of {valid_schedules}, got {schedule_type}")
 
-        if not (0 < self.beta_start < self.beta_end):
-            raise ValueError(f"beta_start ({self.beta_start}) and beta_end ({self.beta_end}) must satisfy 0 < start < end")
-        if not (0 < self.sigma_start < self.sigma_end):
-            raise ValueError(f"sigma_start ({self.sigma_start}) and sigma_end ({self.sigma_end}) must satisfy 0 < start < end")
-        if self.num_steps <= 0:
-            raise ValueError(f"num_steps ({self.num_steps}) must be positive")
+        self.schedule_type = schedule_type
+        self.beta_min = beta_min
+        self.beta_max = beta_max
+        self.cosine_s = cosine_s
+        if schedule_type == "linear" and not (0.0 < beta_min < beta_max):
+            raise ValueError("For linear schedule, require 0 < beta_min < beta_max")
 
-        beta_range = (beta_start, beta_end)
-        betas_init = self.compute_beta_schedule(beta_range, num_steps, beta_method)
-        self.time = torch.linspace(self.start, self.end, self.num_steps, dtype=torch.float32)
-        self.dt = (self.end - self.start) / self.num_steps
+    def beta(self, t: torch.Tensor) -> torch.Tensor:
+        """β(t) - noise schedule"""
+        if self.schedule_type == "linear":
+            return self.beta_min + t * (self.beta_max - self.beta_min)
 
-        if trainable_beta:
-            # use reparameterization trick for trainable betas
-            # initialize unconstrained parameters and transform them to valid beta range
-            self.beta_raw = nn.Parameter(torch.logit((betas_init - beta_start) / (beta_end - beta_start)))
-        else:
-            self.register_buffer('betas_buffer', betas_init)
-            self.register_buffer('cum_betas', torch.cumsum(betas_init, dim=0) * self.dt)
-            self.register_buffer("sigmas_buffer", self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time)
+        elif self.schedule_type == "cosine":
+            # approximated β(t) from ᾱ(t)
+            alpha_sq = self.alpha_squared(t)
+            alpha_sq_prev = self.alpha_squared(torch.clamp(t - 0.001, min=0))
+            return torch.clamp(1 - alpha_sq / (alpha_sq_prev + 1e-8), min=0, max=0.999)
 
-    @property
-    def betas(self) -> torch.Tensor:
-        """Returns the beta values, applying reparameterization if trainable."""
-        if self.trainable_beta:
-            # transform unconstrained parameters to valid beta range using sigmoid
-            return self.beta_start + (self.beta_end - self.beta_start) * torch.sigmoid(self.beta_raw)
-        else:
-            return self._buffers['betas_buffer']
+    def integral_beta(self, t: torch.Tensor) -> torch.Tensor:
+        """∫₀ᵗ β(s) ds"""
+        if self.schedule_type == "linear":
+            return self.beta_min * t + 0.5 * (self.beta_max - self.beta_min) * t ** 2
 
-    @property
-    def _cum_betas(self) -> torch.Tensor:
-        """Returns the cumulative beta values, computing dynamically if trainable."""
-        if self.trainable_beta:
-            return torch.cumsum(self.betas, dim=0) * self.dt
-        else:
-            return self._buffers['cum_betas']
+        elif self.schedule_type == "cosine":
+            return -torch.log(self.alpha_squared(t))
 
-    @property
-    def sigmas(self) -> torch.Tensor:
-        """Returns the sigma values, computing dynamically if trainable."""
-        if self.trainable_beta:
-            return self.sigma_start * (self.sigma_end / self.sigma_start) ** self.time
-        else:
-            return self._buffers['sigmas_buffer']
+    def _cosine_alpha_bar(self, t: torch.Tensor) -> torch.Tensor:
+        """ᾱ(t) = cos²((t+s)/(1+s) · π/2) for cosine schedule"""
+        return torch.cos((t + self.cosine_s) / (1 + self.cosine_s) * torch.pi / 2) ** 2
 
-    def compute_beta_schedule(self, beta_range: Tuple[float, float], num_steps: int, method: str) -> torch.Tensor:
-        """Computes the beta schedule based on the specified method.
+    def alpha(self, t: torch.Tensor) -> torch.Tensor:
+        """α(t) = exp(-½∫₀ᵗ β(s) ds)"""
+        if self.schedule_type == "cosine":
+            return torch.sqrt(self.alpha_squared(t))
+        return torch.exp(-0.5 * self.integral_beta(t))
 
-        Generates a sequence of beta values for the SDE noise schedule using the chosen
-        method, ensuring values are clamped within the specified range.
+    def alpha_squared(self, t: torch.Tensor) -> torch.Tensor:
+        """α²(t) = exp(-∫₀ᵗ β(s) ds)"""
+        if self.schedule_type == "cosine":
+            return self._cosine_alpha_bar(t) / self._cosine_alpha_bar(torch.zeros_like(t))
+        return torch.exp(-self.integral_beta(t))
 
-        Parameters
-        ----------
-        beta_range : tuple
-            Tuple of (min_beta, max_beta) specifying the valid range for beta values.
-        num_steps : int
-            Number of diffusion steps.
-        method : str
-            Method for computing the beta schedule. Supported methods:
-            "linear", "sigmoid", "quadratic", "constant", "inverse_time".
+    def variance(self, t: torch.Tensor) -> torch.Tensor:
+        """σ²(t) = 1 - α²(t)"""
+        return 1.0 - self.alpha_squared(t)
 
-        Returns
-        -------
-        betas (torch.Tensor) - Tensor of beta values, shape (num_steps,).
-        """
-        beta_min, beta_max = beta_range
-        if method == "sigmoid":
-            x = torch.linspace(-6, 6, num_steps)
-            beta = torch.sigmoid(x) * (beta_max - beta_min) + beta_min
-        elif method == "quadratic":
-            x = torch.linspace(beta_min ** 0.5, beta_max ** 0.5, num_steps)
-            beta = x ** 2
-        elif method == "constant":
-            beta = torch.full((num_steps,), beta_max)
-        elif method == "inverse_time":
-            beta = 1.0 / torch.linspace(num_steps, 1, num_steps)
-            beta = beta_min + (beta_max - beta_min) * (beta - beta.min()) / (beta.max() - beta.min())
-        elif method == "linear":
-            beta = torch.linspace(beta_min, beta_max, num_steps)
-        else:
-            raise ValueError(f"Unknown beta_method: {method}. Supported: linear, sigmoid, quadratic, constant, inverse_time")
-        beta = torch.clamp(beta, min=beta_min, max=beta_max)
-        return beta
+    def std(self, t: torch.Tensor) -> torch.Tensor:
+        """σ(t) = √(1 - α²(t))"""
+        return torch.sqrt(self.variance(t))
 
-    def get_variance(self, time_steps: torch.Tensor, method: str) -> torch.Tensor:
-        """Computes the variance for the specified SDE method at given time steps.
-
-        Calculates the variance used in SDE diffusion processes based on the method
-        (VE, VP, or sub-VP), leveraging the sigma or cumulative beta schedules.
-
-        Parameters
-        ----------
-        time_steps : torch.Tensor
-            Tensor of time step indices (long), shape (batch_size,), where each value
-            is in the range [0, num_steps - 1].
-        method : str
-            SDE method to compute variance for. Supported methods: "ve", "vp", "sub-vp".
-
-        Returns
-        -------
-        variance_values (torch.Tensor) - Variance values for the specified time steps, shape (batch_size,).
-        """
-        if method == "ve":
-            return self.sigmas[time_steps] ** 2
-        elif method == "vp":
-            return 1 - torch.exp(-self.cum_betas[time_steps])
-        elif method == "sub-vp":
-            return 1 - torch.exp(-2 * self.cum_betas[time_steps])
-        else:
-            raise ValueError(f"Unknown method: {method}")
+    def snr(self, t: torch.Tensor) -> torch.Tensor:
+        """signal-to-noise ratio: SNR(t) = α²(t) / σ²(t)"""
+        alpha_sq = self.alpha_squared(t)
+        var = self.variance(t)
+        return alpha_sq / (var + 1e-8)
 
 ###==================================================================================================================###
 
@@ -452,7 +575,11 @@ class TrainSDE(nn.Module):
             use_ddp: bool = False,
             grad_accumulation_steps: int = 1,
             log_frequency: int = 1,
-            use_compilation: bool = False
+            use_compilation: bool = False,
+            time_eps: float = 1e-8,
+            pred_noise: bool = True,
+            sampling_steps: int = 400,
+            *args
     ) -> None:
 
         super().__init__()
@@ -493,6 +620,9 @@ class TrainSDE(nn.Module):
         self.normalize_output = normalize_output
         self.log_frequency = log_frequency
         self.use_compilation = use_compilation
+        self.time_eps = time_eps
+        self.pred_noise = pred_noise
+        self.sampling_steps = sampling_steps
 
         # learning rate scheduling
         self.scheduler = ReduceLROnPlateau(
@@ -747,7 +877,6 @@ class TrainSDE(nn.Module):
             # training step loop with gradient accumulation
             for step, (x, y) in enumerate(tqdm(self.data_loader, disable=not self.master_process)):
                 x = x.to(self.device)
-
                 # process conditional inputs if conditional model exists
                 if self.conditional_model is not None:
                     y_encoded = self._process_conditional_input(y)
@@ -758,16 +887,18 @@ class TrainSDE(nn.Module):
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     # generate noise and timesteps
                     noise = torch.randn_like(x).to(self.device)
-                    t = torch.randint(0, self.forward_diffusion.variance_scheduler.num_steps, (x.shape[0],)).to(self.device)
+                    t = self.time_sample(x.shape[0], self.time_eps)
 
                     # apply forward diffusion
-                    noisy_x = self.forward_diffusion(x, noise, t)
+                    xt, score = self.forward_diffusion(x, noise, t)
 
                     # predict noise
-                    predicted_noise = self.noise_predictor(noisy_x, t, y_encoded, None)
+                    predicted = self.noise_predictor(xt, t, y_encoded, None)
 
-                    # compute loss and scale for gradient accumulation
-                    loss = self.objective(predicted_noise, noise) / self.grad_accumulation_steps
+                    if self.pred_noise: # if model predicts noise
+                        loss = self.objective(predicted, noise) / self.grad_accumulation_steps
+                    else: # if model predicts score
+                        loss = self.objective(predicted, score) / self.grad_accumulation_steps
 
                 # backward pass
                 scaler.scale(loss).backward()
@@ -847,6 +978,9 @@ class TrainSDE(nn.Module):
             destroy_process_group()
 
         return train_losses, best_val_loss
+
+    def sample_time(self, batch_size: int, eps: float = 1e-8) -> torch.Tensor:
+        return eps + (1 - eps) * torch.rand(batch_size, device=self.device)
 
     def _process_conditional_input(self, y: Union[torch.Tensor, List]) -> torch.Tensor:
         """Process conditional input for text-to-image generation.
@@ -977,23 +1111,40 @@ class TrainSDE(nn.Module):
 
                 # compute validation loss
                 noise = torch.randn_like(x).to(self.device)
-                t = torch.randint(0, self.forward_diffusion.variance_scheduler.num_steps, (x.shape[0],)).to(self.device)
+                t = self.time_sample(x.shape[0], self.time_eps)
 
-                noisy_x = self.forward_diffusion(x, noise, t)
-                predicted_noise = self.noise_predictor(noisy_x, t, y_encoded, None)
-                loss = self.objective(predicted_noise, noise)
+                # apply forward diffusion
+                xt, score = self.forward_diffusion(x, noise, t)
+
+                # predict noise
+                predicted = self.noise_predictor(xt, t, y_encoded, None)
+
+                if self.pred_noise:  # if model predicts noise
+                    loss = self.objective(predicted, noise) / self.grad_accumulation_steps
+                else:  # if model predicts score
+                    loss = self.objective(predicted, score) / self.grad_accumulation_steps
                 val_losses.append(loss.item())
 
                 # generate samples for metrics evaluation
                 if self.metrics_ is not None and self.reverse_diffusion is not None:
                     xt = torch.randn_like(x).to(self.device)
-
                     # reverse diffusion sampling
-                    for t in reversed(range(self.forward_diffusion.variance_scheduler.num_steps)):
-                        time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
-                        predicted_noise = self.noise_predictor(xt, time_steps, y_encoded, None)
-                        noise = torch.randn_like(xt) if getattr(self.reverse_diffusion, "method", None) != "ode" else None
-                        xt = self.reverse_diffusion(xt, noise, predicted_noise, time_steps)
+                    t_schedule = torch.linspace(1.0, self.eps_time, self.sampling_steps + 1)
+                    dt = torch.tensor((1.0 - self.time_eps)/self.sampling_steps, device=xt.device, dtype=xt.dtype)
+                    for t in reversed(range(self.sampling_steps)):
+                        t_current = float(t_schedule[t])
+                        predicted = self.noise_predictor(xt, t_current, y_encoded, None)
+                        if self.pred_noise:
+                            std_ = self.forward_diffusion.vs.std(t)
+                            while std_.dim() < len(xt.shape):
+                                std = std_.unsqueeze(-1)
+                            score = -predicted / (std + self.forward_diffusion.eps)
+                        else:
+                            score = predicted
+                        if t == 0:
+                            xt = self.reverse_diffusion(xt, score, t_current, dt, last_step=True)
+                        else:
+                            xt = self.reverse_diffusion(xt, score, t_current, dt)
 
                     # clamp and normalize generated samples
                     x_hat = torch.clamp(xt, min=self.image_output_range[0], max=self.image_output_range[1])

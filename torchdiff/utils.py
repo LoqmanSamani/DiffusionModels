@@ -635,7 +635,8 @@ class NoisePredictor(nn.Module):
             dropout_rate: float = 0.1,
             down_sampling_factor: int = 2,
             where_y: bool = True,
-            y_to_all: bool = False
+            y_to_all: bool = False,
+            continuous_time: bool = False
     ) -> None:
         super().__init__()
         self.in_channels = in_channels
@@ -649,6 +650,7 @@ class NoisePredictor(nn.Module):
         self.num_mid_blocks = num_mid_blocks
         self.num_up_blocks = num_up_blocks
         self.dropout_rate = dropout_rate
+        self.continuous_time = continuous_time
         self.where_y = where_y
         self.up_sampling = list(reversed(self.down_sampling))
         self.conv1 = nn.Conv2d(
@@ -738,7 +740,7 @@ class NoisePredictor(nn.Module):
         x : torch.Tensor
             Input tensor, shape (batch_size, in_channels, height, width).
         t : torch.Tensor
-            Time steps, shape (batch_size,).
+            Continuous time [0, 1], shape (batch_size,).
         y : torch.Tensor, optional
             Text embeddings for conditioning, shape (batch_size, seq_len, y_embed_dim)
             or (batch_size, y_embed_dim) (default: None).
@@ -752,7 +754,7 @@ class NoisePredictor(nn.Module):
         if not self.where_y and y is not None:
             x = torch.cat(tensors=[x, y], dim=1)
         output = self.conv1(x)
-        time_embed = GetEmbeddedTime(embed_dim=self.time_embed_dim)(time_steps=t)
+        time_embed = GetEmbeddedTime(embed_dim=self.time_embed_dim, continuous_time=self.continuous_time)(time_steps=t)
         time_embed = self.time_projection(time_embed)
 
         if clip_embeddings is not None:
@@ -1253,6 +1255,7 @@ class TimeEmbedding(nn.Module):
     def __init__(self, output_dim: int, embed_dim: int) -> None:
         super().__init__()
         self.embedding = nn.Sequential(
+            nn.Linear(in_features=embed_dim, out_features=embed_dim),
             nn.SiLU(),
             nn.Linear(in_features=embed_dim, out_features=output_dim)
         )
@@ -1284,28 +1287,34 @@ class GetEmbeddedTime(nn.Module):
     embed_dim : int
         Dimensionality of the time embeddings (must be even).
     """
-    def __init__(self, embed_dim: int) -> None:
+    def __init__(self, embed_dim: int, continuous_time: bool = False) -> None:
         super().__init__()
         assert embed_dim % 2 == 0, "The embedding dimension must be divisible by two"
         self.embed_dim = embed_dim
+        self.continuous_time = continuous_time
 
-    def forward(self, time_steps: torch.Tensor) -> torch.Tensor:
-        """Generates sinusoidal embeddings for time steps.
-
-        Parameters
-        ----------
-        time_steps : torch.Tensor
-            Time steps, shape (batch_size,).
-
-        Returns
-        -------
-        embed_time (torch.Tensor) - Sinusoidal embeddings, shape (batch_size, embed_dim).
+    def forward(self, t_: torch.Tensor) -> torch.Tensor:
         """
-        i = torch.arange(start=0, end=self.embed_dim // 2, dtype=torch.float32, device=time_steps.device)
-        factor = 10000 ** (2 * i / self.embed_dim)
-        embed_time = time_steps[:, None] / factor
-        embed_time = torch.cat(tensors=[torch.sin(embed_time), torch.cos(embed_time)], dim=-1)
+        t_: (batch, ) continuous in [0, 1] if continuous_time = True else int indices
+        """
+        if self.continuous_time:
+            t = t_ * 1000  # scaling if time is continuous
+        else:
+            t = t_
+
+        i = torch.arange(
+            start=0,
+            end=self.embed_dim // 2,
+            device=t_.device,
+            dtype=torch.float32
+        )
+
+        freqs = torch.exp(-math.log(10000) * (2 * i / self.embed_dim))
+        args = t[:, None] * freqs
+
+        embed_time = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
         return embed_time
+
 
 ###==================================================================================================================###
 
