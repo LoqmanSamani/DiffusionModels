@@ -840,12 +840,12 @@ class TrainSDE(nn.Module):
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
-        if self.forward_diffusion.variance_scheduler.trainable_beta:
-            self.reverse_diffusion.train()
-            self.forward_diffusion.train()
-        else:
-            self.reverse_diffusion.eval()
-            self.forward_diffusion.eval()
+        #if self.forward_diffusion.variance_scheduler.trainable_beta:
+        #    self.reverse_diffusion.train()
+        #    self.forward_diffusion.train()
+        #else:
+        #self.reverse_diffusion.eval()
+        #self.forward_diffusion.eval()
 
         # compile models for optimization (if supported)
         if self.use_compilation:
@@ -869,13 +869,14 @@ class TrainSDE(nn.Module):
 
         # main training loop
         for epoch in range(self.max_epochs):
+            pbar = tqdm(self.data_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
             # set epoch for distributed sampler if using DDP
             if self.use_ddp and hasattr(self.data_loader.sampler, 'set_epoch'):
                 self.data_loader.sampler.set_epoch(epoch)
 
             train_losses_epoch = []
             # training step loop with gradient accumulation
-            for step, (x, y) in enumerate(tqdm(self.data_loader, disable=not self.master_process)):
+            for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device)
                 # process conditional inputs if conditional model exists
                 if self.conditional_model is not None:
@@ -887,18 +888,18 @@ class TrainSDE(nn.Module):
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     # generate noise and timesteps
                     noise = torch.randn_like(x).to(self.device)
-                    t = self.time_sample(x.shape[0], self.time_eps)
+                    t = self.sample_time(x.shape[0], self.time_eps)
 
                     # apply forward diffusion
                     xt, score = self.forward_diffusion(x, noise, t)
 
                     # predict noise
                     predicted = self.noise_predictor(xt, t, y_encoded, None)
-
-                    if self.pred_noise: # if model predicts noise
-                        loss = self.objective(predicted, noise) / self.grad_accumulation_steps
-                    else: # if model predicts score
-                        loss = self.objective(predicted, score) / self.grad_accumulation_steps
+                    var = self.forward_diffusion.vs.variance(t)
+                    if self.pred_noise:  # if model predicts noise
+                        loss = self.objective(predicted, noise, var) / self.grad_accumulation_steps
+                    else:  # if model predicts score
+                        loss = self.objective(predicted, score, var) / self.grad_accumulation_steps
 
                 # backward pass
                 scaler.scale(loss).backward()
@@ -918,6 +919,8 @@ class TrainSDE(nn.Module):
 
                 # update learning rate (warmup scheduler)
                 self.warmup_lr_scheduler.step()
+
+                pbar.set_postfix({'Loss': f'{loss.item() * self.grad_accumulation_steps:.4f}'})
 
             # record loss (unscaled)
             train_losses_epoch.append(loss.item() * self.grad_accumulation_steps)
@@ -1048,8 +1051,8 @@ class TrainSDE(nn.Module):
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'loss': loss,
                 'variance_scheduler_model': (
-                    self.forward_diffusion.variance_scheduler.state_dict() if isinstance(self.forward_diffusion.variance_scheduler, nn.Module)
-                    else self.forward_diffusion.variance_scheduler
+                    self.forward_diffusion.vs.state_dict() if isinstance(self.forward_diffusion.vs, nn.Module)
+                    else self.forward_diffusion.vs
                 ),
                 'max_epochs': self.max_epochs,
             }
@@ -1091,60 +1094,60 @@ class TrainSDE(nn.Module):
         self.noise_predictor.eval()
         if self.conditional_model is not None:
             self.conditional_model.eval()
-        if self.forward_diffusion.variance_scheduler.trainable_beta:
-            self.forward_diffusion.eval()
-            self.reverse_diffusion.eval()
+        #if self.forward_diffusion.variance_scheduler.trainable_beta:
+        #    self.forward_diffusion.eval()
+        #    self.reverse_diffusion.eval()
 
         val_losses = []
         fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
 
         with torch.no_grad():
-            for x, y in self.val_loader:
-                x = x.to(self.device)
-                x_orig = x.clone()
+            with torch.no_grad():
+                for x, y in self.val_loader:
+                    x = x.to(self.device)
+                    x_orig = x.clone()
 
-                # process conditional input
-                if self.conditional_model is not None:
-                    y_encoded = self._process_conditional_input(y)
-                else:
-                    y_encoded = None
+                    # process conditional input
+                    if self.conditional_model is not None:
+                        y_encoded = self._process_conditional_input(y)
+                    else:
+                        y_encoded = None
 
-                # compute validation loss
-                noise = torch.randn_like(x).to(self.device)
-                t = self.time_sample(x.shape[0], self.time_eps)
+                    # compute validation loss
+                    noise = torch.randn_like(x).to(self.device)
+                    t = self.sample_time(x.shape[0], self.time_eps)
+                    # apply forward diffusion
+                    xt, score = self.forward_diffusion(x, noise, t)
 
-                # apply forward diffusion
-                xt, score = self.forward_diffusion(x, noise, t)
+                    # predict noise
+                    predicted = self.noise_predictor(xt, t, y_encoded, None)
+                    var = self.forward_diffusion.vs.variance(t)
+                    if self.pred_noise:  # if model predicts noise
+                        loss = self.objective(predicted, noise, var) / self.grad_accumulation_steps
+                    else:  # if model predicts score
+                        loss = self.objective(predicted, score, var) / self.grad_accumulation_steps
+                    val_losses.append(loss.item())
 
-                # predict noise
-                predicted = self.noise_predictor(xt, t, y_encoded, None)
-
-                if self.pred_noise:  # if model predicts noise
-                    loss = self.objective(predicted, noise) / self.grad_accumulation_steps
-                else:  # if model predicts score
-                    loss = self.objective(predicted, score) / self.grad_accumulation_steps
-                val_losses.append(loss.item())
-
-                # generate samples for metrics evaluation
-                if self.metrics_ is not None and self.reverse_diffusion is not None:
-                    xt = torch.randn_like(x).to(self.device)
-                    # reverse diffusion sampling
-                    t_schedule = torch.linspace(1.0, self.eps_time, self.sampling_steps + 1)
-                    dt = torch.tensor((1.0 - self.time_eps)/self.sampling_steps, device=xt.device, dtype=xt.dtype)
-                    for t in reversed(range(self.sampling_steps)):
-                        t_current = float(t_schedule[t])
-                        predicted = self.noise_predictor(xt, t_current, y_encoded, None)
-                        if self.pred_noise:
-                            std_ = self.forward_diffusion.vs.std(t)
-                            while std_.dim() < len(xt.shape):
-                                std = std_.unsqueeze(-1)
-                            score = -predicted / (std + self.forward_diffusion.eps)
-                        else:
-                            score = predicted
-                        if t == 0:
-                            xt = self.reverse_diffusion(xt, score, t_current, dt, last_step=True)
-                        else:
-                            xt = self.reverse_diffusion(xt, score, t_current, dt)
+                    # generate samples for metrics evaluation
+                    if self.metrics_ is not None and self.reverse_diffusion is not None:
+                        xt = torch.randn_like(x).to(self.device)
+                        # reverse diffusion sampling
+                        t_schedule = torch.linspace(1.0, self.time_eps, self.sampling_steps + 1)
+                        dt = torch.tensor((1.0 - self.time_eps) / self.sampling_steps, device=xt.device, dtype=xt.dtype)
+                        for t in reversed(range(self.sampling_steps)):
+                            t_current = float(t_schedule[t])
+                            predicted = self.noise_predictor(xt, t_current, y_encoded, None)
+                            if self.pred_noise:
+                                std_ = self.forward_diffusion.vs.std(t)
+                                while std_.dim() < len(xt.shape):
+                                    std = std_.unsqueeze(-1)
+                                score = -predicted / (std + self.forward_diffusion.eps)
+                            else:
+                                score = predicted
+                            if t == 0:
+                                xt = self.reverse_diffusion(xt, score, t_current, dt, last_step=True)
+                            else:
+                                xt = self.reverse_diffusion(xt, score, t_current, dt)
 
                     # clamp and normalize generated samples
                     x_hat = torch.clamp(xt, min=self.image_output_range[0], max=self.image_output_range[1])
@@ -1184,12 +1187,11 @@ class TrainSDE(nn.Module):
         self.noise_predictor.train()
         if self.conditional_model is not None:
             self.conditional_model.train()
-        if self.forward_diffusion.variance_scheduler.trainable_beta:
-            self.reverse_diffusion.train()
-            self.forward_diffusion.train()
+        #if self.forward_diffusion.variance_scheduler.trainable_beta:
+        #    self.reverse_diffusion.train()
+        #    self.forward_diffusion.train()
 
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
-
 
 ###==================================================================================================================###
 

@@ -5,4 +5,4 @@ from .ddpm import ForwardDDPM, ReverseDDPM,  VarianceSchedulerDDPM, TrainDDPM, S
 from .ldm import TrainLDM, TrainAE, AutoencoderLDM, SampleLDM
 from .sde import ForwardSDE, ReverseSDE, VarianceSchedulerSDE, TrainSDE, SampleSDE
 from .unclip import ForwardUnCLIP, ReverseUnCLIP, VarianceSchedulerUnCLIP, CLIPEncoder, SampleUnCLIP, UnClipDecoder, UnCLIPTransformerPrior, CLIPContextProjection, CLIPEmbeddingProjection, TrainUnClipDecoder, SampleUnCLIP, UpsamplerUnCLIP, TrainUpsamplerUnCLIP
-from .utils import NoisePredictor, TextEncoder, Metrics
+from .utils import ScoreNet, TextEncoder, Metrics
