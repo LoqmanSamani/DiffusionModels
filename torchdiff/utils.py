@@ -1,15 +1,20 @@
 """
-**Utilities for text encoding, noise prediction, and evaluation in diffusion models**
+**Utilities for text encoding, score prediction, and evaluation in diffusion models**
 
 This module provides core components for building diffusion model pipelines, including
-text encoding, used as conditional model, U-Net-based noise prediction, and image quality evaluation. These
-utilities support various diffusion model architectures, such as DDPM, DDIM, LDM, and
-SDE, and are designed for standalone use in model training and sampling.
+text encoding (used as a conditional model), U-Net-based score prediction (ScoreNet),
+custom loss functions for training, and image quality evaluation. These utilities support
+various diffusion model architectures, such as DDPM, DDIM, LDM, and SDE, and are designed
+for standalone use in model training and sampling.
 
 **Primary Components**
 
 - **TextEncoder**: Encodes text prompts into embeddings using a pre-trained BERT model or a custom transformer.
-- **NoisePredictor**: U-Net-like architecture for predicting noise in diffusion models, supporting time and text conditioning.
+- **ScoreNet**: Memory-efficient U-Net-like architecture for predicting noise or scores in diffusion models, supporting time and text conditioning.
+- **Loss Functions**:
+    - `mse_loss`: Standard mean squared error loss.
+    - `snr_capped_loss`: SNR-weighted noise prediction loss with capped weighting, useful for VP/VE training.
+    - `ve_sigma_weighted_score_loss`: Sigma-weighted score matching loss for VE-SDEs.
 - **Metrics**: Computes image quality metrics (MSE, PSNR, SSIM, FID, LPIPS) for evaluating generated images.
 
 **Notes**
@@ -17,14 +22,8 @@ SDE, and are designed for standalone use in model training and sampling.
 - The primary components are intended to be imported directly for use in diffusion model workflows.
 - Additional supporting classes and functions in this module provide internal functionality for the primary components.
 
-
----------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------
 """
-
-
-
-###==================================================================================================================###
-
 
 import torch
 import torch.nn as nn
@@ -570,13 +569,9 @@ class Embedding(nn.Module):
 
 ###==================================================================================================================###
 
+
 class ScoreNet(nn.Module):
-    """Memory-efficient U-Net for diffusion models with proper skip connections.
-
-    Architecture ensures skip connections always match spatial dimensions.
-    60-70% less memory than original implementation.
-    """
-
+    """Memory-efficient U-Net architecture for diffusion models supporting time and conditional embeddings"""
     def __init__(
             self,
             in_channels: int,
@@ -591,34 +586,45 @@ class ScoreNet(nn.Module):
             num_up_blocks: int,
             dropout_rate: float = 0.1,
             down_sampling_factor: int = 2,
-            where_y: bool = True,
             y_to_all: bool = False,
-            continuous_time: bool = False,
+            cont_time: bool = True,
             use_flash_attention: bool = True,
-            gradient_checkpointing: bool = False
+            grad_check: bool = False
     ) -> None:
+        """Initialize the ScoreNet U-Net with configurable down, middle, and up blocks, time embeddings, and optional attention.
+
+        Args:
+            in_channels: Number of input channels.
+            down_channels: List of channels for downsampling stages.
+            mid_channels: List of channels for middle blocks.
+            up_channels: List of channels for upsampling stages.
+            down_sampling: Boolean flags indicating whether to downsample at each down block.
+            time_embed_dim: Dimensionality of the time embedding.
+            y_embed_dim: Dimensionality of the conditional embedding.
+            num_down_blocks: Number of residual layers per down block.
+            num_mid_blocks: Number of residual layers per middle block.
+            num_up_blocks: Number of residual layers per up block.
+            dropout_rate: Dropout probability.
+            down_sampling_factor: Stride factor for downsampling/upsampling.
+            y_to_all: If True, applies conditional embeddings to all attention layers.
+            cont_time: Whether to use continuous time embeddings.
+            use_flash_attention: Whether to use flash attention for cross-attention layers.
+            grad_check: Whether to use gradient checkpointing.
+        """
         super().__init__()
-
-        self.continuous_time = continuous_time
-        self.gradient_checkpointing = gradient_checkpointing
-
-        # Validate configuration
+        self.cont_time = cont_time
+        self.grad_check = grad_check
         assert len(down_channels) - 1 == len(down_sampling), \
             f"down_sampling length must be len(down_channels)-1, got {len(down_sampling)} vs {len(down_channels) - 1}"
         assert len(up_channels) - 1 <= len(down_channels) - 1, \
             f"Cannot have more up blocks than down blocks"
 
-        # Initial projection
         self.conv_in = nn.Conv2d(in_channels, down_channels[0], 3, padding=1)
-
-        # Time embedding MLP
         self.time_mlp = nn.Sequential(
             nn.Linear(time_embed_dim, time_embed_dim),
             nn.SiLU(),
             nn.Linear(time_embed_dim, time_embed_dim)
         )
-
-        # ENCODER: Down blocks + downsampling
         self.encoder = nn.ModuleList()
         for i in range(len(down_channels) - 1):
             self.encoder.append(nn.ModuleDict({
@@ -636,7 +642,6 @@ class ScoreNet(nn.Module):
                                         stride=down_sampling_factor, padding=1) if down_sampling[i] else nn.Identity()
             }))
 
-        # MIDDLE: Bottleneck blocks
         self.middle = nn.ModuleList()
         for i in range(len(mid_channels) - 1):
             self.middle.append(
@@ -651,13 +656,9 @@ class ScoreNet(nn.Module):
                     use_flash=use_flash_attention
                 )
             )
-
-        # DECODER: Upsampling + up blocks
-        # We need to match the number of encoder stages
         num_decoder_stages = len(up_channels) - 1
         up_sampling_ops = list(reversed(down_sampling[-num_decoder_stages:]))
         encoder_output_channels = list(reversed(down_channels[1:]))[:num_decoder_stages]
-
         self.decoder = nn.ModuleList()
         for i in range(num_decoder_stages):
             self.decoder.append(nn.ModuleDict({
@@ -665,7 +666,7 @@ class ScoreNet(nn.Module):
                                                down_sampling_factor, stride=down_sampling_factor) if up_sampling_ops[
                     i] else nn.Identity(),
                 'block': ResBlock(
-                    in_channels=up_channels[i] + encoder_output_channels[i],  # Concatenated with skip
+                    in_channels=up_channels[i] + encoder_output_channels[i],
                     out_channels=up_channels[i + 1],
                     time_channels=time_embed_dim,
                     context_channels=y_embed_dim,
@@ -675,17 +676,19 @@ class ScoreNet(nn.Module):
                     use_flash=use_flash_attention
                 )
             }))
-
-        # Output projection
         self.conv_out = nn.Sequential(
             nn.GroupNorm(8, up_channels[-1]),
             nn.SiLU(),
             nn.Conv2d(up_channels[-1], in_channels, 3, padding=1)
         )
-
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
+        """Initialize weights of Conv2d and Linear layers with Kaiming initialization and zero biases.
+
+        Args:
+            m: Module to initialize.
+        """
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             nn.init.kaiming_normal_(m.weight, a=0.01, nonlinearity='leaky_relu')
             if m.bias is not None:
@@ -698,50 +701,50 @@ class ScoreNet(nn.Module):
             y: Optional[torch.Tensor] = None,
             clip_embeddings: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        """
-        Args:
-            x: Input tensor [B, C, H, W]
-            t: Timesteps [B] or [B, 1]
-            y: Optional context [B, D] or [B, L, D]
-            clip_embeddings: Optional CLIP embeddings [B, D]
-        """
-        # Embed time
-        t_emb = get_timestep_embedding(t, self.time_mlp[0].in_features, self.continuous_time)
-        t_emb = self.time_mlp(t_emb)
+        """Forward pass through the U-Net with time and optional conditional embeddings.
 
+        Args:
+            x: Input tensor of shape [B, C, H, W].
+            t: Tensor of timesteps [B] or [B, 1].
+            y: Optional context embeddings [B, D] or [B, L, D].
+            clip_embeddings: Optional CLIP embeddings [B, D].
+
+        Returns:
+            Output tensor of shape [B, in_channels, H, W].
+        """
+        t_emb = get_timestep_embedding(t, self.time_mlp[0].in_features, self.cont_time)
+        t_emb = self.time_mlp(t_emb)
         if clip_embeddings is not None:
             t_emb = t_emb + clip_embeddings
-
-        # Initial conv
         h = self.conv_in(x)
-
-        # ENCODER: save features before downsampling for skip connections
         encoder_features = []
         for stage in self.encoder:
             h = self._apply_block(stage['block'], h, t_emb, y)
-            encoder_features.append(h)  # Save BEFORE downsampling
+            encoder_features.append(h)
             h = stage['downsample'](h)
-
-        # MIDDLE
         for block in self.middle:
             h = self._apply_block(block, h, t_emb, y)
-
-        # DECODER: upsample, concatenate skip, process
-        # Skips are stored in encoder order (highest res to lowest res after downsampling)
-        # We need them in reverse order for decoder (lowest res to highest res)
         num_decoder_stages = len(self.decoder)
         skips_for_decoder = list(reversed(encoder_features[-num_decoder_stages:]))
-
         for stage, skip in zip(self.decoder, skips_for_decoder):
-            h = stage['upsample'](h)  # Upsample to match skip resolution
-            h = torch.cat([h, skip], dim=1)  # Concatenate skip connection
+            h = stage['upsample'](h)
+            h = torch.cat([h, skip], dim=1)
             h = self._apply_block(stage['block'], h, t_emb, y)
-
-        # Output
         return self.conv_out(h)
 
     def _apply_block(self, block, x, t_emb, y):
-        if self.gradient_checkpointing and self.training:
+        """Apply a residual block with optional gradient checkpointing.
+
+        Args:
+            block: The ResBlock module to apply.
+            x: Input tensor.
+            t_emb: Time embedding tensor.
+            y: Optional conditional embedding.
+
+        Returns:
+            Output tensor after applying the block.
+        """
+        if self.grad_check and self.training:
             return torch.utils.checkpoint.checkpoint(
                 block, x, t_emb, y, use_reentrant=False
             )
@@ -749,8 +752,7 @@ class ScoreNet(nn.Module):
 
 
 class ResBlock(nn.Module):
-    """Efficient residual block with time conditioning and optional cross-attention."""
-
+    """Efficient residual block with optional cross-attention for U-Net."""
     def __init__(
             self,
             in_channels: int,
@@ -762,12 +764,22 @@ class ResBlock(nn.Module):
             use_attention: bool = False,
             use_flash: bool = True
     ):
+        """Initialize a ResBlock with optional attention and multiple residual layers.
+
+        Args:
+            in_channels: Number of input channels.
+            out_channels: Number of output channels.
+            time_channels: Dimensionality of time embedding.
+            context_channels: Dimensionality of conditional embedding.
+            num_layers: Number of residual layers in the block.
+            dropout: Dropout probability.
+            use_attention: Whether to include a cross-attention layer.
+            use_flash: Whether to use flash attention if available.
+        """
         super().__init__()
 
         self.num_layers = num_layers
         self.use_attention = use_attention and context_channels > 0
-
-        # Build residual layers
         self.res_layers = nn.ModuleList()
         for i in range(num_layers):
             ch_in = in_channels if i == 0 else out_channels
@@ -782,8 +794,6 @@ class ResBlock(nn.Module):
                     'skip': nn.Conv2d(ch_in, out_channels, 1) if ch_in != out_channels else nn.Identity()
                 })
             )
-
-        # Optional cross-attention (only on first layer)
         if self.use_attention:
             self.attention = CrossAttention(
                 out_channels, context_channels,
@@ -791,39 +801,35 @@ class ResBlock(nn.Module):
             )
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor, context: Optional[torch.Tensor] = None):
+        """Forward pass through the residual block.
+
+        Args:
+            x: Input tensor of shape [B, C, H, W].
+            t_emb: Time embedding tensor of shape [B, time_channels].
+            context: Optional conditional embeddings for cross-attention.
+
+        Returns:
+            Output tensor after residual layers (and optional attention).
+        """
         h = x
-
         for i, layer in enumerate(self.res_layers):
-            # Residual path
             res = h
-
-            # First conv
             h = layer['norm1'](h)
             h = F.silu(h)
             h = layer['conv1'](h)
-
-            # Add time embedding
             h = h + layer['time_emb'](F.silu(t_emb))[:, :, None, None]
-
-            # Second conv
             h = layer['norm2'](h)
             h = F.silu(h)
             h = layer['dropout'](h)
             h = layer['conv2'](h)
-
-            # Skip connection
             h = h + layer['skip'](res)
-
-            # Cross-attention (only on first layer)
             if i == 0 and self.use_attention and context is not None:
                 h = h + self.attention(h, context)
-
         return h
 
 
 class CrossAttention(nn.Module):
-    """Efficient cross-attention with optional flash attention."""
-
+    """Cross-attention module with optional flash attention."""
     def __init__(
             self,
             channels: int,
@@ -832,6 +838,15 @@ class CrossAttention(nn.Module):
             dropout: float = 0.0,
             use_flash: bool = True
     ):
+        """Initialize cross-attention with query, key, value projections and optional flash attention.
+
+        Args:
+            channels: Number of input channels.
+            context_dim: Dimensionality of the context embeddings.
+            num_heads: Number of attention heads.
+            dropout: Dropout probability for attention output.
+            use_flash: Whether to use flash attention if available.
+        """
         super().__init__()
 
         assert channels % num_heads == 0
@@ -839,7 +854,6 @@ class CrossAttention(nn.Module):
         self.head_dim = channels // num_heads
         self.scale = self.head_dim ** -0.5
         self.use_flash = use_flash and hasattr(F, 'scaled_dot_product_attention')
-
         self.norm = nn.GroupNorm(8, channels)
         self.to_q = nn.Linear(channels, channels, bias=False)
         self.to_kv = nn.Linear(context_dim, channels * 2, bias=False)
@@ -847,61 +861,135 @@ class CrossAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
+        """Compute cross-attention output.
 
-        # Normalize and flatten
+        Args:
+            x: Input feature map tensor [B, C, H, W].
+            context: Context embeddings [B, D] or [B, L, D].
+
+        Returns:
+            Tensor of shape [B, C, H, W] after applying attention.
+        """
+        B, C, H, W = x.shape
         x_norm = self.norm(x)
         x_flat = x_norm.view(B, C, H * W).transpose(1, 2)  # [B, HW, C]
-
-        # Handle context shape
         if context.dim() == 2:
             context = context.unsqueeze(1)  # [B, 1, D]
-
-        # Compute Q, K, V
         q = self.to_q(x_flat)
         kv = self.to_kv(context)
         k, v = kv.chunk(2, dim=-1)
-
-        # Reshape for multi-head attention
         q = q.view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
         k = k.view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
-
-        # Attention
         if self.use_flash:
             out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
         else:
             attn = (q @ k.transpose(-2, -1)) * self.scale
             attn = F.softmax(attn, dim=-1)
             out = attn @ v
-
-        # Reshape and project
         out = out.transpose(1, 2).contiguous().view(B, H * W, C)
         out = self.proj_out(out)
         out = self.dropout(out)
         out = out.transpose(1, 2).view(B, C, H, W)
-
         return out
 
 
-def get_timestep_embedding(timesteps: torch.Tensor, dim: int, continuous: bool = False) -> torch.Tensor:
-    """Sinusoidal timestep embeddings."""
+def get_timestep_embedding(timesteps: torch.Tensor, dim: int, continuous: bool = True, scale = 1000.0) -> torch.Tensor:
+    """Compute sinusoidal timestep embeddings for continuous or discrete timesteps.
+
+    Args:
+        timesteps: Tensor of timesteps [B] or scalar.
+        dim: Dimensionality of the embedding vector.
+        continuous: If True, scales timesteps by 1000 to emulate discrete DDPM timesteps.
+
+    Returns:
+        Tensor of shape [B, dim] containing sinusoidal embeddings.
+    """
     if timesteps.dim() == 0:
         timesteps = timesteps.unsqueeze(0)
     elif timesteps.dim() == 2:
         timesteps = timesteps.squeeze(-1)
-
     if continuous:
-        timesteps = timesteps * 1000.0
-
+        timesteps = timesteps * scale
     half_dim = dim // 2
     emb = math.log(10000.0) / (half_dim - 1)
     emb = torch.exp(torch.arange(half_dim, device=timesteps.device, dtype=torch.float32) * -emb)
     emb = timesteps[:, None] * emb[None, :]
     emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
-
     return emb
+
+
 ###==================================================================================================================###
+
+
+def mse_loss(pred: torch.Tensor, target: torch.Tensor, *args) -> torch.Tensor:
+    """
+    Standard mean squared error (MSE) loss.
+
+    Computes the element-wise squared difference between `pred` and `target`
+    and returns the mean across all elements.
+
+    Args:
+        pred: Predicted tensor, shape [B, ...].
+        target: Target tensor, same shape as `pred`.
+        *args: Placeholder for optional unused arguments for API compatibility.
+
+    Returns:
+        Scalar tensor representing mean squared error.
+    """
+    return ((pred - target) ** 2).mean()
+
+
+def snr_capped_loss(pred_noise: torch.Tensor, target_noise: torch.Tensor, variance: torch.Tensor,
+                    gamma: float = 5.0, *args) -> torch.Tensor:
+    """
+    Signal-to-noise-ratio (SNR) capped noise prediction loss for diffusion models.
+
+    This implements a weighted MSE where the weight is the SNR of the timestep,
+    capped at a maximum value `gamma`. Typically used in VP/VE noise prediction.
+
+    Args:
+        pred_noise: Predicted noise tensor, same shape as target_noise.
+        target_noise: True noise tensor.
+        variance: Variance (sigma^2) corresponding to the timestep t, shape broadcastable to pred_noise.
+        gamma: Maximum SNR weight (default 5.0).
+        *args: Placeholder for optional unused arguments for API compatibility.
+
+    Returns:
+        Scalar tensor representing the SNR-weighted mean squared error.
+    """
+    snr = (1 - variance) / variance.clamp(min=1e-8)
+    weight = torch.minimum(snr, torch.tensor(gamma, device=snr.device))
+    while weight.dim() < target_noise.dim():
+        weight = weight.unsqueeze(-1)
+    return ((pred_noise - target_noise) ** 2 * weight).mean()
+
+
+def ve_sigma_weighted_score_loss(pred_score: torch.Tensor, target_score: torch.Tensor, sigma: torch.Tensor, *args) -> torch.Tensor:
+    """
+    VE-SDE sigma-weighted score matching loss.
+
+    Implements the recommended loss for Variance Exploding SDEs:
+        E[ || sigma(t) * s_theta(x_t, t) + epsilon ||^2 ]
+    where epsilon is the true noise used to perturb x_0.
+
+    Args:
+        pred_score: Model-predicted score tensor (∇_x log p(x_t)), shape [B, ...].
+        target_score: Target score, typically -epsilon / sigma(t).
+        sigma: Standard deviation (σ(t)) at the corresponding timesteps, shape broadcastable to pred_score.
+        *args: Placeholder for optional unused arguments for API compatibility.
+
+    Returns:
+        Scalar tensor representing the sigma-weighted score matching loss.
+    """
+    while sigma.dim() < pred_score.dim():
+        sigma = sigma.unsqueeze(-1)
+    eps = -target_score * sigma
+    return ((sigma * pred_score + eps) ** 2).mean()
+
+
+###==================================================================================================================###
+
 
 class Metrics:
     """Computes image quality metrics for evaluating diffusion models.
