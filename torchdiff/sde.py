@@ -31,7 +31,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import torch.distributed as dist
-from typing import Optional, Tuple, Callable, List, Any, Union, Self
+from typing import Optional, Tuple, Callable, List, Any, Union, Self, Dict
 from tqdm import tqdm
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
@@ -84,10 +84,10 @@ class ForwardSDE(nn.Module):
 
     Parameters
     ----------
-    variance_scheduler : VarianceSchedulerSDE
+    scheduler : SchedulerSDE
         Scheduler providing β(t), α(t), and σ(t) for VP and Sub-VP processes.
 
-    sde_method : str, default="vp"
+    method : str, default="vp"
         Forward process type. Must be one of:
         {"vp", "ve", "sub-vp", "ode"}.
 
@@ -116,8 +116,8 @@ class ForwardSDE(nn.Module):
     """
     def __init__(
             self,
-            variance_scheduler: nn.Module,
-            sde_method: str = "vp",
+            scheduler: nn.Module,
+            method: str = "vp",
             sigma_min: float = 0.01,
             sigma_max: float = 50.0,
             eps: float = 1e-8
@@ -125,11 +125,11 @@ class ForwardSDE(nn.Module):
         super().__init__()
 
         valid_methods = ["vp", "ve", "sub-vp", "ode"]
-        if sde_method not in valid_methods:
-            raise ValueError(f"sde_method must be one of {valid_methods}, got {sde_method}")
+        if method not in valid_methods:
+            raise ValueError(f"sde_method must be one of {valid_methods}, got {method}")
 
-        self.vs = variance_scheduler
-        self.sde_method = sde_method
+        self.vs = scheduler
+        self.method = method
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.eps = eps
@@ -142,32 +142,31 @@ class ForwardSDE(nn.Module):
 
     def get_forward_params(self, t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Get mean coefficient and std for the forward process based on SDE method
-
         Returns:
             mean_coeff: coefficient for clean data x_0
             std: standard deviation of noise
         """
         mean_coeff = None
         std = None
-        if self.sde_method == "vp":
-            # VP-SDE: p(x_t | x_0) = N(α(t)x_0, σ²(t)I)
+        if self.method == "vp":
+            # vp-sde: p(x_t | x_0) = N(α(t)x_0, σ²(t)I)
             mean_coeff = self.vs.alpha(t)
             std = self.vs.std(t)
 
-        elif self.sde_method == "ve":
-            # VE-SDE: p(x_t | x_0) = N(x_0, σ²(t)I)
+        elif self.method == "ve":
+            # ve-sde: p(x_t | x_0) = N(x_0, σ²(t)I)
             # σ(t) grows from sigma_min to sigma_max
             mean_coeff = torch.ones_like(t)
             sigma_t = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
             std = sigma_t
 
-        elif self.sde_method == "sub-vp":
-            # Sub-VP-SDE: p(x_t | x_0) = N(x_0, σ²(t)I) where σ²(t) = 1 - e^(-∫β(s)ds)
+        elif self.method == "sub-vp":
+            # sub-vp-sde: p(x_t | x_0) = N(x_0, σ²(t)I) where σ²(t) = 1 - e^(-∫β(s)ds)
             mean_coeff = torch.ones_like(t)
             std = self.vs.std(t)
 
-        elif self.sde_method == "ode":
-            # Probability flow ODE: same marginals as VP-SDE but deterministic
+        elif self.method == "ode":
+            # probability flow ode: same marginals as vp-sde but deterministic
             mean_coeff = self.vs.alpha(t)
             std = self.vs.std(t)
 
@@ -176,10 +175,10 @@ class ForwardSDE(nn.Module):
     def forward(self, x0: torch.Tensor, noise: torch.Tensor, t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample from transition kernel and compute true score
 
-        Args:
+        Arguments:
             x0: (batch, ..., dims) clean data
             noise: (batch, ..., dims) standard Gaussian noise
-            t: (batch,) continuous time in [0, 1]
+            t: (batch, ) continuous time in [0, 1]
 
         Returns:
             xt: (batch, ..., dims) noised data
@@ -199,7 +198,7 @@ class ForwardSDE(nn.Module):
 
 class ReverseSDE(nn.Module):
     """
-    Unified reverse-time diffusion process for continuous-time diffusion models.
+    Unified reverse-time diffusion process for continuous-time sde diffusion models
 
     This module implements a single-step numerical solver for the *reverse-time*
     stochastic differential equation (SDE) or probability flow ordinary
@@ -229,11 +228,11 @@ class ReverseSDE(nn.Module):
 
     Parameters
     ----------
-    variance_scheduler : nn.Module
+    scheduler : nn.Module
         Scheduler providing β(t) and related quantities for VP and Sub-VP
-        dynamics. Typically an instance of `VarianceSchedulerSDE`.
+        dynamics. Typically an instance of `SchedulerSDE`.
 
-    sde_method : str, default="vp"
+    method : str, default="vp"
         Type of reverse-time dynamics. Must be one of:
         {"vp", "ve", "sub-vp", "ode"}.
 
@@ -269,8 +268,8 @@ class ReverseSDE(nn.Module):
     """
     def __init__(
             self,
-            variance_scheduler: nn.Module,
-            sde_method: str = "vp",
+            scheduler: nn.Module,
+            method: str = "vp",
             sigma_min: float = 0.01,
             sigma_max: float = 50.0,
             eps: float = 1e-8
@@ -278,11 +277,11 @@ class ReverseSDE(nn.Module):
         super().__init__()
 
         valid_methods = ["vp", "ve", "sub-vp", "ode"]
-        if sde_method not in valid_methods:
-            raise ValueError(f"sde_method must be one of {valid_methods}, got {sde_method}")
+        if method not in valid_methods:
+            raise ValueError(f"sde_method must be one of {valid_methods}, got {method}")
 
-        self.vs = variance_scheduler
-        self.sde_method = sde_method
+        self.vs = scheduler
+        self.method = method
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.eps = eps
@@ -301,31 +300,31 @@ class ReverseSDE(nn.Module):
             g_squared: squared diffusion coefficient (for score term)
             diffusion_coeff: coefficient for diffusion term
         """
-        if self.sde_method == "vp":
-            # VP-SDE: dx = [-½β(t)x - β(t)∇log p_t(x)]dt + √β(t)dw̄
+        if self.method == "vp":
+            # vp-sde: dx = [-½β(t)x - β(t)∇log p_t(x)]dt + √β(t)dw̄
             drift_coeff = -0.5 * self.vs.beta(t)
             g_squared = self.vs.beta(t)
             diffusion_coeff = torch.sqrt(self.vs.beta(t))
 
-        elif self.sde_method == "ve":
-            # VE-SDE: dx = [-σ(t)dσ/dt ∇log p_t(x)]dt + √(2σ(t)dσ/dt)dw̄
+        elif self.method == "ve":
+            # ve-sde: dx = [-σ(t)dσ/dt ∇log p_t(x)]dt + √(2σ(t)dσ/dt)dw̄
             sigma_t = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
             dsigma_dt = sigma_t * torch.log(torch.tensor(self.sigma_max / self.sigma_min))
             drift_coeff = torch.zeros_like(t)
             g_squared = 2 * sigma_t * dsigma_dt
             diffusion_coeff = torch.sqrt(g_squared)
 
-        elif self.sde_method == "sub-vp":
-            # Sub-VP-SDE: dx = [-β(t)∇log p_t(x)]dt + √β(t)dw̄
+        elif self.method == "sub-vp":
+            # sub-vp-sde: dx = [-β(t)∇log p_t(x)]dt + √β(t)dw̄
             drift_coeff = torch.zeros_like(t)
             g_squared = self.vs.beta(t)
             diffusion_coeff = torch.sqrt(self.vs.beta(t))
 
-        elif self.sde_method == "ode":
-            # Probability flow ODE: deterministic (no diffusion)
+        elif self.method == "ode":
+            # probability flow ode: deterministic
             drift_coeff = -0.5 * self.vs.beta(t)
             g_squared = self.vs.beta(t)
-            diffusion_coeff = torch.zeros_like(t)
+            diffusion_coeff = torch.zeros_like(t) # no diffusion in ode
 
         return drift_coeff, g_squared, diffusion_coeff
 
@@ -346,14 +345,15 @@ class ReverseSDE(nn.Module):
             dt = torch.tensor(dt, device=xt.device, dtype=xt.dtype)
 
         drift_coeff, g_squared, diffusion_coeff = self.get_reverse_coeffs(t)
-        # Broadcast to match xt shape
+        # broadcast to match xt shape
         drift_coeff = self._broadcast_to_shape(drift_coeff, xt.shape)
         g_squared = self._broadcast_to_shape(g_squared, xt.shape)
         diffusion_coeff = self._broadcast_to_shape(diffusion_coeff, xt.shape)
-        # Reverse drift: f(x,t) - g²(t)·score
+        # [-½β(t)x - β(t)∇log p_t(x)]dt + √β(t)dw̄
+        # reverse drift: f(x,t) - g²(t)·score
         drift = drift_coeff * xt - g_squared * score
-        # Diffusion term
-        if last_step or self.sde_method == "ode":
+        # diffusion term
+        if last_step or self.method == "ode":
             noise = torch.zeros_like(xt)
         else:
             noise = torch.randn_like(xt)
@@ -364,7 +364,7 @@ class ReverseSDE(nn.Module):
 
 ###==================================================================================================================###
 
-class VarianceSchedulerSDE(nn.Module):
+class SchedulerSDE(nn.Module):
     """
     Continuous-time variance (noise) scheduler for diffusion models formulated
     as stochastic differential equations (SDEs).
@@ -563,7 +563,7 @@ class TrainSDE(nn.Module):
             loss_fn: Callable,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epochs: int = 1000,
-            device: Optional[Union[str, torch.device]] = None,
+            device: str = 'cuda',
             cond_model: Optional[torch.nn.Module] = None,
             metrics_: Optional[Any] = None,
             bert_tokenizer: Optional[BertTokenizer] = None,
@@ -586,9 +586,7 @@ class TrainSDE(nn.Module):
         super().__init__()
         self.use_ddp = use_ddp
         self.grad_acc = grad_acc
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
+        if isinstance(device, str):
             self.device = torch.device(device)
         else:
             self.device = device
@@ -622,6 +620,7 @@ class TrainSDE(nn.Module):
         self.global_step = 0
         self.warmup_steps = warmup_steps
         self.best_loss = float('inf')
+        self.losses = {'train_losses': [], 'val_losses': []}
 
         self.scheduler = ReduceLROnPlateau(
             self.optim,
@@ -694,18 +693,18 @@ class TrainSDE(nn.Module):
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
-        if 'model_state_dict_noise_predictor' not in checkpoint:
-            raise KeyError("Checkpoint missing 'model_state_dict_noise_predictor' key")
+        if 'model_state_dict_score_net' not in checkpoint:
+            raise KeyError("Checkpoint missing 'model_state_dict_score_net' key")
 
-        state_dict = checkpoint['model_state_dict_noise_predictor']
+        state_dict = checkpoint['model_state_dict_score_net']
         if self.use_ddp and not any(key.startswith('module.') for key in state_dict.keys()):
             state_dict = {f'module.{k}': v for k, v in state_dict.items()}
         elif not self.use_ddp and any(key.startswith('module.') for key in state_dict.keys()):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         self.score_net.load_state_dict(state_dict)
         if self.cond_model is not None:
-            if 'model_state_dict_conditional' in checkpoint and checkpoint['model_state_dict_conditional'] is not None:
-                cond_state_dict = checkpoint['model_state_dict_conditional']
+            if 'model_state_dict_cond' in checkpoint and checkpoint['model_state_dict_cond'] is not None:
+                cond_state_dict = checkpoint['model_state_dict_cond']
                 if self.use_ddp and not any(key.startswith('module.') for key in cond_state_dict.keys()):
                     cond_state_dict = {f'module.{k}': v for k, v in cond_state_dict.items()}
                 elif not self.use_ddp and any(key.startswith('module.') for key in cond_state_dict.keys()):
@@ -713,27 +712,27 @@ class TrainSDE(nn.Module):
                 self.cond_model.load_state_dict(cond_state_dict)
             else:
                 warnings.warn(
-                    "Checkpoint contains no 'model_state_dict_conditional' or it is None, "
+                    "Checkpoint contains no 'model_state_dict_cond' or it is None, "
                     "skipping conditional model loading"
                 )
 
-        if 'variance_scheduler_model' not in checkpoint:
-            raise KeyError("Checkpoint missing 'variance_scheduler_model' key")
+        if 'scheduler_model' not in checkpoint:
+            raise KeyError("Checkpoint missing 'scheduler_model' key")
         try:
             if isinstance(self.fwd_sde.vs, nn.Module):
-                self.fwd_sde.vs.load_state_dict(checkpoint['variance_scheduler_model'])
+                self.fwd_sde.vs.load_state_dict(checkpoint['scheduler_model'])
             if isinstance(self.rwd_sde.vs, nn.Module):
-                self.rwd_sde.vs.load_state_dict(checkpoint['variance_scheduler_model'])
+                self.rwd_sde.vs.load_state_dict(checkpoint['scheduler_model'])
             else:
-                self.fwd_sde.vs = checkpoint['variance_scheduler_model']
-                self.rwd_sde.vs = checkpoint['variance_scheduler_model']
+                self.fwd_sde.vs = checkpoint['scheduler_model']
+                self.rwd_sde.vs = checkpoint['scheduler_model']
         except Exception as e:
-            warnings.warn(f"Variance_scheduler loading failed: {e}. Continuing with current variance_scheduler.")
+            warnings.warn(f"Scheduler loading failed: {e}. Continuing with current scheduler.")
 
-        if 'optimizer_state_dict' not in checkpoint:
-            raise KeyError("Checkpoint missing 'optimizer_state_dict' key")
+        if 'optim_state_dict' not in checkpoint:
+            raise KeyError("Checkpoint missing 'optim_state_dict' key")
         try:
-            self.optim.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.optim.load_state_dict(checkpoint['optim_state_dict'])
         except ValueError as e:
             warnings.warn(f"Optimizer state loading failed: {e}. Continuing without optimizer state.")
 
@@ -784,7 +783,7 @@ class TrainSDE(nn.Module):
                     find_unused_parameters=True
                 )
 
-    def forward(self) -> Tuple[List, float]:
+    def forward(self) -> Dict:
         """Trains the SDE model to predict noise added by the forward diffusion process.
 
         Executes the training loop, optimizing the noise predictor and conditional model
@@ -818,10 +817,7 @@ class TrainSDE(nn.Module):
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
         self._wrap_models_for_ddp()
-
         scaler = torch.GradScaler()
-        train_losses = []
-        best_val_loss = float("inf")
         wait = 0
 
         for epoch in range(self.max_epochs):
@@ -837,16 +833,23 @@ class TrainSDE(nn.Module):
                     y_encoded = None
 
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
-                    noise = torch.randn_like(x).to(self.device)
+                    noise = torch.randn_like(x)
                     t = self.sample_time(x.shape[0], self.time_eps)
                     xt, score = self.fwd_sde(x, noise, t)
-                    pred = self.score_net(xt, t, y_encoded, None)
+                    pred = self.score_net(xt, t, y_encoded, clip_embeddings=None)
                     var = self.fwd_sde.vs.variance(t)
                     if self.pred_noise:  # if model predicts noise
-                        loss = self.loss_fn(pred, noise, var) / self.grad_acc
+                        if self.fwd_sde.method == "ve":
+                            sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
+                            loss = self.loss_fn(pred, noise, sigma) / self.grad_acc
+                        else:
+                            loss = self.loss_fn(pred, noise, var) / self.grad_acc
                     else:  # if model predicts score
-                        loss = self.loss_fn(pred, score, var) / self.grad_acc
-
+                        if self.fwd_sde.method == "ve":
+                            sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
+                            loss = self.loss_fn(pred, score, sigma) / self.grad_acc
+                        else:
+                            loss = self.loss_fn(pred, score, var) / self.grad_acc
                 scaler.scale(loss).backward()
                 if (step + 1) % self.grad_acc == 0:
                     scaler.unscale_(self.optim)
@@ -860,12 +863,10 @@ class TrainSDE(nn.Module):
                         self.warmup_lr_scheduler.step()
                     self.global_step += 1
 
-                self.warmup_lr_scheduler.step()
                 pbar.set_postfix({'Loss': f'{loss.item() * self.grad_acc:.4f}'})
-
             train_losses_epoch.append(loss.item() * self.grad_acc)
             mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
-            train_losses.append(mean_train_loss)
+            self.losses['train_losses'].append(mean_train_loss)
             if self.use_ddp:
                 loss_tensor = torch.tensor(mean_train_loss, device=self.device)
                 dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
@@ -886,30 +887,28 @@ class TrainSDE(nn.Module):
                     if self.metrics_ and hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
                         print(f" | LPIPS: {lpips_score:.4f}", end="")
                     print()
-                current_best = val_loss
                 self.scheduler.step(val_loss)
+                self.losses['val_losses'].append((val_loss, fid, mse, psnr, ssim, lpips_score))
             else:
                 if self.master_process:
                     print()
-                current_best = mean_train_loss
                 self.scheduler.step(mean_train_loss)
             if self.master_process:
-                if current_best < best_val_loss and (epoch + 1) % self.val_freq == 0:
-                    best_val_loss = current_best
+                if mean_train_loss < self.best_loss:
+                    self.best_loss = mean_train_loss
                     wait = 0
-                    self._save_checkpoint(epoch + 1, best_val_loss)
+                    self._save_checkpoint(epoch + 1, self.best_loss, "best_")
                 else:
                     wait += 1
                     if wait >= self.patience:
                         print("Early stopping triggered")
-                        self._save_checkpoint(epoch + 1, best_val_loss, "_early_stop")
+                        self._save_checkpoint(epoch + 1, mean_train_loss, "early_stop_")
                         break
-            if mean_train_loss < self.best_loss:
-                self.best_loss = mean_train_loss
-                self._save_checkpoint(epoch + 1, self.best_loss, "_best_model")
+                if (epoch + 1) % self.val_freq == 0:
+                    self._save_checkpoint(epoch + 1, mean_train_loss, "")
         if self.use_ddp:
             destroy_process_group()
-        return train_losses, best_val_loss
+        return self.losses
 
     def sample_time(self, batch_size: int, eps: float = 1e-5) -> torch.Tensor:
         return eps + (1 - eps) * torch.rand(batch_size, device=self.device)
@@ -942,7 +941,7 @@ class TrainSDE(nn.Module):
         return y_encoded
 
 
-    def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "") -> None:
+    def _save_checkpoint(self, epoch: int, loss: float, preff: str = "") -> None:
         """Save model checkpoint (only called by master process).
 
         Parameters
@@ -951,7 +950,7 @@ class TrainSDE(nn.Module):
             Current epoch number.
         loss : float
             Current loss value.
-        suffix : str, optional
+        preff : str, optional
             Suffix to add to checkpoint filename.
         """
         try:
@@ -967,17 +966,15 @@ class TrainSDE(nn.Module):
                 )
             checkpoint = {
                 'epoch': epoch,
-                'model_state_dict_noise_predictor': score_net_state,
-                'model_state_dict_conditional': cond_state,
-                'optimizer_state_dict': self.optim.state_dict(),
+                'model_state_dict_score_net': score_net_state,
+                'model_state_dict_cond': cond_state,
+                'optim_state_dict': self.optim.state_dict(),
                 'loss': loss,
-                'variance_scheduler_model': (
-                    self.fwd_sde.vs.state_dict() if isinstance(self.fwd_sde.vs, nn.Module)
-                    else self.fwd_sde.vs
-                ),
+                'losses': self.losses,
+                'scheduler_model': self.fwd_sde.vs.state_dict(),
                 'max_epochs': self.max_epochs,
             }
-            filename = f"sde_epoch_{epoch}{suffix}.pth"
+            filename = f"{preff}model_epoch_{epoch}.pth"
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
@@ -1026,17 +1023,24 @@ class TrainSDE(nn.Module):
                     else:
                         y_encoded = None
 
-                    noise = torch.randn_like(x).to(self.device)
+                    noise = torch.randn_like(x)
                     t = self.sample_time(x.shape[0], self.time_eps)
                     xt, score = self.fwd_sde(x, noise, t)
-                    pred = self.score_net(xt, t, y_encoded, None)
+                    pred = self.score_net(xt, t, y_encoded, clip_embeddings=None)
                     var = self.fwd_sde.vs.variance(t)
                     if self.pred_noise:  # if model predicts noise
-                        loss = self.loss_fn(pred, noise, var) / self.grad_acc
+                        if self.fwd_sde.method == "ve":
+                            sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
+                            loss = self.loss_fn(pred, noise, sigma) / self.grad_acc
+                        else:
+                            loss = self.loss_fn(pred, noise, var) / self.grad_acc
                     else:  # if model predicts score
-                        loss = self.loss_fn(pred, score, var) / self.grad_acc
+                        if self.fwd_sde.method == "ve":
+                            sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
+                            loss = self.loss_fn(pred, score, sigma) / self.grad_acc
+                        else:
+                            loss = self.loss_fn(pred, score, var) / self.grad_acc
                     val_losses.append(loss.item())
-
                     if self.metrics_ is not None and self.rwd_sde is not None:
                         xt = torch.randn_like(x).to(self.device)
                         # reverse diffusion sampling
@@ -1089,6 +1093,7 @@ class TrainSDE(nn.Module):
             self.cond_model.train()
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
 
+
 ###==================================================================================================================###
 
 class SampleSDE(nn.Module):
@@ -1132,20 +1137,19 @@ class SampleSDE(nn.Module):
             max_token_length: int = 77,
             batch_size: int = 1,
             in_channels: int = 3,
-            device: Optional[Union[str, torch.device]] = None,
+            device: str = 'cuda',
             norm_range: Tuple[float, float] = (-1.0, 1.0),
             time_eps: float =  1e-5
     ) -> None:
         super().__init__()
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
+        if isinstance(device, str):
             self.device = torch.device(device)
         else:
             self.device = device
         self.rwd_sde = rwd_sde.to(self.device)
         self.score_net = score_net.to(self.device)
         self.cond_model = cond_model.to(self.device) if cond_model else None
+        self.pred_noise = pred_noise
         self.tokenizer = BertTokenizer.from_pretrained(tokenizer)
         self.max_token_length = max_token_length
         self.in_channels = in_channels
@@ -1153,7 +1157,6 @@ class SampleSDE(nn.Module):
         self.batch_size = batch_size
         self.norm_range = norm_range
         self.time_eps = time_eps
-        self.pred_noise = pred_noise
 
         if not isinstance(img_size, (tuple, list)) or len(img_size) != 2 or not all(isinstance(s, int) and s > 0 for s in img_size):
             raise ValueError("img_size must be a tuple of two positive integers (height, width)")
@@ -1263,7 +1266,7 @@ class SampleSDE(nn.Module):
             if save_imgs:
                 os.makedirs(save_path, exist_ok=True)
                 for i in range(samps.size(0)):
-                    img_path = os.path.join(save_path, f"image_{i+1}.png")
+                    img_path = os.path.join(save_path, f"img_{i+1}.png")
                     save_image(samps[i], img_path)
 
         return samps

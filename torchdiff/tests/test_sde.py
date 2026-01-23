@@ -1,626 +1,548 @@
-import pytest
 import torch
-import torch.nn as nn
-import numpy as np
-import os
-import tempfile
-from unittest.mock import Mock, patch
-from torch.utils.data import DataLoader, TensorDataset
-from torchdiff.utils import NoisePredictor, TextEncoder
-from torchdiff.sde import (
-    VarianceSchedulerSDE,
-    ForwardSDE,
-    ReverseSDE,
-    TrainSDE,
-    SampleSDE
-)
+import pytest
+from torchdiff.sde import SchedulerSDE, ForwardSDE, ReverseSDE
 
 
-class TestVarianceSchedulerSDE:
-    """Test cases for VarianceSchedulerSDE class."""
 
-    def test_init(self):
-        """Test initialization with different parameters."""
-        # Test default initialization
-        scheduler = VarianceSchedulerSDE()
-        assert scheduler.num_steps == 1000
-        assert scheduler.beta_start == 1e-4
-        assert scheduler.beta_end == 0.02
 
-        # Test custom initialization
-        scheduler = VarianceSchedulerSDE(
-            num_steps=500,
-            beta_start=1e-5,
-            beta_end=0.01,
-            beta_method="quadratic"
-        )
-        assert scheduler.num_steps == 500
-        assert scheduler.beta_start == 1e-5
-        assert scheduler.beta_end == 0.01
+class TestSchedulerSDE:
+    """Tests for SchedulerSDE"""
 
-    def test_invalid_parameters(self):
-        """Test initialization with invalid parameters."""
-        with pytest.raises(ValueError):
-            VarianceSchedulerSDE(num_steps=-10)
+    @pytest.fixture
+    def linear_scheduler(self):
+        return SchedulerSDE(schedule_type="linear", beta_min=0.1, beta_max=20.0)
 
-        with pytest.raises(ValueError):
-            VarianceSchedulerSDE(beta_start=0.1, beta_end=0.01)  # start > end
+    @pytest.fixture
+    def cosine_scheduler(self):
+        return SchedulerSDE(schedule_type="cosine", cosine_s=0.008)
 
-        with pytest.raises(ValueError):
-            VarianceSchedulerSDE(sigma_start=1.0, sigma_end=0.5)  # start > end
+    def test_initialization_valid(self):
+        """Test valid initialization"""
+        scheduler = SchedulerSDE(schedule_type="linear", beta_min=0.1, beta_max=20.0)
+        assert scheduler.schedule_type == "linear"
+        assert scheduler.beta_min == 0.1
+        assert scheduler.beta_max == 20.0
 
-    def test_beta_schedule_methods(self):
-        """Test all beta schedule computation methods."""
-        methods = ["linear", "sigmoid", "quadratic", "constant", "inverse_time"]
+    def test_initialization_invalid_schedule(self):
+        """Test invalid schedule type raises error"""
+        with pytest.raises(ValueError, match="schedule_type must be one of"):
+            SchedulerSDE(schedule_type="invalid")
 
-        for method in methods:
-            scheduler = VarianceSchedulerSDE(num_steps=100, beta_method=method)
-            betas = scheduler.betas
+    def test_initialization_invalid_beta_range(self):
+        """Test invalid beta range raises error"""
+        with pytest.raises(ValueError, match="require 0 < beta_min < beta_max"):
+            SchedulerSDE(schedule_type="linear", beta_min=20.0, beta_max=0.1)
 
-            assert betas.shape[0] == 100
-            assert torch.all(betas >= scheduler.beta_start)
-            assert torch.all(betas <= scheduler.beta_end)
+    def test_beta_monotonic_linear(self, linear_scheduler):
+        """Test β(t) is monotonically increasing for linear schedule"""
+        t = torch.linspace(0, 1, 100)
+        beta_values = linear_scheduler.beta(t)
+        assert torch.all(beta_values[1:] >= beta_values[:-1])
+        assert torch.isclose(beta_values[0], torch.tensor(0.1), atol=1e-5)
+        assert torch.isclose(beta_values[-1], torch.tensor(20.0), atol=1e-5)
 
-    def test_cumulative_betas(self):
-        """Test cumulative beta computation."""
-        scheduler = VarianceSchedulerSDE(num_steps=100)
-        cum_betas = scheduler._cum_betas
+    def test_variance_preserving_property(self, linear_scheduler):
+        """Test α²(t) + σ²(t) = 1 (variance preserving)"""
+        t = torch.linspace(0, 1, 100)
+        alpha_sq = linear_scheduler.alpha_squared(t)
+        var = linear_scheduler.variance(t)
+        sum_vals = alpha_sq + var
+        assert torch.allclose(sum_vals, torch.ones_like(sum_vals), atol=1e-5)
 
-        assert cum_betas.shape[0] == 100
-        assert cum_betas[0] > 0  # Should be positive
-        assert cum_betas[-1] > cum_betas[0]  # Should be increasing
+    def test_alpha_consistency(self, linear_scheduler):
+        """Test α(t) = √(α²(t))"""
+        t = torch.linspace(0.1, 1, 100)  # Avoid t=0 for numerical stability
+        alpha = linear_scheduler.alpha(t)
+        alpha_sq = linear_scheduler.alpha_squared(t)
+        assert torch.allclose(alpha ** 2, alpha_sq, atol=1e-5)
 
-    def test_sigmas(self):
-        """Test sigma computation."""
-        scheduler = VarianceSchedulerSDE(num_steps=100)
-        sigmas = scheduler.sigmas
+    def test_std_consistency(self, linear_scheduler):
+        """Test σ(t) = √(σ²(t))"""
+        t = torch.linspace(0, 1, 100)
+        std = linear_scheduler.std(t)
+        var = linear_scheduler.variance(t)
+        assert torch.allclose(std ** 2, var, atol=1e-5)
 
-        assert sigmas.shape[0] == 100
-        assert sigmas[0] == scheduler.sigma_start
-        assert sigmas[-1] == scheduler.sigma_end
+    def test_snr_formula(self, linear_scheduler):
+        """Test SNR(t) = α²(t) / σ²(t)"""
+        t = torch.linspace(0.1, 0.9, 100)
+        snr = linear_scheduler.snr(t)
+        alpha_sq = linear_scheduler.alpha_squared(t)
+        var = linear_scheduler.variance(t)
+        expected_snr = alpha_sq / var
+        assert torch.allclose(snr, expected_snr, atol=1e-5)
 
-    def test_get_variance(self):
-        """Test variance computation for different methods."""
-        scheduler = VarianceSchedulerSDE(num_steps=100)
-        time_steps = torch.tensor([0, 50, 99])
+    def test_snr_decreasing(self, linear_scheduler):
+        """Test SNR decreases monotonically (signal degrades over time)"""
+        t = torch.linspace(0.01, 0.99, 100)
+        snr = linear_scheduler.snr(t)
+        assert torch.all(snr[1:] <= snr[:-1])
 
-        for method in ["ve", "vp", "sub-vp"]:
-            variance = scheduler.get_variance(time_steps, method)
-            assert variance.shape[0] == 3
-            assert torch.all(variance >= 0)  # Variance should be non-negative
+    def test_boundary_conditions_t0(self, linear_scheduler):
+        """Test boundary conditions at t=0"""
+        t = torch.tensor([0.0])
+        assert torch.isclose(linear_scheduler.alpha(t), torch.tensor(1.0), atol=1e-5)
+        assert torch.isclose(linear_scheduler.std(t), torch.tensor(0.0), atol=1e-5)
+
+    def test_boundary_conditions_t1(self, linear_scheduler):
+        """Test that at t=1, noise dominates (σ²(1) > α²(1))"""
+        t = torch.tensor([1.0])
+        alpha_sq = linear_scheduler.alpha_squared(t)
+        var = linear_scheduler.variance(t)
+        assert var > alpha_sq
+
+    def test_cosine_schedule_properties(self, cosine_scheduler):
+        """Test cosine schedule satisfies variance preserving"""
+        t = torch.linspace(0, 1, 100)
+        alpha_sq = cosine_scheduler.alpha_squared(t)
+        var = cosine_scheduler.variance(t)
+        sum_vals = alpha_sq + var
+        assert torch.allclose(sum_vals, torch.ones_like(sum_vals), atol=1e-5)
+
+    def test_batch_handling(self, linear_scheduler):
+        """Test scheduler handles batched time inputs"""
+        t = torch.rand(32)  # Batch of 32 time values
+        beta = linear_scheduler.beta(t)
+        alpha = linear_scheduler.alpha(t)
+        assert beta.shape == (32,)
+        assert alpha.shape == (32,)
 
 
 class TestForwardSDE:
-    """Test cases for ForwardSDE class."""
+    """Tests for ForwardSDE"""
+    @pytest.fixture
+    def scheduler(self):
+        return SchedulerSDE(schedule_type="linear", beta_min=0.1, beta_max=20.0)
 
-    def setup_method(self):
-        """Setup test fixtures."""
-        self.scheduler = VarianceSchedulerSDE(num_steps=100)
-        self.batch_size = 4
-        self.channels = 3
-        self.height = 32
-        self.width = 32
+    @pytest.fixture
+    def forward_vp(self, scheduler):
+        return ForwardSDE(scheduler, method="vp")
 
-    def test_init(self):
-        """Test initialization."""
-        for method in ["ve", "vp", "sub-vp", "ode"]:
-            forward_sde = ForwardSDE(self.scheduler, method)
-            assert forward_sde.sde_method == method
+    @pytest.fixture
+    def forward_ve(self, scheduler):
+        return ForwardSDE(scheduler, method="ve", sigma_min=0.01, sigma_max=50.0)
 
-        with pytest.raises(ValueError):
-            ForwardSDE(self.scheduler, "invalid_method")
+    @pytest.fixture
+    def forward_subvp(self, scheduler):
+        return ForwardSDE(scheduler, method="sub-vp")
 
-    def test_forward_ve(self):
-        """Test VE forward process."""
-        forward_sde = ForwardSDE(self.scheduler, "ve")
-        x0 = torch.randn(self.batch_size, self.channels, self.height, self.width)
-        noise = torch.randn_like(x0)
-        time_steps = torch.randint(0, 100, (self.batch_size,))
+    @pytest.fixture
+    def forward_ode(self, scheduler):
+        return ForwardSDE(scheduler, method="ode")
 
-        xt = forward_sde(x0, noise, time_steps)
-        assert xt.shape == x0.shape
+    def test_initialization_valid(self, scheduler):
+        """Test valid initialization"""
+        forward = ForwardSDE(scheduler, method="vp")
+        assert forward.method == "vp"
 
-    def test_forward_vp(self):
-        """Test VP forward process."""
-        forward_sde = ForwardSDE(self.scheduler, "vp")
-        x0 = torch.randn(self.batch_size, self.channels, self.height, self.width)
-        noise = torch.randn_like(x0)
-        time_steps = torch.randint(0, 100, (self.batch_size,))
+    def test_initialization_invalid_method(self, scheduler):
+        """Test invalid method raises error"""
+        with pytest.raises(ValueError, match="sde_method must be one of"):
+            ForwardSDE(scheduler, method="invalid")
 
-        xt = forward_sde(x0, noise, time_steps)
-        assert xt.shape == x0.shape
+    def test_output_shapes(self, forward_vp):
+        """Test output shapes match input shapes"""
+        batch_size = 16
+        dim = 64
+        x0 = torch.randn(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+        t = torch.rand(batch_size)
+        xt, score = forward_vp(x0, noise, t)
+        assert xt.shape == (batch_size, dim)
+        assert score.shape == (batch_size, dim)
 
-    def test_forward_sub_vp(self):
-        """Test sub-VP forward process."""
-        forward_sde = ForwardSDE(self.scheduler, "sub-vp")
-        x0 = torch.randn(self.batch_size, self.channels, self.height, self.width)
-        noise = torch.randn_like(x0)
-        time_steps = torch.randint(0, 100, (self.batch_size,))
+    def test_forward_marginal_mean_vp(self, forward_vp, scheduler):
+        """Test VP forward marginal has correct mean"""
+        batch_size = 1000
+        dim = 64
+        x0 = torch.randn(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+        t = torch.ones(batch_size) * 0.5
+        xt, _ = forward_vp(x0, noise, t)
+        mean_coeff, _ = forward_vp.get_forward_params(t[:1])
+        expected_mean = mean_coeff.item() * x0.mean(dim=0)
+        actual_mean = xt.mean(dim=0)
+        assert torch.allclose(actual_mean, expected_mean, atol=0.5)
 
-        xt = forward_sde(x0, noise, time_steps)
-        assert xt.shape == x0.shape
+    def test_forward_marginal_variance_vp(self, forward_vp, scheduler):
+        """Test VP forward marginal has correct variance"""
+        batch_size = 10000
+        dim = 1
+        x0 = torch.zeros(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+        t = torch.ones(batch_size) * 0.5
+        xt, _ = forward_vp(x0, noise, t)
+        _, std = forward_vp.get_forward_params(t[:1])
+        expected_var = std.item() ** 2
+        actual_var = xt.var().item()
 
-    def test_forward_ode(self):
-        """Test ODE forward process."""
-        forward_sde = ForwardSDE(self.scheduler, "ode")
-        x0 = torch.randn(self.batch_size, self.channels, self.height, self.width)
-        noise = torch.randn_like(x0)
-        time_steps = torch.randint(0, 100, (self.batch_size,))
+        assert abs(actual_var - expected_var) < 0.1  # Within 0.1 tolerance
 
-        xt = forward_sde(x0, noise, time_steps)
-        assert xt.shape == x0.shape
+    def test_score_computation(self, forward_vp):
+        """Test score = -ε / σ(t)"""
+        batch_size = 16
+        dim = 64
+        x0 = torch.randn(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+        t = torch.rand(batch_size)
+        _, score = forward_vp(x0, noise, t)
+        _, std = forward_vp.get_forward_params(t)
+        std = forward_vp._broadcast_to_shape(std, x0.shape)
+        expected_score = -noise / (std + forward_vp.eps)
+        assert torch.allclose(score, expected_score, atol=1e-6)
+
+    def test_ve_mean_preserved(self, forward_ve):
+        """Test VE-SDE preserves mean (mean_coeff = 1)"""
+        batch_size = 16
+        dim = 64
+        x0 = torch.randn(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+        t = torch.rand(batch_size)
+        mean_coeff, _ = forward_ve.get_forward_params(t)
+        assert torch.allclose(mean_coeff, torch.ones_like(mean_coeff))
+
+    def test_ve_variance_grows(self, forward_ve):
+        """Test VE-SDE variance grows with time"""
+        t = torch.linspace(0.1, 1, 100)
+        _, std_vals = forward_ve.get_forward_params(t)
+        assert torch.all(std_vals[1:] >= std_vals[:-1])
+
+    def test_subvp_mean_preserved(self, forward_subvp):
+        """Test Sub-VP-SDE preserves mean"""
+        batch_size = 16
+        dim = 64
+        x0 = torch.randn(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+        t = torch.rand(batch_size)
+        mean_coeff, _ = forward_subvp.get_forward_params(t)
+        assert torch.allclose(mean_coeff, torch.ones_like(mean_coeff))
+
+    def test_ode_same_marginals_as_vp(self, forward_ode, forward_vp):
+        """Test ODE has same marginals as VP-SDE"""
+        t = torch.linspace(0, 1, 100)
+
+        mean_ode, std_ode = forward_ode.get_forward_params(t)
+        mean_vp, std_vp = forward_vp.get_forward_params(t)
+        assert torch.allclose(mean_ode, mean_vp, atol=1e-6)
+        assert torch.allclose(std_ode, std_vp, atol=1e-6)
+
+    def test_t0_no_noise(self, forward_vp):
+        """Test at t=0, x_t = x_0 (no noise)"""
+        batch_size = 16
+        dim = 64
+        x0 = torch.randn(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+        t = torch.zeros(batch_size)
+        xt, _ = forward_vp(x0, noise, t)
+        assert torch.allclose(xt, x0, atol=1e-5)
 
 
 class TestReverseSDE:
-    """Test cases for ReverseSDE class."""
-
-    def setup_method(self):
-        """Setup test fixtures."""
-        self.scheduler = VarianceSchedulerSDE(num_steps=100)
-        self.batch_size = 4
-        self.channels = 3
-        self.height = 32
-        self.width = 32
-
-    def test_init(self):
-        """Test initialization."""
-        for method in ["ve", "vp", "sub-vp", "ode"]:
-            reverse_sde = ReverseSDE(self.scheduler, method)
-            assert reverse_sde.sde_method == method
-
-        with pytest.raises(ValueError):
-            ReverseSDE(self.scheduler, "invalid_method")
-
-    def test_reverse_ve(self):
-        """Test VE reverse process."""
-        reverse_sde = ReverseSDE(self.scheduler, "ve")
-        xt = torch.randn(self.batch_size, self.channels, self.height, self.width)
-        noise = torch.randn_like(xt)
-        predicted_noise = torch.randn_like(xt)
-        time_steps = torch.randint(1, 100, (self.batch_size,))
-
-        xt_prev = reverse_sde(xt, noise, predicted_noise, time_steps)
-        assert xt_prev.shape == xt.shape
-
-    def test_reverse_vp(self):
-        """Test VP reverse process."""
-        reverse_sde = ReverseSDE(self.scheduler, "vp")
-        xt = torch.randn(self.batch_size, self.channels, self.height, self.width)
-        noise = torch.randn_like(xt)
-        predicted_noise = torch.randn_like(xt)
-        time_steps = torch.randint(0, 100, (self.batch_size,))
-
-        xt_prev = reverse_sde(xt, noise, predicted_noise, time_steps)
-        assert xt_prev.shape == xt.shape
-
-    def test_reverse_sub_vp(self):
-        """Test sub-VP reverse process."""
-        reverse_sde = ReverseSDE(self.scheduler, "sub-vp")
-        xt = torch.randn(self.batch_size, self.channels, self.height, self.width)
-        noise = torch.randn_like(xt)
-        predicted_noise = torch.randn_like(xt)
-        time_steps = torch.randint(0, 100, (self.batch_size,))
-
-        xt_prev = reverse_sde(xt, noise, predicted_noise, time_steps)
-        assert xt_prev.shape == xt.shape
-
-    def test_reverse_ode(self):
-        """Test ODE reverse process."""
-        reverse_sde = ReverseSDE(self.scheduler, "ode")
-        xt = torch.randn(self.batch_size, self.channels, self.height, self.width)
-        noise = None  # ODE doesn't use noise
-        predicted_noise = torch.randn_like(xt)
-        time_steps = torch.randint(0, 100, (self.batch_size,))
-
-        xt_prev = reverse_sde(xt, noise, predicted_noise, time_steps)
-        assert xt_prev.shape == xt.shape
-
-
-class TestTrainSDE:
-    """Test cases for TrainSDE class."""
-
-    def setup_method(self):
-        """Setup test fixtures."""
-
-        # Create simple models for testing
-        class SimpleNoisePredictor(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.conv = nn.Conv2d(3, 3, 3, padding=1)
-
-            def forward(self, x, t, y=None, mask=None):
-                return self.conv(x)
-
-        class SimpleConditionalModel(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.embed = nn.Linear(77, 64)
-
-            def forward(self, input_ids, attention_mask=None):
-                return self.embed(input_ids.float())
-
-        # Create test data
-        self.batch_size = 4
-        self.channels = 3
-        self.height = 32
-        self.width = 32
-
-        x_data = torch.randn(20, self.channels, self.height, self.width)
-        y_data = torch.randint(0, 10, (20,))
-        dataset = TensorDataset(x_data, y_data)
-        self.data_loader = DataLoader(dataset, batch_size=self.batch_size)
-
-        # Create components
-        self.scheduler = VarianceSchedulerSDE(num_steps=10)
-        self.forward_sde = ForwardSDE(self.scheduler, "vp")
-        self.reverse_sde = ReverseSDE(self.scheduler, "vp")
-        self.noise_predictor = SimpleNoisePredictor()
-        self.conditional_model = SimpleConditionalModel()
-        self.optimizer = torch.optim.Adam(
-            list(self.noise_predictor.parameters()) +
-            list(self.conditional_model.parameters()),
-            lr=1e-4
-        )
-        self.objective = nn.MSELoss()
-
-    def test_init(self):
-        """Test initialization."""
-        trainer = TrainSDE(
-            noise_predictor=self.noise_predictor,
-            forward_diffusion=self.forward_sde,
-            reverse_diffusion=self.reverse_sde,
-            data_loader=self.data_loader,
-            optimizer=self.optimizer,
-            objective=self.objective,
-            conditional_model=self.conditional_model,
-            max_epochs=2
-        )
-
-        assert trainer is not None
-
-
-    @patch('sde.TrainSDE._setup_ddp')
-    def test_ddp_setup(self, mock_setup_ddp):
-        trainer = TrainSDE(
-            noise_predictor=self.noise_predictor,
-            forward_diffusion=self.forward_sde,
-            reverse_diffusion=self.reverse_sde,
-            data_loader=self.data_loader,
-            optimizer=self.optimizer,
-            objective=self.objective,
-            use_ddp=True
-        )
-
-        mock_setup_ddp.assert_called_once()
-
-
-    def test_single_gpu_setup(self):
-        """Test single GPU setup."""
-        trainer = TrainSDE(
-            noise_predictor=self.noise_predictor,
-            forward_diffusion=self.forward_sde,
-            reverse_diffusion=self.reverse_sde,
-            data_loader=self.data_loader,
-            optimizer=self.optimizer,
-            objective=self.objective,
-            use_ddp=False
-        )
-
-        assert trainer.ddp_rank == 0
-        assert trainer.ddp_local_rank == 0
-        assert trainer.ddp_world_size == 1
-        assert trainer.master_process
-
-    def test_warmup_scheduler(self):
-        """Test warmup scheduler creation."""
-        trainer = TrainSDE(
-            noise_predictor=self.noise_predictor,
-            forward_diffusion=self.forward_sde,
-            reverse_diffusion=self.reverse_sde,
-            data_loader=self.data_loader,
-            optimizer=self.optimizer,
-            objective=self.objective
-        )
-
-        scheduler = trainer.warmup_scheduler(self.optimizer, 10)
-        assert scheduler is not None
-
-    def test_process_conditional_input(self):
-        """Test conditional input processing."""
-        trainer = TrainSDE(
-            noise_predictor=self.noise_predictor,
-            forward_diffusion=self.forward_sde,
-            reverse_diffusion=self.reverse_sde,
-            data_loader=self.data_loader,
-            optimizer=self.optimizer,
-            objective=self.objective,
-            conditional_model=self.conditional_model
-        )
-
-        # Test with tensor input
-        y_tensor = torch.tensor([1, 2, 3, 4])
-        y_encoded = trainer._process_conditional_input(y_tensor)
-        assert y_encoded is not None
-
-        # Test with list input
-        y_list = ["test1", "test2", "test3", "test4"]
-        y_encoded = trainer._process_conditional_input(y_list)
-        assert y_encoded is not None
-
-    def test_save_checkpoint(self):
-        """Test checkpoint saving."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            trainer = TrainSDE(
-                noise_predictor=self.noise_predictor,
-                forward_diffusion=self.forward_sde,
-                reverse_diffusion=self.reverse_sde,
-                data_loader=self.data_loader,
-                optimizer=self.optimizer,
-                objective=self.objective,
-                store_path=temp_dir
-            )
-
-            trainer._save_checkpoint(1, 0.5)
-
-            # Check if file was created
-            files = os.listdir(temp_dir)
-            assert any(f.startswith("sde_epoch_1") for f in files)
-
-    def test_validate(self):
-        """Test validation method."""
-        # Mock metrics
-        mock_metrics = Mock()
-        mock_metrics.forward.return_value = (1.0, 0.1, 25.0, 0.8, 0.2)
-        mock_metrics.fid = True
-        mock_metrics.metrics = True
-        mock_metrics.lpips = True
-
-        trainer = TrainSDE(
-            noise_predictor=self.noise_predictor,
-            forward_diffusion=self.forward_sde,
-            reverse_diffusion=self.reverse_sde,
-            data_loader=self.data_loader,
-            optimizer=self.optimizer,
-            objective=self.objective,
-            val_loader=self.data_loader,
-            metrics_=mock_metrics
-        )
-
-        val_loss, fid, mse, psnr, ssim, lpips = trainer.validate()
-
-        assert isinstance(val_loss, float)
-        assert isinstance(fid, float)
-        assert isinstance(mse, float)
-        assert isinstance(psnr, float)
-        assert isinstance(ssim, float)
-        assert isinstance(lpips, float)
-
-
-class TestSampleSDE:
-    """Test cases for SampleSDE class."""
-
-    def setup_method(self):
-        """Setup test fixtures."""
-
-        # Create simple models for testing
-        class SimpleNoisePredictor(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.conv = nn.Conv2d(3, 3, 3, padding=1)
-
-            def forward(self, x, t, y=None):
-                return self.conv(x)
-
-        class SimpleConditionalModel(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.embed = nn.Linear(77, 64)
-
-            def forward(self, input_ids, attention_mask=None):
-                return self.embed(input_ids.float())
-
-        # Create components
-        self.scheduler = VarianceSchedulerSDE(num_steps=10)
-        self.reverse_sde = ReverseSDE(self.scheduler, "vp")
-        self.noise_predictor = SimpleNoisePredictor()
-        self.conditional_model = SimpleConditionalModel()
-
-    def test_init(self):
-        """Test initialization."""
-        sampler = SampleSDE(
-            reverse_diffusion=self.reverse_sde,
-            noise_predictor=self.noise_predictor,
-            image_shape=(32, 32)
-        )
-
-        assert sampler is not None
-
-    def test_tokenize(self):
-        """Test tokenization method."""
-        sampler = SampleSDE(
-            reverse_diffusion=self.reverse_sde,
-            noise_predictor=self.noise_predictor,
-            image_shape=(32, 32),
-            conditional_model=self.conditional_model
-        )
-
-        # Test with single prompt
-        input_ids, attention_mask = sampler.tokenize("a test prompt")
-        assert input_ids.shape[0] == 1
-        assert attention_mask.shape[0] == 1
-
-        # Test with multiple prompts
-        input_ids, attention_mask = sampler.tokenize(["prompt1", "prompt2"])
-        assert input_ids.shape[0] == 2
-        assert attention_mask.shape[0] == 2
-
-    def test_forward_unconditional(self):
-        """Test unconditional sampling."""
-        sampler = SampleSDE(
-            reverse_diffusion=self.reverse_sde,
-            noise_predictor=self.noise_predictor,
-            image_shape=(32, 32),
-            batch_size=2
-        )
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            images = sampler.forward(
-                conditions=None,
-                save_images=True,
-                save_path=temp_dir
-            )
-
-            assert images.shape == (2, 3, 32, 32)
-            assert torch.all(images >= 0) and torch.all(images <= 1)  # Normalized
-
-            # Check if images were saved
-            files = os.listdir(temp_dir)
-            assert len(files) == 2
-
-    def test_forward_conditional(self):
-        """Test conditional sampling."""
-        sampler = SampleSDE(
-            reverse_diffusion=self.reverse_sde,
-            noise_predictor=self.noise_predictor,
-            image_shape=(32, 32),
-            conditional_model=self.conditional_model,
-            batch_size=2
-        )
-
-        images = sampler.forward(
-            conditions=["a cat", "a dog"],
-            save_images=False
-        )
-
-        assert images.shape == (2, 3, 32, 32)
-
-    def test_to_device(self):
-        """Test device movement."""
-        sampler = SampleSDE(
-            reverse_diffusion=self.reverse_sde,
-            noise_predictor=self.noise_predictor,
-            image_shape=(32, 32)
-        )
-
-        # Move to CPU if CUDA is available, otherwise test stays on CPU
-        target_device = torch.device("cpu")
-        sampler = sampler.to(target_device)
-
-        assert sampler.device == target_device
-        assert next(sampler.noise_predictor.parameters()).device == target_device
-        assert next(sampler.reverse.parameters()).device == target_device
-
-
-def test_integration():
-    """Integration test with the provided usage code."""
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Create simple test data
-    x_data = torch.randn(20, 3, 32, 32)
-    y_data = torch.randint(0, 10, (20,))
-    dataset = torch.utils.data.TensorDataset(x_data, y_data)
-    train_loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=False)
-
-    # Initialize models with smaller parameters for testing
-    noise_predictor = NoisePredictor(
-        in_channels=3,
-        down_channels=[8, 16],  # Reduced channels for testing
-        mid_channels=[16, 16],
-        up_channels=[16, 8],
-        down_sampling=[True, False],  # Only one downsampling for small images
-        time_embed_dim=32,
-        y_embed_dim=32,
-        num_down_blocks=1,
-        num_mid_blocks=1,
-        num_up_blocks=1,
-        down_sampling_factor=2
-    ).to(device)
-
-    text_encoder = TextEncoder(
-        use_pretrained_model=False,  # Don't use pretrained for faster testing
-        model_name="bert-base-uncased",
-        vocabulary_size=100,  # Smaller vocabulary
-        num_layers=1,  # Fewer layers
-        input_dimension=32,
-        output_dimension=32,
-        num_heads=2,
-        context_length=10  # Shorter context
-    ).to(device)
-
-    # Optimizer and loss
-    optimizer = torch.optim.Adam(
-        [p for p in noise_predictor.parameters() if p.requires_grad] +
-        [p for p in text_encoder.parameters() if p.requires_grad],
-        lr=1e-4
-    )
-    loss = nn.MSELoss()
-
-    # SDE hyperparameters with fewer steps
-    hyperparams_sde = VarianceSchedulerSDE(
-        num_steps=10,  # Fewer steps for testing
-        beta_start=1e-4,
-        beta_end=0.02,
-        trainable_beta=False,
-        sigma_start=1e-3,
-        sigma_end=10.0,
-        start=0.0,
-        end=1.0,
-        beta_method="linear"
-    )
-
-    # Forward and reverse SDE
-    forward_sde = ForwardSDE(variance_scheduler=hyperparams_sde, sde_method="vp")
-    reverse_sde = ReverseSDE(variance_scheduler=hyperparams_sde, sde_method="vp")
-
-    # TrainSDE with minimal settings
-    with tempfile.TemporaryDirectory() as temp_dir:
-        trainer = TrainSDE(
-            noise_predictor=noise_predictor,
-            forward_diffusion=forward_sde,
-            reverse_diffusion=reverse_sde,
-            data_loader=train_loader,
-            optimizer=optimizer,
-            objective=loss,
-            val_loader=val_loader,
-            max_epochs=2,  # Just 2 epochs for testing
-            device=device,
-            conditional_model=text_encoder,
-            metrics_=None,  # No metrics for faster testing
-            store_path=temp_dir,
-            val_frequency=1,
-            use_ddp=False,
-            grad_accumulation_steps=1,
-            log_frequency=1,
-            use_compilation=False
-        )
-
-        # Test training
-        train_losses, best_val_loss = trainer()
-        assert len(train_losses) >= 0  # Could be empty if early stopping
-        assert isinstance(best_val_loss, float)
-
-        # Test sampling
-        sampler = SampleSDE(
-            reverse_diffusion=reverse_sde,
-            noise_predictor=noise_predictor,
-            image_shape=(32, 32),
-            conditional_model=text_encoder,
-            tokenizer="bert-base-uncased",
-            max_token_length=10,  # Shorter for testing
-            batch_size=2,
-            in_channels=3,
-            device=device,
-            image_output_range=(-1.0, 1.0)
-        )
-
-        # Test with class names
-        class_names = ['airplane', 'automobile']
-        images = sampler(class_names, save_images=False)
-        assert images.shape == (2, 3, 32, 32)
+    """Tests for ReverseSDE"""
+
+    @pytest.fixture
+    def scheduler(self):
+        return SchedulerSDE(schedule_type="linear", beta_min=0.1, beta_max=20.0)
+
+    @pytest.fixture
+    def reverse_vp(self, scheduler):
+        return ReverseSDE(scheduler, method="vp")
+
+    @pytest.fixture
+    def reverse_ode(self, scheduler):
+        return ReverseSDE(scheduler, method="ode")
+
+    def test_initialization_valid(self, scheduler):
+        """Test valid initialization"""
+        reverse = ReverseSDE(scheduler, method="vp")
+        assert reverse.method == "vp"
+
+    def test_negative_dt_required(self, reverse_vp):
+        """Test that positive dt raises assertion error"""
+        xt = torch.randn(16, 64)
+        score = torch.randn(16, 64)
+        t = torch.rand(16)
+        dt = 0.01
+
+        with pytest.raises(AssertionError, match="dt must be negative"):
+            reverse_vp(xt, score, t, dt)
+
+    def test_negative_dt_accepted(self, reverse_vp):
+        """Test that negative dt works"""
+        xt = torch.randn(16, 64)
+        score = torch.randn(16, 64)
+        t = torch.rand(16)
+        dt = -0.01
+        x_prev = reverse_vp(xt, score, t, dt)
+        assert x_prev.shape == xt.shape
+
+    def test_output_shape(self, reverse_vp):
+        """Test output shape matches input"""
+        batch_size = 16
+        dim = 64
+        xt = torch.randn(batch_size, dim)
+        score = torch.randn(batch_size, dim)
+        t = torch.rand(batch_size)
+        dt = -0.01
+        x_prev = reverse_vp(xt, score, t, dt)
+        assert x_prev.shape == (batch_size, dim)
+
+    def test_ode_deterministic(self, reverse_ode):
+        """Test ODE produces deterministic output (no randomness)"""
+        torch.manual_seed(42)
+        xt = torch.randn(16, 64)
+        score = torch.randn(16, 64)
+        t = torch.rand(16)
+        dt = -0.01
+        x_prev_1 = reverse_ode(xt, score, t, dt)
+        x_prev_2 = reverse_ode(xt, score, t, dt)
+        assert torch.allclose(x_prev_1, x_prev_2, atol=1e-7)
+
+    def test_sde_stochastic(self, reverse_vp):
+        """Test SDE produces stochastic output"""
+        torch.manual_seed(42)
+        xt = torch.randn(16, 64)
+        score = torch.randn(16, 64)
+        t = torch.rand(16)
+        dt = -0.01
+        x_prev_1 = reverse_vp(xt, score, t, dt)
+        torch.manual_seed(43)
+        x_prev_2 = reverse_vp(xt, score, t, dt)
+        assert not torch.allclose(x_prev_1, x_prev_2, atol=1e-5)
+
+    def test_last_step_deterministic(self, reverse_vp):
+        """Test last_step=True makes output deterministic"""
+        torch.manual_seed(42)
+        xt = torch.randn(16, 64)
+        score = torch.randn(16, 64)
+        t = torch.rand(16)
+        dt = -0.01
+        x_prev_1 = reverse_vp(xt, score, t, dt, last_step=True)
+        x_prev_2 = reverse_vp(xt, score, t, dt, last_step=True)
+        assert torch.allclose(x_prev_1, x_prev_2, atol=1e-7)
+
+    def test_vp_drift_coefficients(self, reverse_vp, scheduler):
+        """Test VP-SDE drift coefficient is -0.5 * β(t)"""
+        t = torch.rand(16)
+        drift_coeff, g_squared, diffusion_coeff = reverse_vp.get_reverse_coeffs(t)
+        expected_drift = -0.5 * scheduler.beta(t)
+        expected_g_sq = scheduler.beta(t)
+        assert torch.allclose(drift_coeff, expected_drift, atol=1e-6)
+        assert torch.allclose(g_squared, expected_g_sq, atol=1e-6)
+
+    def test_diffusion_coeff_sqrt_relationship(self, reverse_vp):
+        """Test diffusion_coeff = √(g²)"""
+        t = torch.rand(16)
+        drift_coeff, g_squared, diffusion_coeff = reverse_vp.get_reverse_coeffs(t)
+        assert torch.allclose(diffusion_coeff ** 2, g_squared, atol=1e-6)
+
+    def test_tensor_dt_conversion(self, reverse_vp):
+        """Test that scalar dt is converted to tensor"""
+        xt = torch.randn(16, 64)
+        score = torch.randn(16, 64)
+        t = torch.rand(16)
+        dt = -0.01
+        x_prev = reverse_vp(xt, score, t, dt)
+        assert x_prev.shape == xt.shape
+
+
+class TestIntegration:
+    """Integration tests across multiple components"""
+    @pytest.fixture
+    def scheduler(self):
+        return SchedulerSDE(schedule_type="linear", beta_min=0.1, beta_max=20.0)
+    @pytest.fixture
+    def forward_vp(self, scheduler):
+        return ForwardSDE(scheduler, method="vp")
+    @pytest.fixture
+    def reverse_vp(self, scheduler):
+        return ReverseSDE(scheduler, method="vp")
+
+    def test_forward_backward_consistency(self, forward_vp, reverse_vp):
+        """Test that forward then backward (with true score) approximately recovers x0"""
+        batch_size = 4
+        dim = 32
+        torch.manual_seed(42)
+        x0 = torch.randn(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+        t = torch.ones(batch_size) * 0.1
+        xt, true_score = forward_vp(x0, noise, t)
+        forward_ode = ForwardSDE(forward_vp.vs, method="ode")
+        reverse_ode = ReverseSDE(reverse_vp.vs, method="ode")
+
+        dt = -0.01
+        num_steps = int(t[0].item() / abs(dt))
+        x_curr = xt.clone()
+        t_curr = t.clone()
+
+        for i in range(num_steps):
+            mean_coeff, std = forward_ode.get_forward_params(t_curr)
+            mean_coeff = forward_ode._broadcast_to_shape(mean_coeff, x0.shape)
+            std = forward_ode._broadcast_to_shape(std, x0.shape)
+            epsilon = (x_curr - mean_coeff * x0) / std
+            score_curr = -epsilon / (std + 1e-8)
+            x_curr = reverse_ode(x_curr, score_curr, t_curr, dt, last_step=(i == num_steps - 1))
+            t_curr = torch.clamp(t_curr + dt, min=0.0)
+        recovery_error = torch.norm(x_curr - x0).item() / torch.norm(x0).item()
+        assert recovery_error < 0.3
+
+    def test_ode_deterministic_sampling(self, scheduler):
+        """Test ODE sampling is deterministic and can reverse reasonably well"""
+        forward_ode = ForwardSDE(scheduler, method="ode")
+        reverse_ode = ReverseSDE(scheduler, method="ode")
+
+        batch_size = 8
+        dim = 16
+        torch.manual_seed(42)
+        x0 = torch.randn(batch_size, dim)
+        t_forward = torch.ones(batch_size) * 0.2
+        noise = torch.randn(batch_size, dim)
+        xt, true_score = forward_ode(x0, noise, t_forward)
+
+        dt = -0.01
+        num_steps = int(t_forward[0].item() / abs(dt))
+        x_curr = xt.clone()
+        t_curr = t_forward.clone()
+
+        for i in range(num_steps):
+            mean_coeff, std = forward_ode.get_forward_params(t_curr)
+            mean_coeff = forward_ode._broadcast_to_shape(mean_coeff, x0.shape)
+            std = forward_ode._broadcast_to_shape(std, x0.shape)
+
+            epsilon = (x_curr - mean_coeff * x0) / std
+            score_curr = -epsilon / (std + 1e-8)
+
+            x_curr = reverse_ode(x_curr, score_curr, t_curr, dt)
+            t_curr = torch.clamp(t_curr + dt, min=0.0)
+
+        recovery_error = torch.norm(x_curr - x0).item() / torch.norm(x0).item()
+        assert recovery_error < 1.0
+
+        torch.manual_seed(42)
+        x0_2 = torch.randn(batch_size, dim)
+        noise_2 = torch.randn(batch_size, dim)
+        xt_2, _ = forward_ode(x0_2, noise_2, t_forward)
+        x_out_1 = reverse_ode(xt_2, true_score, t_forward, -0.01)
+        x_out_2 = reverse_ode(xt_2, true_score, t_forward, -0.01)
+        assert torch.allclose(x_out_1, x_out_2, atol=1e-7)
+
+    def test_score_matching_objective(self, forward_vp):
+        """Test that the true score satisfies score matching"""
+        batch_size = 16
+        dim = 64
+        x0 = torch.randn(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+        t = torch.rand(batch_size)
+
+        xt, true_score = forward_vp(x0, noise, t)
+        mean_coeff, std = forward_vp.get_forward_params(t)
+        mean_coeff = forward_vp._broadcast_to_shape(mean_coeff, x0.shape)
+        std = forward_vp._broadcast_to_shape(std, x0.shape)
+
+        expected_score = -noise / std
+        assert torch.allclose(true_score, expected_score, atol=1e-5)
+
+    def test_variance_explosion_growth(self):
+        
+        scheduler = SchedulerSDE(schedule_type="linear")
+        forward_ve = ForwardSDE(scheduler, method="ve", sigma_min=0.01, sigma_max=50.0)
+
+        batch_size = 10000
+        dim = 1
+        x0 = torch.ones(batch_size, dim) * 5.0  # Non-zero mean
+        variances = []
+        means = []
+
+        for t_val in [0.0, 0.25, 0.5, 0.75, 1.0]:
+            t = torch.ones(batch_size) * t_val
+            noise = torch.randn(batch_size, dim)
+            noise -= noise.mean(dim=0, keepdim=True)
+            xt, _ = forward_ve(x0, noise, t)
+
+            means.append(xt.mean().item())
+            variances.append(xt.var().item())
+
+        for mean in means:
+            assert abs(mean - 5.0) < 0.2
+
+        for i in range(len(variances) - 1):
+            assert variances[i + 1] > variances[i]
+
+
+    def test_sub_vp_properties(self):
+        """Test Sub-VP preserves mean and has variance < 1"""
+        scheduler = SchedulerSDE(schedule_type="linear")
+        forward_subvp = ForwardSDE(scheduler, method="sub-vp")
+
+        batch_size = 1000
+        dim = 8
+        x0 = torch.randn(batch_size, dim) * 2.0
+        noise = torch.randn(batch_size, dim)
+        t = torch.ones(batch_size) * 0.5
+
+        xt, score = forward_subvp(x0, noise, t)
+
+        mean_coeff, std = forward_subvp.get_forward_params(t[:1])
+        assert torch.isclose(mean_coeff, torch.tensor(1.0), atol=1e-6)
+        assert std.item() < 1.0
+
+    def test_all_methods_valid_scores(self, scheduler):
+        """Test all SDE methods produce valid scores (no NaN/Inf)"""
+        methods = ["vp", "ve", "sub-vp", "ode"]
+
+        for method in methods:
+            if method == "ve":
+                forward_sde = ForwardSDE(scheduler, method=method, sigma_min=0.01, sigma_max=50.0)
+            else:
+                forward_sde = ForwardSDE(scheduler, method=method)
+
+            batch_size = 16
+            dim = 32
+            x0 = torch.randn(batch_size, dim)
+            noise = torch.randn(batch_size, dim)
+            t = torch.rand(batch_size) * 0.9 + 0.05
+            xt, score = forward_sde(x0, noise, t)
+            assert not torch.isnan(xt).any(), f"NaN in xt for method {method}"
+            assert not torch.isinf(xt).any(), f"Inf in xt for method {method}"
+            assert not torch.isnan(score).any(), f"NaN in score for method {method}"
+            assert not torch.isinf(score).any(), f"Inf in score for method {method}"
+
+    def test_reverse_time_direction(self, scheduler):
+        """Test that reverse process actually moves backward in time"""
+        reverse_vp = ReverseSDE(scheduler, method="vp")
+
+        batch_size = 16
+        dim = 32
+        xt = torch.randn(batch_size, dim)
+        score = torch.randn(batch_size, dim)
+        t = torch.ones(batch_size) * 0.8
+        dt = -0.1
+        x_prev = reverse_vp(xt, score, t, dt)
+        assert not torch.allclose(x_prev, xt, atol=1e-5)
+        t_new = t + dt
+        assert torch.allclose(t_new, torch.ones(batch_size) * 0.7)
+
+    def test_numerical_stability_near_boundaries(self, forward_vp, reverse_vp):
+        """Test numerical stability near t=0 and t=1"""
+        batch_size = 8
+        dim = 16
+        x0 = torch.randn(batch_size, dim)
+        noise = torch.randn(batch_size, dim)
+
+        t_small = torch.ones(batch_size) * 1e-5
+        xt_small, score_small = forward_vp(x0, noise, t_small)
+        assert not torch.isnan(xt_small).any()
+        assert not torch.isnan(score_small).any()
+
+        t_large = torch.ones(batch_size) * (1.0 - 1e-5)
+        xt_large, score_large = forward_vp(x0, noise, t_large)
+        assert not torch.isnan(xt_large).any()
+        assert not torch.isnan(score_large).any()
+        x_prev = reverse_vp(xt_large, score_large, t_large, -0.001)
+        assert not torch.isnan(x_prev).any()
 
 
 if __name__ == "__main__":
-    # Run tests
-    pytest.main([__file__, "-v"])
+    pytest.main([__file__, "-v", "--tb=short"])
+
+
