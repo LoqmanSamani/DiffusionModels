@@ -1,19 +1,16 @@
-"""Image generation using a trained Denoising Diffusion Probabilistic Model (DDPM).
-
-This module implements the sampling process for generating images with a trained DDPM
-model, as described in Ho et al. (2020, "Denoising Diffusion Probabilistic Models").
-It supports both unconditional and conditional generation with text prompts.
-"""
-
-
 import torch
 import torch.nn as nn
+from typing import Optional, Tuple, List, Union, Self
+from tqdm import tqdm
 from transformers import BertTokenizer
+from torchvision.utils import save_image
+import os
+
 
 
 
 class SampleDDPM(nn.Module):
-    """Image generation using a trained DDPM model.
+    """mage generation using a trained Denoising Diffusion Probabilistic Model (DDPM).
 
     Implements the sampling process for DDPM, generating images by iteratively
     denoising random noise using a trained noise predictor and reverse diffusion
@@ -22,17 +19,17 @@ class SampleDDPM(nn.Module):
 
     Parameters
     ----------
-    reverse_diffusion : nn.Module
+    rwd_ddpm : nn.Module
         Reverse diffusion module (e.g., ReverseDDPM) for the reverse process.
-    noise_predictor : nn.Module
+    diff_net : nn.Module
         Trained model to predict noise at each time step.
-    image_shape : tuple
+    img_size : tuple
         Tuple of (height, width) specifying the generated image dimensions.
-    conditional_model : nn.Module, optional
+    cond_model : nn.Module, optional
         Model for conditional generation (e.g., text embeddings), default None.
     tokenizer : str, optional
         Pretrained tokenizer name from Hugging Face (default: "bert-base-uncased").
-    max_length : int, optional
+    max_token_length : int, optional
         Maximum length for tokenized prompts (default: 77).
     batch_size : int, optional
         Number of images to generate per batch (default: 1).
@@ -40,61 +37,45 @@ class SampleDDPM(nn.Module):
         Number of input channels for generated images (default: 3).
     device : torch.device, optional
         Device for computation (default: CUDA if available, else CPU).
-    output_range : tuple, optional
+    norm_range : tuple, optional
         Tuple of (min, max) for clamping generated images (default: (-1, 1)).
-
-    Attributes
-    ----------
-    device : torch.device
-        Device used for computation.
-    reverse : nn.Module
-        Reverse diffusion module.
-    noise_predictor : nn.Module
-        Noise prediction model.
-    conditional_model : nn.Module or None
-        Conditional model for text-based generation, if provided.
-    tokenizer : BertTokenizer
-        Tokenizer for processing text prompts.
-    max_length : int
-        Maximum length for tokenized prompts.
-    in_channels : int
-        Number of input channels.
-    image_shape : tuple
-        Shape of generated images (height, width).
-    batch_size : int
-        Batch size for generation.
-    output_range : tuple
-        Range for clamping generated images.
-
-    Raises
-    ------
-    ValueError
-        If `image_shape` is not a tuple of two positive integers, `batch_size` is not
-        positive, or `output_range` is not a valid (min, max) tuple with min < max.
     """
-    def __init__(self, reverse_diffusion, noise_predictor, image_shape, conditional_model=None, tokenizer="bert-base-uncased",
-                 max_length=77, batch_size=1, in_channels=3, device=None, output_range=(-1, 1)):
+    def __init__(
+            self,
+            rwd_ddpm: torch.nn.Module,
+            diff_net: torch.nn.Module,
+            img_size: Tuple[int, int],
+            cond_model: Optional[torch.nn.Module] = None,
+            tokenizer: str = "bert-base-uncased",
+            max_token_length: int = 77,
+            batch_size: int = 1,
+            in_channels: int = 3,
+            device: Optional[str] = None,
+            norm_range: Tuple[float, float] = (-1.0, 1.0)
+    ) -> None:
         super().__init__()
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.reverse = reverse_diffusion.to(self.device)
-        self.noise_predictor = noise_predictor.to(self.device)
-        self.conditional_model = conditional_model.to(self.device) if conditional_model else None
+        if isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
+        self.rwd_ddpm = rwd_ddpm.to(self.device)
+        self.diff_net = diff_net.to(self.device)
+        self.cond_model = cond_model.to(self.device) if cond_model else None
         self.tokenizer = BertTokenizer.from_pretrained(tokenizer)
-        self.max_length = max_length
+        self.max_token_length = max_token_length
         self.in_channels = in_channels
-        self.image_shape = image_shape
+        self.img_size = img_size
         self.batch_size = batch_size
-        self.output_range = output_range
-
-        if not isinstance(image_shape, (tuple, list)) or len(image_shape) != 2 or not all(
-                isinstance(s, int) and s > 0 for s in image_shape):
-            raise ValueError("image_shape must be a tuple of two positive integers (height, width)")
+        self.norm_range = norm_range
+        if not isinstance(img_size, (tuple, list)) or len(img_size) != 2 or not all(
+                isinstance(s, int) and s > 0 for s in img_size):
+            raise ValueError("image_size must be a tuple of two positive integers (height, width)")
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        if not isinstance(output_range, (tuple, list)) or len(output_range) != 2 or output_range[0] >= output_range[1]:
-            raise ValueError("output_range must be a tuple (min, max) with min < max")
+        if not isinstance(norm_range, (tuple, list)) or len(norm_range) != 2 or norm_range[0] >= norm_range[1]:
+            raise ValueError("norm_range must be a tuple (min, max) with min < max")
 
-    def tokenize(self, prompts):
+    def tokenize(self, prompts: Union[List, str]) -> Tuple[torch.Tensor, torch.Tensor]:
         """Tokenizes text prompts for conditional generation.
 
         Converts input prompts into tokenized input IDs and attention masks using the
@@ -107,15 +88,10 @@ class SampleDDPM(nn.Module):
 
         Returns
         -------
-        tuple
-            A tuple containing:
-            - input_ids: Tokenized input IDs, shape (batch_size, max_length).
-            - attention_mask: Attention mask, shape (batch_size, max_length).
-
-        Raises
-        ------
-        TypeError
-            If `prompts` is not a string or a list of strings.
+        input_ids : torch.Tensor
+             Tokenized input IDs, shape (batch_size, max_length).
+        attention_mask : torch.Tensor
+            Attention mask, shape (batch_size, max_length).
         """
         if isinstance(prompts, str):
             prompts = [prompts]
@@ -125,70 +101,78 @@ class SampleDDPM(nn.Module):
             prompts,
             padding="max_length",
             truncation=True,
-            max_length=self.max_length,
+            max_length=self.max_token_length,
             return_tensors="pt"
         )
         return encoded["input_ids"].to(self.device), encoded["attention_mask"].to(self.device)
 
-    def forward(self, conditions=None, normalize_output=True):
+    def forward(
+            self,
+            conds: Optional[Union[str, List]] = None,
+            norm_output: bool = True,
+            save_imgs: bool = True,
+            save_path: str = "ddpm_samples"
+    ) -> torch.Tensor:
         """Generates images using the DDPM sampling process.
 
         Iteratively denoises random noise to generate images using the reverse diffusion
         process and noise predictor. Supports conditional generation with text prompts.
+        Optionally saves generated images to a specified directory.
 
         Parameters
         ----------
-        conditions : str or list, optional
+        conds : str or list, optional
             Text prompt(s) for conditional generation, default None.
-        normalize_output : bool, optional
+        norm_output : bool, optional
             If True, normalizes output images to [0, 1] (default: True).
+        save_imgs : bool, optional
+            If True, saves generated images to `save_path` (default: True).
+        save_path : str, optional
+            Directory to save generated images (default: "ddpm_generated").
 
         Returns
         -------
-        torch.Tensor
-            Generated images, shape (batch_size, in_channels, height, width).
-            If `normalize_output` is True, images are normalized to [0, 1]; otherwise,
-            they are clamped to `output_range`.
-
-        Raises
-        ------
-        ValueError
-            If `conditions` is provided but no conditional model is specified, or if
-            a conditional model is specified but `conditions` is None.
+        samps (torch.Tensor) - Generated images, shape (batch_size, in_channels, height, width).
+        If `norm_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `norm_range`.
         """
-
-        if conditions is not None and self.conditional_model is None:
+        if conds is not None and self.cond_model is None:
             raise ValueError("Conditions provided but no conditional model specified")
-        if conditions is None and self.conditional_model is not None:
+        if conds is None and self.cond_model is not None:
             raise ValueError("Conditions must be provided for conditional model")
-
-        noisy_samples = torch.randn(self.batch_size, self.in_channels, self.image_shape[0], self.image_shape[1]).to(self.device)
-
-        self.noise_predictor.eval()
-        self.reverse.eval()
-        if self.conditional_model:
-            self.conditional_model.eval()
-
+        init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1], device=self.device)
+        self.diff_net.eval()
+        if self.cond_model:
+            self.cond_model.eval()
+        iterator = tqdm(
+            reversed(range(self.rwd_ddpm.vs.time_steps)),
+            total=self.rwd_ddpm.vs.time_steps,
+            desc="Sampling",
+            dynamic_ncols=True,
+            leave=True,
+        )
+        if self.cond_model is not None and conds is not None:
+            input_ids, attention_masks = self.tokenize(conds)
+            key_padding_mask = (attention_masks == 0)
+            y = self.cond_model(input_ids, key_padding_mask)
+        else:
+            y = None
         with torch.no_grad():
-            xt = noisy_samples
-            for t in reversed(range(self.reverse.hyper_params.num_steps)):
-                time_steps = torch.full((self.batch_size,), t, device=self.device, dtype=torch.long)
-                if self.conditional_model is not None and conditions is not None:
-                    input_ids, attention_masks = self.tokenize(conditions)
-                    key_padding_mask = (attention_masks == 0)
-                    y = self.conditional_model(input_ids, key_padding_mask)
-                    predicted_noise = self.noise_predictor(xt, time_steps, y)
-                else:
-                    predicted_noise = self.noise_predictor(xt, time_steps)
-                xt = self.reverse(xt, predicted_noise, time_steps)
+            xt = init_samps
+            for step in iterator:
+                time_steps = torch.full((self.batch_size,), step, device=self.device, dtype=torch.long)
+                pred = self.diff_net(xt, time_steps, y, clip_embeddings=None)
+                xt, _ = self.rwd_ddpm(xt, pred, time_steps)
+            samps = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
+            if norm_output:
+                samps = (samps - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
+            if save_imgs:
+                os.makedirs(save_path, exist_ok=True)
+                for i in range(samps.size(0)):
+                    img_path = os.path.join(save_path, f"img_{i+1}.png")
+                    save_image(samps[i], img_path)
+        return samps
 
-            generated_imgs = torch.clamp(xt, min=self.output_range[0], max=self.output_range[1])
-            if normalize_output:
-                generated_imgs = (generated_imgs - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
-
-        return generated_imgs
-
-    def to(self, device):
+    def to(self, device: torch.device) -> Self:
         """Moves the module and its components to the specified device.
 
         Updates the device attribute and moves the reverse diffusion, noise predictor,
@@ -201,13 +185,11 @@ class SampleDDPM(nn.Module):
 
         Returns
         -------
-        SampleDDPM
-            The module itself, moved to the specified device.
+        sample_ddpm (SampleDDPM) - moved to the specified device.
         """
         self.device = device
-        self.noise_predictor.to(device)
-        self.reverse.to(device)
-        self.compressor.to(device)
-        if self.conditional_model:
-            self.conditional_model.to(device)
+        self.diff_net.to(device)
+        self.rwd_ddpm.to(device)
+        if self.cond_model:
+            self.cond_model.to(device)
         return super().to(device)

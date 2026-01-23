@@ -44,10 +44,24 @@ import os
 
 
 class ForwardDDPM(nn.Module):
-    """Forward diffusion process for DDPM
-    q(x_t | x_0) = N(x_t; √ᾱ_t x_0, (1 - ᾱ_t)I)
+    """
+    Forward diffusion process for DDPM.
+
+    Implements sampling from the forward noising distribution:
+        q(x_t | x_0) = N(√ᾱ_t x_0, (1 - ᾱ_t) I)
+
+    Also computes the appropriate training target depending on the
+    chosen prediction parameterization (x0 or v).
     """
     def __init__(self, scheduler: nn.Module, pred_type: str = "v") -> None:
+        """
+        Initialize the forward diffusion process.
+
+        Args:
+            scheduler: Noise scheduler providing diffusion coefficients.
+            pred_type: Prediction parameterization.
+                One of {"x0", "v"}.
+        """
         super().__init__()
 
         valid_types = ["noise","x0", "v"]
@@ -63,16 +77,18 @@ class ForwardDDPM(nn.Module):
             t: torch.Tensor,
             noise: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Sample from q(x_t | x_0) and compute prediction target
+        """
+        Sample a noised version of the input and compute the training target.
 
         Args:
-            x0: (batch, ...) clean data
-            t: (batch, ) discrete timesteps in [0, time_steps-1]
-            noise: (batch, ...) standard Gaussian noise
+            x0: Clean input data of shape (batch, ...).
+            t: Discrete timesteps of shape (batch,), with values in [0, T-1].
+            noise: Standard Gaussian noise of the same shape as x0.
 
         Returns:
-            xt: (batch, ...) noised data
-            target: (batch, ...) prediction target (x0, v-prediction)
+            xt: Noised data sampled from q(x_t | x_0).
+            target: Training target corresponding to the selected prediction
+                type (x0 or v).
         """
         sqrt_alpha_cumprod_t = self.vs.sqrt_alphas_cumprod[t]
         sqrt_one_minus_alpha_cumprod_t = self.vs.sqrt_one_minus_alphas_cumprod[t]
@@ -96,9 +112,14 @@ class ForwardDDPM(nn.Module):
 
 
 class ReverseDDPM(nn.Module):
-    """Reverse diffusion process for DDPM
+    """
+    Reverse diffusion process for DDPM.
 
-    p_θ(x_{t-1} | x_t) = N(x_{t-1}; μ_θ(x_t, t), Σ_t)
+    Implements a single reverse denoising step:
+        p_θ(x_{t-1} | x_t) = N(μ_θ(x_t, t), Σ_t)
+
+    Supports different prediction parameterizations (noise, x0, v)
+    and multiple variance types (fixed or learned).
     """
     def __init__(
             self,
@@ -107,6 +128,17 @@ class ReverseDDPM(nn.Module):
             var_type: str = "fixed_small",
             clip_out: bool = True
     ) -> None:
+        """
+        Initialize the reverse diffusion process.
+
+        Args:
+            scheduler: Noise scheduler providing diffusion coefficients.
+            pred_type: Model prediction parameterization.
+                One of {"noise", "x0", "v"}.
+            var_type: Variance type used in the reverse process.
+                One of {"fixed_small", "fixed_large", "learned"}.
+            clip_out: Whether to clip predicted x0 to a fixed range.
+        """
         super().__init__()
 
         valid_pred_types = ["noise", "x0", "v"]
@@ -123,7 +155,17 @@ class ReverseDDPM(nn.Module):
         self.clip_out = clip_out
 
     def predict_x0(self, xt: torch.Tensor, t: torch.Tensor, pred: torch.Tensor) -> torch.Tensor:
-        """Convert model output to x0 prediction based on prediction type"""
+        """
+        Convert the model output into a prediction of the original data x0.
+
+        Args:
+            xt: Current noised data x_t.
+            t: Discrete timesteps of shape (batch,).
+            pred: Model output corresponding to the selected prediction type.
+
+        Returns:
+            Predicted clean data x0.
+        """
 
         sqrt_alpha_cumprod_t = self.vs.sqrt_alphas_cumprod[t]
         sqrt_one_minus_alpha_cumprod_t = self.vs.sqrt_one_minus_alphas_cumprod[t]
@@ -148,7 +190,17 @@ class ReverseDDPM(nn.Module):
         return x0
 
     def get_variance(self, t: torch.Tensor, pred_var: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Get variance for reverse process based on variance type"""
+        """
+        Compute the variance used in the reverse diffusion step.
+
+        Args:
+            t: Discrete timesteps of shape (batch,).
+            pred_var: Optional model-predicted variance (required when
+                var_type="learned").
+
+        Returns:
+            Variance tensor for the reverse transition.
+        """
         if self.var_type == "fixed_small":
             # posterior variance: β_t * (1 - ᾱ_{t-1}) / (1 - ᾱ_t)
             var = self.vs.posterior_variance[t]
@@ -175,17 +227,18 @@ class ReverseDDPM(nn.Module):
             t: torch.Tensor,
             pred_var: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Single reverse step from x_t to x_{t-1}
+        """
+        Perform a single reverse diffusion step from x_t to x_{t-1}.
 
         Args:
-            xt: (batch, ...) current state
-            t: (batch, ) current timesteps
-            pred: (batch, ...) model prediction
-            pred_var: (batch, ...) optional learned variance
+            xt: Current state x_t of shape (batch, ...).
+            pred: Model prediction at timestep t.
+            t: Discrete timesteps of shape (batch,).
+            pred_var: Optional predicted variance for learned variance models.
 
         Returns:
-            x_prev: (batch, ...) previous state x_{t-1}
-            pred_x0: (batch, ...) predicted x0 (if return_pred_x0=True)
+            x_prev: Sampled previous state x_{t-1}.
+            pred_x0: Predicted clean data x0.
         """
         # predict x_0 from model output
         pred_x0 = self.predict_x0(xt, t, pred)
@@ -211,7 +264,19 @@ class ReverseDDPM(nn.Module):
 
 
 class SchedulerDDPM(nn.Module):
-    """ Scheduler for DDPM supporting linear, cosine, and other schedules"""
+    """
+    Noise scheduler for DDPM-style diffusion models.
+
+    This class defines the discrete diffusion timeline and precomputes all
+    noise schedule coefficients required for forward diffusion and reverse
+    sampling, including betas, alphas, cumulative products, and posterior
+    coefficients.
+
+    Supported schedules include linear, cosine, quadratic, and sigmoid.
+
+    The scheduler acts as the single source of truth for the diffusion
+    horizon T and all time-dependent constants.
+    """
     def __init__(
             self,
             schedule_type: str = "linear",
@@ -222,6 +287,19 @@ class SchedulerDDPM(nn.Module):
             clip_min: float = 0.0001,
             clip_max: float = 0.9999
     ):
+        """
+        Initialize the DDPM noise scheduler.
+
+        Args:
+            schedule_type: Type of beta schedule to use.
+                One of {"linear", "cosine", "quadratic", "sigmoid"}.
+            time_steps: Number of discrete diffusion steps (T).
+            beta_min: Minimum beta value for applicable schedules.
+            beta_max: Maximum beta value for applicable schedules.
+            cosine_s: Small offset used in the cosine schedule.
+            clip_min: Minimum value for clipping betas (cosine schedule).
+            clip_max: Maximum value for clipping betas (cosine schedule).
+        """
         super().__init__()
         valid_schedules = ["linear", "cosine", "quadratic", "sigmoid"]
         if schedule_type not in valid_schedules:
@@ -237,7 +315,18 @@ class SchedulerDDPM(nn.Module):
         self._setup_schedule()
 
     def _setup_schedule(self):
-        """Setup the noise schedule and precompute all coefficients"""
+        """
+        Precompute the noise schedule and all derived diffusion coefficients.
+
+        This method computes:
+        - betas and alphas
+        - cumulative products of alphas
+        - coefficients for q(x_t | x_0)
+        - coefficients for the reverse posterior q(x_{t-1} | x_t, x_0)
+
+        All tensors are registered as buffers for correct device placement
+        and checkpointing.
+        """
         if self.schedule_type == "linear":
             betas = torch.linspace(self.beta_min, self.beta_max, self.time_steps)
 
@@ -284,7 +373,16 @@ class SchedulerDDPM(nn.Module):
         self.register_buffer('posterior_mean_coef2', posterior_mean_coef2)
 
     def get_index(self, t: torch.Tensor, x_shape: torch.Size) -> torch.Tensor:
-        """Extract coefficients at timestep t and reshape for broadcasting"""
+        """
+        Reshape a timestep-dependent tensor for broadcasting over data tensors.
+
+        Args:
+            t: Tensor of shape (batch,) containing timestep-indexed values.
+            x_shape: Shape of the target tensor to broadcast over.
+
+        Returns:
+            Tensor reshaped to (batch, 1, ..., 1) for broadcasting.
+        """
         batch_size = t.shape[0]
         out = t.to(t.device)
         return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
