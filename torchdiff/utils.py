@@ -570,7 +570,7 @@ class Embedding(nn.Module):
 ###==================================================================================================================###
 
 
-class ScoreNet(nn.Module):
+class DiffusionNetwork(nn.Module):
     """Memory-efficient U-Net architecture for diffusion models supporting time and conditional embeddings"""
     def __init__(
             self,

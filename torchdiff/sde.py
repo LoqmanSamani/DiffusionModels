@@ -743,7 +743,7 @@ class TrainSDE(nn.Module):
         return epoch, loss
 
     @staticmethod
-    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
+    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_steps: int) -> torch.optim.lr_scheduler.LambdaLR:
         """Creates a learning rate scheduler for warmup.
 
         Generates a scheduler that linearly increases the learning rate from 0 to the
@@ -753,8 +753,8 @@ class TrainSDE(nn.Module):
         ----------
         optimizer : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
-        warmup_epochs : int
-            Number of epochs for the warmup phase.
+        warmup_steps : int
+            Number of steps for the warmup phase.
 
         Returns
         -------
@@ -762,8 +762,8 @@ class TrainSDE(nn.Module):
             Learning rate scheduler for warmup.
         """
         def lr_lambda(step):
-            if step < warmup_epochs:
-                return 0.1 + (0.9 * step / warmup_epochs)
+            if step < warmup_steps:
+                return 0.1 + (0.9 * step / warmup_steps)
             return 1.0
 
         return LambdaLR(optimizer, lr_lambda)
@@ -864,7 +864,7 @@ class TrainSDE(nn.Module):
                     self.global_step += 1
 
                 pbar.set_postfix({'Loss': f'{loss.item() * self.grad_acc:.4f}'})
-            train_losses_epoch.append(loss.item() * self.grad_acc)
+                train_losses_epoch.append(loss.item() * self.grad_acc)
             mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
             self.losses['train_losses'].append(mean_train_loss)
             if self.use_ddp:
@@ -941,7 +941,7 @@ class TrainSDE(nn.Module):
         return y_encoded
 
 
-    def _save_checkpoint(self, epoch: int, loss: float, preff: str = "") -> None:
+    def _save_checkpoint(self, epoch: int, loss: float, pref: str = "") -> None:
         """Save model checkpoint (only called by master process).
 
         Parameters
@@ -950,8 +950,8 @@ class TrainSDE(nn.Module):
             Current epoch number.
         loss : float
             Current loss value.
-        preff : str, optional
-            Suffix to add to checkpoint filename.
+        pref : str, optional
+            pref to add to checkpoint filename.
         """
         try:
             score_net_state = (
@@ -974,7 +974,7 @@ class TrainSDE(nn.Module):
                 'scheduler_model': self.fwd_sde.vs.state_dict(),
                 'max_epochs': self.max_epochs,
             }
-            filename = f"{preff}model_epoch_{epoch}.pth"
+            filename = f"{pref}model_epoch_{epoch}.pth"
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
@@ -1222,34 +1222,42 @@ class SampleSDE(nn.Module):
 
         Returns
         -------
-        generated_imgs (torch.Tensor) - Generated images, shape (batch_size, in_channels, height, width). If `normalize_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `output_range`.
+        samps (torch.Tensor) - Generated images, shape (batch_size, in_channels, height, width).
+        If `norm_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `norm_range`.
         """
         if conds is not None and self.cond_model is None:
             raise ValueError("Conditions provided but no conditional model specified")
         if conds is None and self.cond_model is not None:
             raise ValueError("Conditions must be provided for conditional model")
 
-        init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1]).to(self.device)
+        init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1], device=self.device)
         self.score_net.eval()
         self.rwd_sde.eval()
         if self.cond_model:
             self.cond_model.eval()
 
+        if self.cond_model is not None and conds is not None:
+            input_ids, attention_masks = self.tokenize(conds)
+            key_padding_mask = (attention_masks == 0)
+            y = self.cond_model(input_ids, key_padding_mask)
+        else:
+            y = None
         t_schedule = torch.linspace(1.0, self.time_eps, num_steps + 1, device=self.device)
         dt = -(1.0 - self.time_eps) / num_steps
-        iterator = tqdm(range(num_steps), desc="Sampling")
+        iterator = tqdm(
+            range(num_steps),
+            total=num_steps,
+            desc="Sampling",
+            dynamic_ncols=True,
+            leave=True,
+        )
+        #iterator = tqdm(range(num_steps), desc="Sampling")
         with torch.no_grad():
             xt = init_samps
             for step in iterator:
                 t_current = float(t_schedule[step])
                 t_batch = torch.full((self.batch_size,), t_current, dtype=xt.dtype, device=self.device)
-                if self.cond_model is not None and conds is not None:
-                    input_ids, attention_masks = self.tokenize(conds)
-                    key_padding_mask = (attention_masks == 0)
-                    y = self.cond_model(input_ids, key_padding_mask)
-                    pred = self.score_net(xt, t_batch, y)
-                else:
-                    pred = self.score_net(xt, t_batch)
+                pred = self.score_net(xt, t_batch, y)
                 if self.pred_noise:
                     std = self.rwd_sde.vs.std(t_batch)
                     while std.dim() < len(xt.shape):
