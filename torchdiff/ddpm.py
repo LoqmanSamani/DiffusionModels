@@ -10,7 +10,7 @@ sampling. Supports both unconditional and conditional generation with text promp
 
 - **ForwardDDPM**: Forward diffusion process to add noise.
 - **ReverseDDPM**: Reverse diffusion process to denoise.
-- **VarianceSchedulerDDPM**: Noise schedule management.
+- **SchedulerDDPM**: Noise schedule management.
 - **TrainDDPM**: Training loop with mixed precision and scheduling.
 - **SampleDDPM**: Image generation from trained models.
 
@@ -505,12 +505,10 @@ class TrainDDPM(nn.Module):
         self.norm_output = norm_output
         self.log_freq = log_freq
         self.use_comp = use_comp
-        #--------------------------------
         self.global_step = 0
         self.warmup_steps = warmup_steps
         self.best_loss = float('inf')
         self.losses = {'train_losses': [], 'val_losses': []}
-        #--------------------------------
         self.scheduler = ReduceLROnPlateau(
             self.optim,
             patience=self.patience,
@@ -796,7 +794,6 @@ class TrainDDPM(nn.Module):
         torch.Tensor
             Encoded conditional input.
         """
-        # Convert to string list
         y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
         y_list = [str(item) for item in y_list]
         y_encoded = self.tokenizer(
@@ -989,7 +986,7 @@ class SampleDDPM(nn.Module):
         self.norm_range = norm_range
         if not isinstance(img_size, (tuple, list)) or len(img_size) != 2 or not all(
                 isinstance(s, int) and s > 0 for s in img_size):
-            raise ValueError("image_size must be a tuple of two positive integers (height, width)")
+            raise ValueError("img_size must be a tuple of two positive integers (height, width)")
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if not isinstance(norm_range, (tuple, list)) or len(norm_range) != 2 or norm_range[0] >= norm_range[1]:

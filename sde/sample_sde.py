@@ -148,6 +148,13 @@ class SampleSDE(nn.Module):
         if self.cond_model:
             self.cond_model.eval()
 
+        if self.cond_model is not None and conds is not None:
+            input_ids, attention_masks = self.tokenize(conds)
+            key_padding_mask = (attention_masks == 0)
+            y = self.cond_model(input_ids, key_padding_mask)
+        else:
+            y = None
+
         t_schedule = torch.linspace(1.0, self.time_eps, num_steps + 1, device=self.device)
         dt = -(1.0 - self.time_eps) / num_steps
         iterator = tqdm(range(num_steps), desc="Sampling")
@@ -156,13 +163,7 @@ class SampleSDE(nn.Module):
             for step in iterator:
                 t_current = float(t_schedule[step])
                 t_batch = torch.full((self.batch_size,), t_current, dtype=xt.dtype, device=self.device)
-                if self.cond_model is not None and conds is not None:
-                    input_ids, attention_masks = self.tokenize(conds)
-                    key_padding_mask = (attention_masks == 0)
-                    y = self.cond_model(input_ids, key_padding_mask)
-                    pred = self.score_net(xt, t_batch, y)
-                else:
-                    pred = self.score_net(xt, t_batch)
+                pred = self.score_net(xt, t_batch, y, clip_embeddings=None)
                 if self.pred_noise:
                     std = self.rwd_sde.vs.std(t_batch)
                     while std.dim() < len(xt.shape):

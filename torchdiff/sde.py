@@ -13,7 +13,7 @@ generation with text prompts.
 
 - **ForwardSDE**: Forward diffusion process to add noise using SDE methods.
 - **ReverseSDE**: Reverse diffusion process to denoise using SDE methods.
-- **VarianceSchedulerSDE**: Noise schedule and SDE-specific parameter management.
+- **SchedulerSDE**: Noise schedule and SDE-specific parameter management.
 - **TrainSDE**: Training loop with mixed precision and scheduling.
 - **SampleSDE**: Image generation from trained SDE models.
 
