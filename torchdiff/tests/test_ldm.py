@@ -15,7 +15,7 @@ from torchdiff.ldm import (
     VectorQuantizer, DownBlock, UpBlock, Conv3,
     DownSampling, UpSampling, Attention
 )
-from torchdiff.sde import ForwardSDE, ReverseSDE, VarianceSchedulerSDE
+from torchdiff.sde import ForwardSDE, ReverseSDE, SchedulerSDE
 
 
 
@@ -257,7 +257,7 @@ class TestVarianceSchedulerSDE:
 
     def test_scheduler_initialization(self):
         """Test VarianceSchedulerSDE initialization."""
-        scheduler = VarianceSchedulerSDE(
+        scheduler = SchedulerSDE(
             num_steps=100, beta_start=1e-4, beta_end=0.02,
             trainable_beta=False
         )
@@ -272,7 +272,7 @@ class TestVarianceSchedulerSDE:
         methods = ["linear", "sigmoid", "quadratic", "constant"]
 
         for method in methods:
-            scheduler = VarianceSchedulerSDE(
+            scheduler = SchedulerSDE(
                 num_steps=100, beta_start=1e-4, beta_end=0.02,
                 beta_method=method, trainable_beta=False
             )
@@ -284,7 +284,7 @@ class TestVarianceSchedulerSDE:
 
     def test_trainable_beta(self):
         """Test trainable beta functionality."""
-        scheduler = VarianceSchedulerSDE(
+        scheduler = SchedulerSDE(
             num_steps=50, trainable_beta=True
         )
 
@@ -299,7 +299,7 @@ class TestVarianceSchedulerSDE:
 
     def test_variance_computation(self):
         """Test variance computation for different SDE methods."""
-        scheduler = VarianceSchedulerSDE(num_steps=100, trainable_beta=False)
+        scheduler = SchedulerSDE(num_steps=100, trainable_beta=False)
         time_steps = torch.tensor([10, 20, 30])
 
         methods = ["ve", "vp", "sub-vp"]
@@ -315,7 +315,7 @@ class TestSDEProcesses:
     @pytest.fixture
     def sde_setup(self):
         """Setup SDE components for testing."""
-        scheduler = VarianceSchedulerSDE(
+        scheduler = SchedulerSDE(
             num_steps=100, beta_start=1e-4, beta_end=0.02
         )
         return scheduler
@@ -403,15 +403,9 @@ class TestTrainAE:
 
     def test_train_ae_initialization(self, training_setup):
         """Test TrainAE initialization."""
-        trainer = TrainAE(
-            model=training_setup['model'],
-            optimizer=training_setup['optimizer'],
-            data_loader=training_setup['train_loader'],
-            val_loader=training_setup['val_loader'],
-            max_epochs=2,
-            metrics_=training_setup['metrics'],
-            device='cpu'
-        )
+        trainer = TrainAE(model=training_setup['model'], optim=training_setup['optimizer'],
+                          train_loader=training_setup['train_loader'], val_loader=training_setup['val_loader'],
+                          max_epochs=2, metrics_=training_setup['metrics'], device='cpu')
 
         assert trainer.max_epochs == 2
         assert trainer.device.type == 'cpu'
@@ -419,18 +413,10 @@ class TestTrainAE:
     def test_train_ae_forward(self, training_setup):
         """Test TrainAE training loop."""
         with tempfile.TemporaryDirectory() as temp_dir:
-            trainer = TrainAE(
-                model=training_setup['model'],
-                optimizer=training_setup['optimizer'],
-                data_loader=training_setup['train_loader'],
-                val_loader=training_setup['val_loader'],
-                max_epochs=2,
-                metrics_=training_setup['metrics'],
-                device='cpu',
-                store_path=temp_dir,
-                val_frequency=1,
-                log_frequency=1
-            )
+            trainer = TrainAE(model=training_setup['model'], optim=training_setup['optimizer'],
+                              train_loader=training_setup['train_loader'], val_loader=training_setup['val_loader'],
+                              max_epochs=2, metrics_=training_setup['metrics'], device='cpu', store_path=temp_dir,
+                              val_freq=1, log_freq=1)
 
             train_losses, best_val_loss = trainer()
 
@@ -463,7 +449,7 @@ class TestTrainLDM:
         noise_predictor = MockNoisePredictor(in_channels=4)
         text_encoder = MockTextEncoder(output_dim=32)
 
-        scheduler = VarianceSchedulerSDE(num_steps=50, trainable_beta=False)
+        scheduler = SchedulerSDE(num_steps=50, trainable_beta=False)
         forward_sde = ForwardSDE(scheduler, "ode")
         reverse_sde = ReverseSDE(scheduler, "ode")
 
@@ -487,22 +473,12 @@ class TestTrainLDM:
         """Test TrainLDM initialization."""
         setup = ldm_training_setup
 
-        trainer = TrainLDM(
-            diffusion_model="sde",
-            forward_diffusion=setup['forward_sde'],
-            reverse_diffusion=setup['reverse_sde'],
-            noise_predictor=setup['noise_predictor'],
-            compressor_model=setup['compressor'],
-            optimizer=setup['optimizer'],
-            objective=nn.MSELoss(),
-            data_loader=setup['train_loader'],
-            val_loader=setup['val_loader'],
-            conditional_model=setup['text_encoder'],
-            max_epochs=2,
-            device='cpu'
-        )
+        trainer = TrainLDM(diff_type="sde", fwd_diff=setup['forward_sde'], rwd_diff=setup['reverse_sde'],
+                           diff_net=setup['noise_predictor'], comp_model=setup['compressor'], optim=setup['optimizer'],
+                           loss_fn=nn.MSELoss(), train_loader=setup['train_loader'], val_loader=setup['val_loader'],
+                           cond_model=setup['text_encoder'], max_epochs=2, device='cpu')
 
-        assert trainer.diffusion_model == "sde"
+        assert trainer.diff_type == "sde"
         assert trainer.max_epochs == 2
 
     def test_train_ldm_forward(self, ldm_training_setup):
@@ -510,24 +486,11 @@ class TestTrainLDM:
         setup = ldm_training_setup
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            trainer = TrainLDM(
-                diffusion_model="sde",
-                forward_diffusion=setup['forward_sde'],
-                reverse_diffusion=setup['reverse_sde'],
-                noise_predictor=setup['noise_predictor'],
-                compressor_model=setup['compressor'],
-                optimizer=setup['optimizer'],
-                objective=nn.MSELoss(),
-                data_loader=setup['train_loader'],
-                val_loader=setup['val_loader'],
-                conditional_model=setup['text_encoder'],
-                max_epochs=2,
-                device='cpu',
-                store_path=temp_dir,
-                val_frequency=1,
-                log_frequency=1,
-                metrics_=MockMetrics()
-            )
+            trainer = TrainLDM(diff_type="sde", fwd_diff=setup['forward_sde'], rwd_diff=setup['reverse_sde'],
+                               diff_net=setup['noise_predictor'], comp_model=setup['compressor'],
+                               optim=setup['optimizer'], loss_fn=nn.MSELoss(), train_loader=setup['train_loader'],
+                               val_loader=setup['val_loader'], cond_model=setup['text_encoder'], metrics_=MockMetrics(),
+                               max_epochs=2, device='cpu', store_path=temp_dir, val_freq=1, log_freq=1)
 
             train_losses, best_val_loss = trainer()
 
@@ -551,7 +514,7 @@ class TestSampleLDM:
         noise_predictor = MockNoisePredictor(in_channels=4)
         text_encoder = MockTextEncoder(output_dim=32)
 
-        scheduler = VarianceSchedulerSDE(num_steps=50, trainable_beta=False)
+        scheduler = SchedulerSDE(num_steps=50, trainable_beta=False)
         reverse_sde = ReverseSDE(scheduler, "ode")
 
         return {
@@ -565,35 +528,21 @@ class TestSampleLDM:
         """Test SampleLDM initialization."""
         setup = sampling_setup
 
-        sampler = SampleLDM(
-            diffusion_model="sde",
-            reverse_diffusion=setup['reverse_sde'],
-            noise_predictor=setup['noise_predictor'],
-            compressor_model=setup['compressor'],
-            image_shape=(32, 32),
-            conditional_model=setup['text_encoder'],
-            batch_size=2,
-            device='cpu'
-        )
+        sampler = SampleLDM(diff_type="sde", rwd_diff=setup['reverse_sde'], diff_net=setup['noise_predictor'],
+                            comp_model=setup['compressor'], img_size=(32, 32), cond_model=setup['text_encoder'],
+                            batch_size=2, device='cpu')
 
-        assert sampler.diffusion_model == "sde"
+        assert sampler.diff_type == "sde"
         assert sampler.batch_size == 2
-        assert sampler.image_shape == (32, 32)
+        assert sampler.img_size == (32, 32)
 
     def test_sample_ldm_tokenization(self, sampling_setup):
         """Test text tokenization in SampleLDM."""
         setup = sampling_setup
 
-        sampler = SampleLDM(
-            diffusion_model="sde",
-            reverse_diffusion=setup['reverse_sde'],
-            noise_predictor=setup['noise_predictor'],
-            compressor_model=setup['compressor'],
-            image_shape=(32, 32),
-            conditional_model=setup['text_encoder'],
-            batch_size=2,
-            device='cpu'
-        )
+        sampler = SampleLDM(diff_type="sde", rwd_diff=setup['reverse_sde'], diff_net=setup['noise_predictor'],
+                            comp_model=setup['compressor'], img_size=(32, 32), cond_model=setup['text_encoder'],
+                            batch_size=2, device='cpu')
 
         # Test single prompt
         input_ids, attention_mask = sampler.tokenize("test prompt")
@@ -608,16 +557,9 @@ class TestSampleLDM:
         setup = sampling_setup
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            sampler = SampleLDM(
-                diffusion_model="sde",
-                reverse_diffusion=setup['reverse_sde'],
-                noise_predictor=setup['noise_predictor'],
-                compressor_model=setup['compressor'],
-                image_shape=(32, 32),
-                conditional_model=setup['text_encoder'],
-                batch_size=2,
-                device='cpu'
-            )
+            sampler = SampleLDM(diff_type="sde", rwd_diff=setup['reverse_sde'], diff_net=setup['noise_predictor'],
+                                comp_model=setup['compressor'], img_size=(32, 32), cond_model=setup['text_encoder'],
+                                batch_size=2, device='cpu')
 
             # Test unconditional generation
             images = sampler(
@@ -665,14 +607,8 @@ class TestIntegration:
             )
 
             ae_optimizer = torch.optim.Adam(compressor.parameters(), lr=1e-3)
-            ae_trainer = TrainAE(
-                model=compressor,
-                optimizer=ae_optimizer,
-                data_loader=train_loader,
-                max_epochs=1,
-                device='cpu',
-                store_path=temp_dir
-            )
+            ae_trainer = TrainAE(model=compressor, optim=ae_optimizer, train_loader=train_loader, max_epochs=1,
+                                 device='cpu', store_path=temp_dir)
 
             ae_losses, ae_best_loss = ae_trainer()
             assert len(ae_losses) == 1
@@ -681,7 +617,7 @@ class TestIntegration:
             noise_predictor = MockNoisePredictor(in_channels=4)
             text_encoder = MockTextEncoder(output_dim=32)
 
-            scheduler = VarianceSchedulerSDE(num_steps=20, trainable_beta=False)
+            scheduler = SchedulerSDE(num_steps=20, trainable_beta=False)
             forward_sde = ForwardSDE(scheduler, "ode")
             reverse_sde = ReverseSDE(scheduler, "ode")
 
@@ -690,35 +626,17 @@ class TestIntegration:
                 *text_encoder.parameters()
             ], lr=1e-3)
 
-            ldm_trainer = TrainLDM(
-                diffusion_model="sde",
-                forward_diffusion=forward_sde,
-                reverse_diffusion=reverse_sde,
-                noise_predictor=noise_predictor,
-                compressor_model=compressor,
-                optimizer=ldm_optimizer,
-                objective=nn.MSELoss(),
-                data_loader=train_loader,
-                conditional_model=text_encoder,
-                max_epochs=1,
-                device='cpu',
-                store_path=temp_dir
-            )
+            ldm_trainer = TrainLDM(diff_type="sde", fwd_diff=forward_sde, rwd_diff=reverse_sde,
+                                   diff_net=noise_predictor, comp_model=compressor, optim=ldm_optimizer,
+                                   loss_fn=nn.MSELoss(), train_loader=train_loader, cond_model=text_encoder,
+                                   max_epochs=1, device='cpu', store_path=temp_dir)
 
             ldm_losses, ldm_best_loss = ldm_trainer()
             assert len(ldm_losses) == 1
 
             # 3. Sample from trained model
-            sampler = SampleLDM(
-                diffusion_model="sde",
-                reverse_diffusion=reverse_sde,
-                noise_predictor=noise_predictor,
-                compressor_model=compressor,
-                image_shape=(32, 32),
-                conditional_model=text_encoder,
-                batch_size=2,
-                device='cpu'
-            )
+            sampler = SampleLDM(diff_type="sde", rwd_diff=reverse_sde, diff_net=noise_predictor, comp_model=compressor,
+                                img_size=(32, 32), cond_model=text_encoder, batch_size=2, device='cpu')
 
             generated_images = sampler(
                 conditions=["class_0", "class_1"],

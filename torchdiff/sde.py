@@ -181,7 +181,7 @@ class ForwardSDE(nn.Module):
 
         return mean_coeff, std
 
-    def forward(self, x0: torch.Tensor, noise: torch.Tensor, t: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x0: torch.Tensor, t: torch.Tensor, noise: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Sample from transition kernel and compute true score
 
         Arguments:
@@ -862,7 +862,7 @@ class TrainSDE(nn.Module):
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     noise = torch.randn_like(x)
                     t = self.sample_time(x.shape[0], self.time_eps)
-                    xt, target = self.fwd_sde(x, noise, t)
+                    xt, target = self.fwd_sde(x, t, noise)
                     pred = self.score_net(xt, t, y_encoded, clip_embeddings=None)
                     var = self.fwd_sde.vs.variance(t)
                     if self.fwd_sde.method == "ve":
@@ -1045,7 +1045,7 @@ class TrainSDE(nn.Module):
 
                     noise = torch.randn_like(x)
                     t = self.sample_time(x.shape[0], self.time_eps)
-                    xt, target = self.fwd_sde(x, noise, t)
+                    xt, target = self.fwd_sde(x, t, noise)
                     pred = self.score_net(xt, t, y_encoded, clip_embeddings=None)
                     var = self.fwd_sde.vs.variance(t)
                     if self.fwd_sde.method == "ve":

@@ -566,9 +566,7 @@ class Embedding(nn.Module):
 
         return token_embedded + position_encoded
 
-
 ###==================================================================================================================###
-
 
 class DiffusionNetwork(nn.Module):
     """Memory-efficient U-Net architecture for diffusion models supporting time and conditional embeddings"""

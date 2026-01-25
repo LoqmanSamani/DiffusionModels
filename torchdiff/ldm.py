@@ -397,6 +397,11 @@ class TrainLDM(nn.Module):
         self._wrap_models_for_ddp()
         scaler = torch.GradScaler()
         wait = 0
+        diff_steps = 0
+        if self.diff_type == "ddpm":
+            diff_steps = self.fwd_diff.vs.time_steps
+        elif self.diff_type == "ddim":
+            diff_steps = self.fwd_diff.vs.train_steps
         for epoch in range(self.max_epochs):
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
             if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
@@ -412,63 +417,44 @@ class TrainLDM(nn.Module):
                     y_encoded = None
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     noise = torch.randn_like(x)
-                    #t = torch.randint(0, self.fwd_ddpm.vs.time_steps, (x.shape[0],), device=x.device)
-                    #t = torch.randint(0, self.fwd_diff.vs.num_steps, (x.shape[0],)).to(self.device)
-                    #t = self.sample_time(x.shape[0], self.time_eps)
-                    #TODO: fix the naming conflict in different schedulers
+                    if self.diff_type == 'sde':
+                        t = self.sample_time(x.shape[0], self.time_eps)
+                    else:
+                        t = torch.randint(0, diff_steps, (x.shape[0],), device=x.device)
+                    xt, target = self.fwd_diff(x, t, noise)
+                    pred = self.diff_net(xt, t, y_encoded, clip_embeddings=None)
+                    loss = self.loss_fn(pred, target) / self.grad_acc
 
-                    # apply forward diffusion
-                    noisy_x = self.fwd_diff(x, noise, t)
-
-                    # predict noise
-                    predicted_noise = self.diff_net(noisy_x, t, y_encoded, None)
-
-                    # compute loss and scale for gradient accumulation
-                    loss = self.loss_fn(predicted_noise, noise) / self.grad_acc
-
-                # backward pass
                 scaler.scale(loss).backward()
-
-                # gradient accumulation and optimizer step
                 if (step + 1) % self.grad_acc == 0:
-                    # clip gradients
                     scaler.unscale_(self.optim)
                     torch.nn.utils.clip_grad_norm_(self.diff_net.parameters(), max_norm=1.0)
                     if self.cond_model is not None:
                         torch.nn.utils.clip_grad_norm_(self.cond_model.parameters(), max_norm=1.0)
-
-                    # optimizer step
                     scaler.step(self.optim)
                     scaler.update()
                     self.optim.zero_grad()
+                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                        self.warmup_lr_scheduler.step()
+                    self.global_step += 1
 
-                    # update learning rate (warmup scheduler)
-                    self.warmup_lr_scheduler.step()
-
-                # record loss (unscaled)
+                pbar.set_postfix({'Loss': f'{loss.item() * self.grad_acc:.4f}'})
                 train_losses_epoch.append(loss.item() * self.grad_acc)
-
-                # compute mean training loss
             mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
+            self.losses['train_losses'].append(mean_train_loss)
 
-            # all-reduce loss across processes for DDP
             if self.use_ddp:
                 loss_tensor = torch.tensor(mean_train_loss, device=self.device)
                 dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
                 mean_train_loss = loss_tensor.item()
 
-            train_losses.append(mean_train_loss)
-
-            # print training progress (only master process)
             if self.master_process and (epoch + 1) % self.log_freq == 0:
                 current_lr = self.optim.param_groups[0]['lr']
                 print(f"\nEpoch: {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
 
-            # validation step
             if self.val_loader is not None and (epoch + 1) % self.val_freq == 0:
                 val_metrics = self.validate()
                 val_loss, fid, mse, psnr, ssim, lpips_score = val_metrics
-
                 if self.master_process:
                     print(f" | Val Loss: {val_loss:.4f}", end="")
                     if self.metrics_ and hasattr(self.metrics_, 'fid') and self.metrics_.fid:
@@ -479,31 +465,27 @@ class TrainLDM(nn.Module):
                         print(f" | LPIPS: {lpips_score:.4f}", end="")
                     print()
 
-                current_best = val_loss
                 self.scheduler.step(val_loss)
+                self.losses['val_losses'].append((val_loss, fid, mse, psnr, ssim, lpips_score))
             else:
                 if self.master_process:
                     print()
-                current_best = mean_train_loss
                 self.scheduler.step(mean_train_loss)
-
-            # save checkpoint and early stopping (only master process)
             if self.master_process:
-                if current_best < best_val_loss and (epoch + 1) % self.val_freq == 0:
-                    best_val_loss = current_best
+                if mean_train_loss < self.best_loss:
+                    self.best_loss = mean_train_loss
                     wait = 0
-                    self._save_checkpoint(epoch + 1, best_val_loss)
+                    self._save_checkpoint(epoch + 1, self.best_loss, "best_")
                 else:
                     wait += 1
                     if wait >= self.patience:
                         print("Early stopping triggered")
-                        self._save_checkpoint(epoch + 1, best_val_loss, "_early_stop")
+                        self._save_checkpoint(epoch + 1, mean_train_loss, "early_stop_")
                         break
-
-        # clean up DDP
+                if (epoch + 1) % self.val_freq == 0:
+                    self._save_checkpoint(epoch + 1, mean_train_loss, "")
         if self.use_ddp:
             destroy_process_group()
-
         return self.losses
 
     def sample_time(self, batch_size: int, eps: float = 1e-5) -> torch.Tensor:
@@ -522,11 +504,8 @@ class TrainLDM(nn.Module):
         torch.Tensor
             Encoded conditional input.
         """
-        # convert to string list
         y_list = y.cpu().numpy().tolist() if isinstance(y, torch.Tensor) else y
         y_list = [str(item) for item in y_list]
-
-        # tokenize
         y_encoded = self.tokenizer(
             y_list,
             padding="max_length",
@@ -534,15 +513,12 @@ class TrainLDM(nn.Module):
             max_length=self.max_token_length,
             return_tensors="pt"
         ).to(self.device)
-
-        # get embeddings
         input_ids = y_encoded["input_ids"]
         attention_mask = y_encoded["attention_mask"]
         y_encoded = self.cond_model(input_ids, attention_mask)
-
         return y_encoded
 
-    def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "") -> None:
+    def _save_checkpoint(self, epoch: int, loss: float, pref: str = "") -> None:
         """Save model checkpoint (only called by master process).
 
         Parameters
@@ -551,42 +527,36 @@ class TrainLDM(nn.Module):
             Current epoch number.
         loss : float
             Current loss value.
-        suffix : str, optional
-            Suffix to add to checkpoint filename.
+        pref : str, optional
+            prefix to add to checkpoint filename.
         """
         try:
-            # get state dicts, handling DDP wrapping
-            noise_predictor_state = (
+            diff_net_state = (
                 self.diff_net.module.state_dict() if self.use_ddp
                 else self.diff_net.state_dict()
             )
-            conditional_state = None
+            cond_state = None
             if self.cond_model is not None:
-                conditional_state = (
+                cond_state = (
                     self.cond_model.module.state_dict() if self.use_ddp
                     else self.cond_model.state_dict()
                 )
-
             checkpoint = {
                 'epoch': epoch,
-                'model_state_dict_noise_predictor': noise_predictor_state,
-                'model_state_dict_conditional': conditional_state,
-                'optimizer_state_dict': self.optim.state_dict(),
+                'model_state_dict_diff_net': diff_net_state,
+                'model_state_dict_cond': cond_state,
+                'optim_state_dict': self.optim.state_dict(),
                 'loss': loss,
-                'variance_scheduler_model': (
-                    self.fwd_diff.variance_scheduler.state_dict() if isinstance(self.fwd_diff.variance_scheduler, nn.Module)
-                    else self.fwd_diff.variance_scheduler
-                ),
+                'losses': self.losses,
+                'scheduler_model': self.fwd_diff.vs.state_dict(),
                 'max_epochs': self.max_epochs,
             }
-
-            filename = f"ldm_epoch_{epoch}{suffix}.pth"
+            filename = f"{pref}model_epoch_{epoch}.pth"
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
 
             print(f"Model saved at epoch {epoch}")
-
         except Exception as e:
             print(f"Failed to save model: {e}")
 
@@ -605,67 +575,63 @@ class TrainLDM(nn.Module):
         self.diff_net.eval()
         if self.cond_model is not None:
             self.cond_model.eval()
-        if self.fwd_diff.variance_scheduler.trainable_beta:
-            self.fwd_diff.eval()
-            self.rwd_diff.eval()
-
         val_losses = []
         fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
-
-        num_steps = self.fwd_diff.variance_scheduler.tau_num_steps if self.diff_type == "ddim" else self.fwd_diff.variance_scheduler.num_steps
-
         with torch.no_grad():
             for x, y in self.val_loader:
                 x = x.to(self.device)
                 x_orig = x.clone()
                 x, _ = self.comp_model.encode(x)
-
-                # process conditional input
                 if self.cond_model is not None:
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
 
-                # compute validation loss
-                noise = torch.randn_like(x).to(self.device)
-                t = torch.randint(0, self.fwd_diff.variance_scheduler.num_steps, (x.shape[0],)).to(self.device)
-
-                noisy_x = self.fwd_diff(x, noise, t)
-                predicted_noise = self.diff_net(noisy_x, t, y_encoded, None)
-                loss = self.loss_fn(predicted_noise, noise)
+                noise = torch.randn_like(x)
+                if self.diff_type == 'sde':
+                    t = self.sample_time(x.shape[0], self.time_eps)
+                elif self.diff_type == 'ddpm':
+                    t = torch.randint(0, self.fwd_diff.vs.time_steps, (x.shape[0],), device=x.device)
+                else:
+                    t = torch.randint(0, self.fwd_diff.vs.train_steps, (x.shape[0],), device=x.device)
+                xt, target = self.fwd_diff(x, t, noise)
+                pred = self.diff_net(xt, t, y_encoded, clip_embeddings=None)
+                loss = self.loss_fn(pred, target)
                 val_losses.append(loss.item())
-                # generate samples for metrics evaluation
+
                 if self.metrics_ is not None and self.rwd_diff is not None:
-                    xt = torch.randn_like(x).to(self.device)
-
-                    # reverse diffusion sampling
-                    for t in reversed(range(num_steps)):
-                        time_steps = torch.full((xt.shape[0],), t, device=self.device)#, dtype=torch.long)
-                        prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device)#, dtype=torch.long)
-                        predicted_noise = self.diff_net(xt, time_steps, y_encoded, None)
-
-                        if self.diff_type == "sde":
-                            noise = torch.randn_like(xt) if getattr(self.rwd_diff, "sde_method", None) != "ode" else None
-                            xt = self.rwd_diff(xt, noise, predicted_noise, time_steps)
-                        elif self.diff_type == "ddim":
-                            xt, _ = self.rwd_diff(xt, predicted_noise, time_steps, prev_time_steps)
-                        elif self.diff_type == "ddpm":
-                            xt = self.rwd_diff(xt, predicted_noise, time_steps)
-                        else:
-                            raise ValueError(f"Unknown model: {self.diff_type}. Supported: ddpm, ddim, sde")
+                    xt = torch.randn_like(x)
+                    if self.diff_type == 'ddpm':
+                        for t in reversed(range(self.fwd_diff.vs.time_steps)):
+                            time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
+                            pred = self.diff_net(xt, time_steps, y_encoded, clip_embeddings=None)
+                            xt, _ = self.rwd_diff(xt, pred, time_steps)
+                    elif self.diff_type == 'ddim':
+                        timesteps = self.fwd_diff.vs.inference_timesteps.flip(0)
+                        for i in range(len(timesteps) - 1):
+                            t_current = timesteps[i].item()
+                            t_next = timesteps[i + 1].item()
+                            time = torch.full((xt.shape[0],), t_current, device=self.device, dtype=torch.long)
+                            prev_time = torch.full((xt.shape[0],), t_next, device=self.device, dtype=torch.long)
+                            pred = self.diff_net(xt, time, y_encoded, clip_embeddings=None)
+                            xt, _ = self.rwd_diff(xt, time, prev_time, pred)
+                    else:
+                        t_schedule = torch.linspace(1.0, self.time_eps, self.num_steps + 1)
+                        dt = torch.tensor(-(1.0 - self.time_eps) / self.num_steps, device=xt.device, dtype=xt.dtype)
+                        for t in range(self.num_steps):
+                            t_current = float(t_schedule[t])
+                            t_batch = torch.full((xt.shape[0],), t_current, dtype=xt.dtype, device=self.device)
+                            pred = self.diff_net(xt, t_batch, y_encoded, None)
+                            last_step = (t == self.num_steps - 1)
+                            xt = self.rwd_diff(xt, pred, t_batch, dt, last_step=last_step)
 
                     x_hat = self.comp_model.decode(xt)
-
-                    # clamp and normalize generated samples
                     x_hat = torch.clamp(x_hat, min=self.norm_range[0], max=self.norm_range[1])
                     if self.norm_output:
                         x_hat = (x_hat - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
                         x_orig = (x_orig - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
-
-                    # Compute metrics
                     metrics_result = self.metrics_.forward(x_orig, x_hat)
                     fid, mse, psnr, ssim, lpips_score = metrics_result
-
                     if hasattr(self.metrics_, 'fid') and self.metrics_.fid:
                         fid_scores.append(fid)
                     if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
@@ -674,11 +640,7 @@ class TrainLDM(nn.Module):
                         ssim_scores.append(ssim)
                     if hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
                         lpips_scores.append(lpips_score)
-
-        # compute average metrics
         val_loss = torch.tensor(val_losses).mean().item()
-
-        # all-reduce validation metrics across processes for DDP
         if self.use_ddp:
             val_loss_tensor = torch.tensor(val_loss, device=self.device)
             dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
@@ -690,19 +652,12 @@ class TrainLDM(nn.Module):
         ssim_avg = torch.tensor(ssim_scores).mean().item() if ssim_scores else None
         lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
 
-        # return to training mode
         self.diff_net.train()
         if self.cond_model is not None:
             self.cond_model.train()
-        if self.fwd_diff.variance_scheduler.trainable_beta:
-            self.rwd_diff.train()
-            self.fwd_diff.train()
-
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
 
-
 ###==================================================================================================================###
-
 
 class SampleLDM(nn.Module):
     """Sampler for generating images using Latent Diffusion Models (LDM).
@@ -714,19 +669,19 @@ class SampleLDM(nn.Module):
 
     Parameters
     ----------
-    diffusion_model : str
+    diff_type : str
         Diffusion model type. Supported: "ddpm", "ddim", "sde".
-    reverse_diffusion : nn.Module
+    rwd_diff : nn.Module
         Reverse diffusion module (e.g., ReverseDDPM, ReverseDDIM, ReverseSDE).
-    noise_predictor : nn.Module
+    diff_net : nn.Module
         Model to predict noise added during the forward diffusion process.
-    compressor_model : nn.Module
+    comp_model : nn.Module
         Pre-trained model to encode/decode between image and latent spaces (e.g., AutoencoderLDM).
-    image_shape : tuple
+    img_size : tuple
         Shape of generated images as (height, width).
-    conditional_model : nn.Module, optional
+    cond_model : nn.Module, optional
         Model for conditional generation (e.g., TextEncoder), default None.
-    bert_tokenizer : str or BertTokenizer, optional
+    tokenizer : str or BertTokenizer, optional
         Tokenizer for processing text prompts, default "bert-base-uncased".
     batch_size : int, optional
         Number of images to generate per batch (default: 1).
@@ -736,51 +691,49 @@ class SampleLDM(nn.Module):
         Device for computation (default: CUDA if available, else CPU).
     max_token_length : int, optional
         Maximum length for tokenized prompts (default: 77).
-    image_output_range : tuple, optional
+    norm_range : tuple, optional
         Range for clamping generated images (min, max), default (-1, 1).
     """
     def __init__(
             self,
-            diffusion_model: str,
-            reverse_diffusion: torch.nn.Module,
-            noise_predictor: torch.nn.Module,
-            compressor_model: torch.nn.Module,
-            image_shape: Tuple[float, float],
-            conditional_model: Optional[torch.nn.Module] = None,
-            bert_tokenizer: str = "bert-base-uncased",
+            diff_type: str,
+            rwd_diff: torch.nn.Module,
+            diff_net: torch.nn.Module,
+            comp_model: torch.nn.Module,
+            img_size: Tuple[float, float],
+            cond_model: Optional[torch.nn.Module] = None,
+            tokenizer: str = "bert-base-uncased",
             batch_size: int = 1,
             in_channels: int = 3,
-            device: Optional[Union[str, torch.device]] = None,
+            device: str = 'cuda',
             max_token_length: int = 77,
-            image_output_range: Tuple[float, float] = (-1.0, 1.0)
+            norm_range: Tuple[float, float] = (-1.0, 1.0),
+            *args
     ) -> None:
         super().__init__()
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
+        if isinstance(device, str):
             self.device = torch.device(device)
         else:
             self.device = device
-        self.diffusion_model = diffusion_model
-        self.noise_predictor = noise_predictor.to(self.device)
-        self.reverse = reverse_diffusion.to(self.device)
-        self.compressor = compressor_model.to(self.device)
-        self.conditional_model = conditional_model.to(self.device) if conditional_model else None
-        self.tokenizer = BertTokenizer.from_pretrained(bert_tokenizer)
+        self.diff_type = diff_type
+        self.diff_net = diff_net.to(self.device)
+        self.rwd_diff = rwd_diff.to(self.device)
+        self.comp_model = comp_model.to(self.device)
+        self.cond_model = cond_model.to(self.device) if cond_model else None
+        self.tokenizer = BertTokenizer.from_pretrained(tokenizer)
         self.in_channels = in_channels
-        self.image_shape = image_shape
+        self.img_size = img_size
         self.batch_size = batch_size
         self.max_token_length = max_token_length
-        self.image_output_range = image_output_range
-
-        if not isinstance(image_shape, (tuple, list)) or len(image_shape) != 2 or not all(isinstance(s, int) and s > 0 for s in image_shape):
-            raise ValueError("image_shape must be a tuple of two positive integers (height, width)")
+        self.norm_range = norm_range
+        if not isinstance(img_size, (tuple, list)) or len(img_size) != 2 or not all(isinstance(s, int) and s > 0 for s in img_size):
+            raise ValueError("img_size must be a tuple of two positive integers (height, width)")
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if in_channels <= 0:
             raise ValueError("in_channels must be positive")
-        if not isinstance(image_output_range, (tuple, list)) or len(image_output_range) != 2 or image_output_range[0] >= image_output_range[1]:
-            raise ValueError("output_range must be a tuple (min, max) with min < max")
+        if not isinstance(norm_range, (tuple, list)) or len(norm_range) != 2 or norm_range[0] >= norm_range[1]:
+            raise ValueError("norm_range must be a tuple (min, max) with min < max")
 
     def tokenize(self, prompts: Union[List, str]):
         """Tokenizes text prompts for conditional generation.
@@ -816,10 +769,10 @@ class SampleLDM(nn.Module):
 
     def forward(
             self,
-            conditions: Optional[Union[List, str]] = None,
-            normalize_output: bool = True,
-            save_images: bool = True,
-            save_path: str = "ldm_generated"
+            conds: Optional[Union[List, str]] = None,
+            norm_output: bool = True,
+            save_imgs: bool = True,
+            save_path: str = "ldm_samples"
     ) -> torch.Tensor:
         """Generates images using the reverse diffusion process in the latent space.
 
@@ -829,11 +782,11 @@ class SampleLDM(nn.Module):
 
         Parameters
         ----------
-        conditions : str or list, optional
+        conds : str or list, optional
             Text prompt(s) for conditional generation, default None.
-        normalize_output : bool, optional
+        norm_output : bool, optional
             If True, normalizes output images to [0, 1] (default: True).
-        save_images : bool, optional
+        save_imgs : bool, optional
             If True, saves generated images to `save_path` (default: True).
         save_path : str, optional
             Directory to save generated images (default: "ldm_generated").
@@ -842,67 +795,59 @@ class SampleLDM(nn.Module):
         -------
         generated_imgs (torch.Tensor) - Generated images, shape (batch_size, channels, height, width). If `normalize_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `output_range`.
         """
-        if conditions is not None and self.conditional_model is None:
+        if conds is not None and self.cond_model is None:
             raise ValueError("Conditions provided but no conditional model specified")
-        if conditions is None and self.conditional_model is not None:
+        if conds is None and self.cond_model is not None:
             raise ValueError("Conditions must be provided for conditional model")
-
-        noisy_samples = torch.randn(self.batch_size, self.in_channels, self.image_shape[0], self.image_shape[1]).to(self.device)
-
-        self.noise_predictor.eval()
-        self.compressor.eval()
-        self.reverse.eval()
-        if self.conditional_model:
-            self.conditional_model.eval()
+        init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1]).to(self.device)
+        self.diff_net.eval()
+        self.comp_model.eval()
+        if self.cond_model:
+            self.cond_model.eval()
 
         with torch.no_grad():
-            xt = noisy_samples
-            xt, _ = self.compressor.encode(xt)
-
-            if self.diffusion_model == "ddim":
-                num_steps = self.reverse.variance_scheduler.tau_num_steps
-            elif self.diffusion_model == "ddpm" or self.diffusion_model == "sde":
-                num_steps = self.reverse.variance_scheduler.num_steps
+            xt = init_samps
+            xt, _ = self.comp_model.encode(xt)
+            if self.cond_model is not None and conds is not None:
+                input_ids, attention_masks = self.tokenize(conds)
+                key_padding_mask = (attention_masks == 0)
+                y = self.cond_model(input_ids, key_padding_mask)
             else:
-                raise ValueError(f"Unknown model: {self.diffusion_model}. Supported: ddpm, ddim, sde")
+                y = None
+            if self.diff_type == 'ddpm':
+                for t in reversed(range(self.fwd_diff.vs.time_steps)):
+                    time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
+                    pred = self.diff_net(xt, time_steps, y, clip_embeddings=None)
+                    xt, _ = self.rwd_diff(xt, pred, time_steps)
+            elif self.diff_type == 'ddim':
+                timesteps = self.fwd_diff.vs.inference_timesteps.flip(0)
+                for i in range(len(timesteps) - 1):
+                    t_current = timesteps[i].item()
+                    t_next = timesteps[i + 1].item()
+                    time = torch.full((xt.shape[0],), t_current, device=self.device, dtype=torch.long)
+                    prev_time = torch.full((xt.shape[0],), t_next, device=self.device, dtype=torch.long)
+                    pred = self.diff_net(xt, time, y, clip_embeddings=None)
+                    xt, _ = self.rwd_diff(xt, time, prev_time, pred)
+            else:
+                t_schedule = torch.linspace(1.0, self.time_eps, self.num_steps + 1)
+                dt = torch.tensor(-(1.0 - self.time_eps) / self.num_steps, device=xt.device, dtype=xt.dtype)
+                for t in range(self.num_steps):
+                    t_current = float(t_schedule[t])
+                    t_batch = torch.full((xt.shape[0],), t_current, dtype=xt.dtype, device=self.device)
+                    pred = self.diff_net(xt, t_batch, y, None)
+                    last_step = (t == self.num_steps - 1)
+                    xt = self.rwd_diff(xt, pred, t_batch, dt, last_step=last_step)
 
-            for t in reversed(range(num_steps)):
-                time_steps = torch.full((self.batch_size,), t, device=self.device)#, dtype=torch.long)
-                prev_time_steps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)#, dtype=torch.long)
-
-                if self.diffusion_model == "sde":
-                    noise = torch.randn_like(xt) if getattr(self.reverse, "sde_method", None) != "ode" else None
-
-                if self.conditional_model is not None and conditions is not None:
-                    input_ids, attention_masks = self.tokenize(conditions)
-                    key_padding_mask = (attention_masks == 0)
-                    y = self.conditional_model(input_ids, key_padding_mask)
-                    predicted_noise = self.noise_predictor(xt, time_steps, y)
-                else:
-                    predicted_noise = self.noise_predictor(xt, time_steps)
-
-                if self.diffusion_model == "sde":
-                    xt = self.reverse(xt, noise, predicted_noise, time_steps)
-                elif self.diffusion_model == "ddim":
-                    xt, _ = self.reverse(xt, predicted_noise, time_steps, prev_time_steps)
-                elif self.diffusion_model == "ddpm":
-                    xt = self.reverse(xt, predicted_noise, time_steps)
-                else:
-                    raise ValueError(f"Unknown model: {self.diffusion_model}. Supported: ddpm, ddim, sde")
-
-            x = self.compressor.decode(xt)
-            generated_imgs = torch.clamp(x, min=self.image_output_range[0], max=self.image_output_range[1])
-            if normalize_output:
-                generated_imgs = (generated_imgs - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
-
-            # save images if save_images is True
-            if save_images:
+            x = self.comp_model.decode(xt)
+            samps = torch.clamp(x, min=self.norm_range[0], max=self.norm_range[1])
+            if norm_output:
+                samps = (samps - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
+            if save_imgs:
                 os.makedirs(save_path, exist_ok=True)
-                for i in range(generated_imgs.size(0)):
-                    img_path = os.path.join(save_path, f"image_{i+1}.png")
-                    save_image(generated_imgs[i], img_path)
-
-        return generated_imgs
+                for i in range(samps.size(0)):
+                    img_path = os.path.join(save_path, f"img_{i+1}.png")
+                    save_image(samps[i], img_path)
+        return samps
 
     def to(self, device: torch.device) -> Self:
         """Moves the module and its components to the specified device.
@@ -917,11 +862,11 @@ class SampleLDM(nn.Module):
         sample (SampleDDIM, SampleDDIM or SampleSDE) - The module moved to the specified device.
         """
         self.device = device
-        self.noise_predictor.to(device)
-        self.reverse.to(device)
-        self.compressor.to(device)
-        if self.conditional_model:
-            self.conditional_model.to(device)
+        self.diff_net.to(device)
+        self.rwd_diff.to(device)
+        self.comp_model.to(device)
+        if self.cond_model:
+            self.cond_model.to(device)
         return super().to(device)
 
 ###==================================================================================================================###
@@ -977,13 +922,16 @@ class AutoencoderLDM(nn.Module):
             latent_channels: int,
             num_embeddings: int,
             use_vq: bool = False,
-            beta: float = 1.0
+            beta: float = 1.0,
+            use_flash: bool = True,
+            *args
     ) -> None:
         super().__init__()
         assert in_channels == out_channels, "Input and output channels must match for auto-encoding"
         self.use_vq = use_vq
         self.beta = beta
         self.current_beta = beta
+        self.use_flash = use_flash
         num_down_blocks = len(down_channels) - 1
         self.down_sampling_factor = int(total_down_sampling_factor ** (1 / num_down_blocks))
 
@@ -998,20 +946,19 @@ class AutoencoderLDM(nn.Module):
                 dropout_rate=dropout_rate
             ) for i in range(num_down_blocks)
         ])
-        self.attention1 = Attention(down_channels[-1], num_heads, num_groups, dropout_rate)
+        self.attention1 = Attention(down_channels[-1], num_heads, num_groups, dropout_rate, use_flash)
 
         # latent projection
         if use_vq:
             self.vq_layer = VectorQuantizer(num_embeddings, down_channels[-1])
             self.quant_conv = nn.Conv2d(down_channels[-1], latent_channels, kernel_size=1)
         else:
-            self.conv_mu = nn.Conv2d(down_channels[-1], down_channels[-1], kernel_size=3, padding=1)
-            self.conv_logvar = nn.Conv2d(down_channels[-1], down_channels[-1], kernel_size=3, padding=1)
+            self.conv_mu_logvar = nn.Conv2d(down_channels[-1], down_channels[-1] * 2, kernel_size=3, padding=1)
             self.quant_conv = nn.Conv2d(down_channels[-1], latent_channels, kernel_size=1)
 
         # decoder
         self.conv2 = nn.Conv2d(latent_channels, up_channels[0], kernel_size=3, padding=1)
-        self.attention2 = Attention(up_channels[0], num_heads, num_groups, dropout_rate)
+        self.attention2 = Attention(up_channels[0], num_heads, num_groups, dropout_rate, use_flash)
         self.up_blocks = nn.ModuleList([
             UpBlock(
                 in_channels=up_channels[i],
@@ -1071,22 +1018,17 @@ class AutoencoderLDM(nn.Module):
         x = self.conv1(x)
         for block in self.down_blocks:
             x = block(x)
-        res_x = x
-        x = self.attention1(x)
-        x = x + res_x
+        x = x + self.attention1(x)
         if self.use_vq:
             z, vq_loss = self.vq_layer(x)
             z = self.quant_conv(z)
             return z, vq_loss
         else:
-            mu = self.conv_mu(x)
-            logvar = self.conv_logvar(x)
+            mu_logvar = self.conv_mu_logvar(x)
+            mu, logvar = mu_logvar.chunk(2, dim=1)
             z = self.reparameterize(mu, logvar)
             z = self.quant_conv(z)
-            kl_unnormalized = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-            batch_size = x.size(0)
-            latent_size = torch.prod(torch.tensor(mu.shape[1:])).item()
-            kl_loss = kl_unnormalized / (batch_size * latent_size) * self.current_beta
+            kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp()) * self.current_beta
             return z, kl_loss
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
@@ -1106,9 +1048,7 @@ class AutoencoderLDM(nn.Module):
         x (torch.Tensor) - Reconstructed images, shape (batch_size, out_channels, height, width).
         """
         x = self.conv2(z)
-        res_x = x
-        x = self.attention2(x)
-        x = x + res_x
+        x = x + self.attention2(x)
         for block in self.up_blocks:
             x = block(x)
         x = self.conv3(x)
@@ -1148,7 +1088,7 @@ class AutoencoderLDM(nn.Module):
         total_loss = recon_loss.item() + reg_loss
         return x_hat, total_loss, reg_loss, z
 
-###==================================================================================================================###
+
 
 class VectorQuantizer(nn.Module):
     """Vector quantization layer for discretizing latent representations.
@@ -1166,7 +1106,6 @@ class VectorQuantizer(nn.Module):
         Dimensionality of each embedding vector (matches input channel dimension).
     commitment_cost : float, optional
         Weight for the commitment loss, encouraging inputs to be close to quantized values (default: 0.25).
-
 
     **Notes**
 
@@ -1208,21 +1147,18 @@ class VectorQuantizer(nn.Module):
         - Euclidean distances are computed efficiently using vectorized operations.
         - The commitment loss is scaled by `commitment_cost`, and the total VQ loss combines commitment and codebook losses.
         """
-        z = z.contiguous()
-        assert z.size(1) == self.embedding_dim, f"Expected channel dim {self.embedding_dim}, got {z.size(1)}"
-        z_flattened = z.reshape(-1, self.embedding_dim)
-        distances = (torch.sum(z_flattened ** 2, dim=1, keepdim=True)
-                     + torch.sum(self.embedding.weight ** 2, dim=1)
-                     - 2 * torch.matmul(z_flattened, self.embedding.weight.t()))
-        encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
-        encodings = F.one_hot(encoding_indices, self.num_embeddings).float().squeeze(1)
-        quantized = torch.matmul(encodings, self.embedding.weight).view_as(z)
-        commitment_loss = self.commitment_cost * torch.mean((z.detach() - quantized) ** 2)
-        codebook_loss = torch.mean((z - quantized.detach()) ** 2)
+        batch_size, channels, height, width = z.shape
+        assert channels == self.embedding_dim, f"Expected channel dim {self.embedding_dim}, got {channels}"
+        z_flattened = z.permute(0, 2, 3, 1).reshape(-1, self.embedding_dim)
+        z_sq = torch.sum(z_flattened ** 2, dim=1, keepdim=True)
+        e_sq = torch.sum(self.embedding.weight ** 2, dim=1)
+        distances = z_sq + e_sq - 2 * torch.matmul(z_flattened, self.embedding.weight.t())
+        encoding_indices = torch.argmin(distances, dim=1)
+        quantized = self.embedding(encoding_indices).view(batch_size, height, width, channels).permute(0, 3, 1, 2)
+        commitment_loss = self.commitment_cost * F.mse_loss(z.detach(), quantized)
+        codebook_loss = F.mse_loss(z, quantized.detach())
         quantized = z + (quantized - z).detach()
         return quantized, commitment_loss + codebook_loss
-
-###==================================================================================================================###
 
 class DownBlock(nn.Module):
     """Downsampling block for the encoder in AutoencoderLDM.
@@ -1249,37 +1185,17 @@ class DownBlock(nn.Module):
     - Each layer pair consists of two Conv3 modules with a residual connection using a 1x1 convolution to match dimensions.
     - The downsampling is applied after all convolutional layers, reducing spatial dimensions by `down_sampling_factor`.
     """
-    def __init__(self, in_channels: int, out_channels: int, num_layers: int, down_sampling_factor: int, dropout_rate: float) -> None:
+    def __init__(self, in_channels: int, out_channels: int, num_layers: int,
+                 down_sampling_factor: int, dropout_rate: float) -> None:
         super().__init__()
         self.num_layers = num_layers
-        self.conv1 = nn.ModuleList([
-            Conv3(
-                in_channels=in_channels if i == 0 else out_channels,
-                out_channels=out_channels,
-                dropout_rate=dropout_rate
-            ) for i in range(self.num_layers)
-        ])
-        self.conv2 = nn.ModuleList([
-            Conv3(
-                in_channels=out_channels,
-                out_channels=out_channels,
-                dropout_rate=dropout_rate
-            ) for _ in range(self.num_layers)
-        ])
-
-        self.down_sampling = DownSampling(
-            in_channels=out_channels,
-            out_channels=out_channels,
-            down_sampling_factor=down_sampling_factor
-        )
-        self.resnet = nn.ModuleList([
-            nn.Conv2d(
-                in_channels=in_channels if i == 0 else out_channels,
-                out_channels=out_channels,
-                kernel_size=1
-            ) for i in range(num_layers)
-
-        ])
+        self.res_blocks = nn.ModuleList()
+        for i in range(num_layers):
+            in_ch = in_channels if i == 0 else out_channels
+            self.res_blocks.append(
+                ResidualBlock(in_ch, out_channels, dropout_rate)
+            )
+        self.down_sampling = DownSampling(out_channels, out_channels, down_sampling_factor)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Processes input through convolutional layers and downsampling.
@@ -1293,16 +1209,26 @@ class DownBlock(nn.Module):
         -------
         output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor).
         """
-        output = x
-        for i in range(self.num_layers):
-            resnet_input = output
-            output = self.conv1[i](output)
-            output = self.conv2[i](output)
-            output = output + self.resnet[i](resnet_input)
-        output = self.down_sampling(output)
-        return output
+        for block in self.res_blocks:
+            x = block(x)
+        x = self.down_sampling(x)
+        return x
 
-###==================================================================================================================###
+class ResidualBlock(nn.Module):
+    """Residual block"""
+    def __init__(self, in_channels: int, out_channels: int, dropout_rate: float) -> None:
+        super().__init__()
+        self.conv1 = Conv3(in_channels, out_channels, dropout_rate)
+        self.conv2 = Conv3(out_channels, out_channels, dropout_rate)
+        self.skip = nn.Conv2d(in_channels, out_channels, kernel_size=1) if in_channels != out_channels else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Processes input through residual connection"""
+        residual = self.skip(x)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        return x + residual
+
 
 class Conv3(nn.Module):
     """Convolutional layer with group normalization, SiLU activation, and dropout.
@@ -1326,10 +1252,9 @@ class Conv3(nn.Module):
     """
     def __init__(self, in_channels: int, out_channels: int, dropout_rate: float) -> None:
         super().__init__()
-        self.group_norm = nn.GroupNorm(num_groups=8, num_channels=in_channels)
-        self.activation = nn.SiLU()
+        self.group_norm = nn.GroupNorm(num_groups=min(8, in_channels), num_channels=in_channels)
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.dropout = nn.Dropout(p=dropout_rate)
+        self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Processes input through group normalization, activation, dropout, and convolution.
@@ -1344,12 +1269,11 @@ class Conv3(nn.Module):
         x (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height, width).
         """
         x = self.group_norm(x)
-        x = self.activation(x)
+        x = F.silu(x)  # In-place SiLU
         x = self.dropout(x)
         x = self.conv(x)
         return x
 
-###==================================================================================================================###
 
 class DownSampling(nn.Module):
     """Downsampling module for reducing spatial dimensions in AutoencoderLDM’s encoder.
@@ -1373,19 +1297,15 @@ class DownSampling(nn.Module):
     """
     def __init__(self, in_channels: int, out_channels: int, down_sampling_factor: int) -> None:
         super().__init__()
-        self.down_sampling_factor = down_sampling_factor
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=1),
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels // 2,
-                      kernel_size=3, stride=down_sampling_factor, padding=1)
-        )
-        self.pool = nn.Sequential(
-            nn.MaxPool2d(kernel_size=down_sampling_factor, stride=down_sampling_factor),
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels // 2,
-                      kernel_size=1, stride=1, padding=0)
+        self.conv = nn.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=down_sampling_factor,
+            padding=1
         )
 
-    def forward(self, batch: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Downsamples input by combining convolutional and pooling paths.
 
         Parameters
@@ -1397,9 +1317,8 @@ class DownSampling(nn.Module):
         -------
         x (torch.Tensor) - Downsampled tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor).
         """
-        return torch.cat(tensors=[self.conv(batch), self.pool(batch)], dim=1)
+        return self.conv(x)
 
-###==================================================================================================================###
 
 class Attention(nn.Module):
     """Self-attention module for feature enhancement in AutoencoderLDM.
@@ -1423,11 +1342,26 @@ class Attention(nn.Module):
     - The input is reshaped to (batch_size, height * width, num_channels) for attention processing, then restored to (batch_size, num_channels, height, width).
     - Group normalization is applied before attention to stabilize training.
     """
-    def __init__(self, num_channels: int, num_heads: int, num_groups: int, dropout_rate: float) -> None:
+    def __init__(self, num_channels: int, num_heads: int, num_groups: int,
+                 dropout_rate: float, use_flash: bool = True) -> None:
         super().__init__()
+        self.num_channels = num_channels
+        self.num_heads = num_heads
+        self.use_flash = use_flash
+
         self.group_norm = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels)
-        self.attention = nn.MultiheadAttention(embed_dim=num_channels, num_heads=num_heads, batch_first=True)
-        self.dropout = nn.Dropout(p=dropout_rate)
+
+        if use_flash and hasattr(F, 'scaled_dot_product_attention'):
+            self.qkv = nn.Linear(num_channels, num_channels * 3)
+            self.proj = nn.Linear(num_channels, num_channels)
+        else:
+            self.attention = nn.MultiheadAttention(
+                embed_dim=num_channels,
+                num_heads=num_heads,
+                batch_first=True,
+                dropout=dropout_rate
+            )
+        self.dropout = nn.Dropout(p=dropout_rate) if dropout_rate > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Applies self-attention to input features.
@@ -1442,15 +1376,23 @@ class Attention(nn.Module):
         x (torch.Tensor) - Output tensor, same shape as input.
         """
         batch_size, channels, h, w = x.shape
-        x = x.reshape(batch_size, channels, h * w)
-        x = self.group_norm(x)
-        x = x.transpose(1, 2)
-        x, _ = self.attention(x, x, x)
-        x = self.dropout(x)
-        x = x.transpose(1, 2).reshape(batch_size, channels, h, w)
-        return x
+        x_norm = self.group_norm(x)
+        x_norm = x_norm.reshape(batch_size, channels, h * w).transpose(1, 2)
+        if self.use_flash and hasattr(F, 'scaled_dot_product_attention'):
+            qkv = self.qkv(x_norm).reshape(batch_size, h * w, 3, self.num_heads, channels // self.num_heads)
+            q, k, v = qkv.unbind(2)
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+            attn_output = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False)
+            attn_output = attn_output.transpose(1, 2).reshape(batch_size, h * w, channels)
+            x_attn = self.proj(attn_output)
+        else:
+            x_attn, _ = self.attention(x_norm, x_norm, x_norm)
+        x_attn = self.dropout(x_attn)
+        x_attn = x_attn.transpose(1, 2).reshape(batch_size, channels, h, w)
+        return x_attn
 
-###==================================================================================================================###
 
 class UpBlock(nn.Module):
     """Upsampling block for the decoder in AutoencoderLDM.
@@ -1477,38 +1419,14 @@ class UpBlock(nn.Module):
     - Upsampling is applied first, followed by convolutional layer pairs with residual connections using 1x1 convolutions.
     - Each layer pair consists of two Conv3 modules.
     """
-    def __init__(self, in_channels: int, out_channels: int, num_layers: int, up_sampling_factor: int, dropout_rate: float) -> None:
+    def __init__(self, in_channels: int, out_channels: int, num_layers: int,
+                 up_sampling_factor: int, dropout_rate: float) -> None:
         super().__init__()
-        self.num_layers = num_layers
-        effective_in_channels = in_channels
-
-        self.up_sampling = UpSampling(
-            in_channels=in_channels,
-            out_channels=in_channels,
-            up_sampling_factor=up_sampling_factor
-        )
-
-        self.conv1 = nn.ModuleList([
-            Conv3(
-                in_channels=effective_in_channels if i == 0 else out_channels,
-                out_channels=out_channels,
-                dropout_rate=dropout_rate
-            ) for i in range(self.num_layers)
-        ])
-        self.conv2 = nn.ModuleList([
-            Conv3(
-                in_channels=out_channels,
-                out_channels=out_channels,
-                dropout_rate=dropout_rate
-            ) for _ in range(self.num_layers)
-        ])
-        self.resnet = nn.ModuleList([
-            nn.Conv2d(
-                in_channels=effective_in_channels if i == 0 else out_channels,
-                out_channels=out_channels,
-                kernel_size=1
-            ) for i in range(self.num_layers)
-        ])
+        self.up_sampling = UpSampling(in_channels, in_channels, up_sampling_factor)
+        self.res_blocks = nn.ModuleList()
+        for i in range(num_layers):
+            in_ch = in_channels if i == 0 else out_channels
+            self.res_blocks.append(ResidualBlock(in_ch, out_channels, dropout_rate))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Processes input through upsampling and convolutional layers.
@@ -1523,15 +1441,10 @@ class UpBlock(nn.Module):
         output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height * up_sampling_factor, width * up_sampling_factor).
         """
         x = self.up_sampling(x)
-        output = x
-        for i in range(self.num_layers):
-            resnet_input = output
-            output = self.conv1[i](output)
-            output = self.conv2[i](output)
-            output = output + self.resnet[i](resnet_input)
-        return output
+        for block in self.res_blocks:
+            x = block(x)
+        return x
 
-###==================================================================================================================###
 
 class UpSampling(nn.Module):
     """Upsampling module for increasing spatial dimensions in AutoencoderLDM’s decoder.
@@ -1555,37 +1468,16 @@ class UpSampling(nn.Module):
     """
     def __init__(self, in_channels: int, out_channels: int, up_sampling_factor: int) -> None:
         super().__init__()
-        half_out_channels = out_channels // 2
-        self.up_sampling_factor = up_sampling_factor
-        self.conv = nn.Sequential(
-            nn.ConvTranspose2d(
-                in_channels=in_channels,
-                out_channels=half_out_channels,
-                kernel_size=3,
-                stride=up_sampling_factor,
-                padding=1,
-                output_padding=up_sampling_factor - 1
-            ),
-            nn.Conv2d(
-                in_channels=half_out_channels,
-                out_channels=half_out_channels,
-                kernel_size=1,
-                stride=1,
-                padding=0
-            )
-        )
-        self.up_sample = nn.Sequential(
-            nn.Upsample(scale_factor=up_sampling_factor, mode="nearest"),
-            nn.Conv2d(
-                in_channels=in_channels,
-                out_channels=half_out_channels,
-                kernel_size=1,
-                stride=1,
-                padding=0
-            )
+        self.conv = nn.ConvTranspose2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=up_sampling_factor,
+            padding=1,
+            output_padding=up_sampling_factor - 1
         )
 
-    def forward(self, batch: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Upsamples input by combining transposed convolution and upsampling paths.
 
         Parameters
@@ -1595,22 +1487,15 @@ class UpSampling(nn.Module):
 
         Returns
         -------
-        x (torch.Tensor) - Upsampled tensor, shape (batch_size, out_channels, height * up_sampling_factor, width * up_sampling_factor).
+        x (torch.Tensor) - Upsampled tensor, shape
+        (batch_size, out_channels, height * up_sampling_factor, width * up_sampling_factor).
 
         **Notes**
 
-        - Interpolation is applied if the spatial dimensions of the convolutional and upsampling paths differ, using nearest-neighbor mode.
+        - Interpolation is applied if the spatial dimensions of the
+          convolutional and upsampling paths differ, using nearest-neighbor mode.
         """
-        conv_output = self.conv(batch)
-        up_sample_output = self.up_sample(batch)
-        if conv_output.shape[2:] != up_sample_output.shape[2:]:
-            _, _, h, w = conv_output.shape
-            up_sample_output = torch.nn.functional.interpolate(
-                up_sample_output,
-                size=(h, w),
-                mode='nearest'
-            )
-        return torch.cat(tensors=[conv_output, up_sample_output], dim=1)
+        return self.conv(x)
 
 ###==================================================================================================================###
 
@@ -1626,9 +1511,9 @@ class TrainAE(nn.Module):
     ----------
     model : nn.Module
         The variational autoencoder model (AutoencoderLDM) to train.
-    optimizer : torch.optim.Optimizer
+    optim : torch.optim.Optimizer
         Optimizer for training (e.g., Adam).
-    data_loader : torch.utils.data.DataLoader
+    train_loader : torch.utils.data.DataLoader
         DataLoader for training data.
     val_loader : torch.utils.data.DataLoader, optional
         DataLoader for validation data (default: None).
@@ -1636,7 +1521,7 @@ class TrainAE(nn.Module):
         Maximum number of training epochs (default: 100).
     metrics_ : object, optional
         Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
-    device : None, optional
+    device : str
         Device for computation (e.g., 'cuda', 'cpu').
     store_path : str, optional
         Path to save model checkpoints (default: 'vlc_model.pth').
@@ -1647,57 +1532,52 @@ class TrainAE(nn.Module):
     patience : int, optional
         Number of epochs to wait for early stopping if validation loss doesn’t improve
         (default: 10).
-    val_frequency : int, optional
+    val_freq : int, optional
         Frequency (in epochs) for validation and metric computation (default: 5).
     use_ddp : bool, optional
         Whether to use Distributed Data Parallel training (default: False).
-    grad_accumulation_steps : int, optional
+    grad_acc : int, optional
         Number of gradient accumulation steps before optimizer update (default: 1).
-    log_frequency : int, optional
+    log_freq : int, optional
         Number of epochs before printing loss.
     """
 
     def __init__(
             self,
             model: torch.nn.Module,
-            optimizer: torch.optim.Optimizer,
-            data_loader: torch.utils.data.DataLoader,
+            optim: torch.optim.Optimizer,
+            train_loader: torch.utils.data.DataLoader,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epochs: int = 100,
             metrics_: Optional[Any] = None,
-            device: Optional[Union[str, torch.device]] = None,
+            device: str = 'cuda',
             store_path: str = "vlc_model",
             checkpoint: int = 10,
             kl_warmup_epochs: int = 10,
             patience: int = 10,
-            val_frequency: int = 5,
-            warmup_epochs: int = 100,
+            val_freq: int = 5,
+            warmup_steps: int = 10000,
             use_ddp: bool = False,
-            grad_accumulation_steps: int = 1,
-            log_frequency: int = 1,
-            use_compilation: bool = False
+            grad_acc: int = 1,
+            log_freq: int = 1,
+            use_comp: bool = False,
+            *args
     ) -> None:
         super().__init__()
-
-        # initialize DDP settings first
         self.use_ddp = use_ddp
-        self.grad_accumulation_steps = grad_accumulation_steps
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
+        self.grad_acc = grad_acc
+        if isinstance(device, str):
             self.device = torch.device(device)
         else:
             self.device = device
-
-        # setup distributed training if enabled
         if self.use_ddp:
             self._setup_ddp()
         else:
             self._setup_single_gpu()
 
         self.model = model.to(self.device)
-        self.optimizer = optimizer
-        self.data_loader = data_loader
+        self.optim = optim
+        self.train_loader = train_loader
         self.val_loader = val_loader
         self.max_epochs = max_epochs
         self.metrics_ = metrics_  
@@ -1705,17 +1585,19 @@ class TrainAE(nn.Module):
         self.checkpoint = checkpoint
         self.kl_warmup_epochs = kl_warmup_epochs
         self.patience = patience
-        self.use_compilation = use_compilation
-
-        # Learning rate scheduling
+        self.use_comp = use_comp
+        self.global_step = 0
+        self.warmup_steps = warmup_steps
+        self.best_loss = float('inf')
+        self.losses = {'train_losses': [], 'val_losses': []}
         self.scheduler = ReduceLROnPlateau(
-            self.optimizer,
+            self.optim,
             patience=self.patience,
             factor=0.5
         )
-        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
-        self.val_frequency = val_frequency
-        self.log_frequency = log_frequency
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
+        self.val_freq = val_freq
+        self.log_freq = log_freq
 
     def _setup_ddp(self) -> None:
         """Setup Distributed Data Parallel training configuration.
@@ -1723,34 +1605,22 @@ class TrainAE(nn.Module):
         Initializes process group, determines rank information, and sets up
         CUDA device for the current process.
         """
-        # check if DDP environment variables are set
         if "RANK" not in os.environ:
             raise ValueError("DDP enabled but RANK environment variable not set")
         if "LOCAL_RANK" not in os.environ:
             raise ValueError("DDP enabled but LOCAL_RANK environment variable not set")
         if "WORLD_SIZE" not in os.environ:
             raise ValueError("DDP enabled but WORLD_SIZE environment variable not set")
-
-        # ensure CUDA is available for DDP
         if not torch.cuda.is_available():
             raise RuntimeError("DDP requires CUDA but CUDA is not available")
-
-        # initialize process group only if not already initialized
         if not torch.distributed.is_initialized():
             init_process_group(backend="nccl")
-
-        # get rank information
         self.ddp_rank = int(os.environ["RANK"])  # global rank across all nodes
         self.ddp_local_rank = int(os.environ["LOCAL_RANK"])  # local rank on current node
         self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # total number of processes
-
-        # set device and make it current
         self.device = torch.device(f"cuda:{self.ddp_local_rank}")
         torch.cuda.set_device(self.device)
-
-        # master process handles logging, checkpointing, etc.
         self.master_process = self.ddp_rank == 0
-
         if self.master_process:
             print(f"DDP initialized with world_size={self.ddp_world_size}")
 
@@ -1781,46 +1651,32 @@ class TrainAE(nn.Module):
             The loss at the checkpoint (float).
         """
         try:
-            # load checkpoint with proper device mapping
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
-
-
         if 'model_state_dict' not in checkpoint:
             raise KeyError("Checkpoint missing 'model_state_dict' key")
-
-        # Handle DDP wrapped model state dict
         state_dict = checkpoint['model_state_dict']
         if self.use_ddp and not any(key.startswith('module.') for key in state_dict.keys()):
-            # if loading non-DDP checkpoint into DDP model, add 'module.' prefix
             state_dict = {f'module.{k}': v for k, v in state_dict.items()}
         elif not self.use_ddp and any(key.startswith('module.') for key in state_dict.keys()):
-            # if loading DDP checkpoint into non-DDP model, remove 'module.' prefix
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         self.model.load_state_dict(state_dict)
-
-        if 'optimizer_state_dict' not in checkpoint:
-            raise KeyError("Checkpoint missing 'optimizer_state_dict' key")
+        if 'optim_state_dict' not in checkpoint:
+            raise KeyError("Checkpoint missing 'optim_state_dict' key")
         try:
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.optim.load_state_dict(checkpoint['optim_state_dict'])
         except ValueError as e:
             warnings.warn(f"Optimizer state loading failed: {e}. Continuing without optimizer state.")
 
         epoch = checkpoint.get('epoch', -1)
         loss = checkpoint.get('loss', float('inf'))
-
-        self.noise_predictor.to(self.device)
-        if self.conditional_model is not None:
-            self.conditional_model.to(self.device)
-
         if self.master_process:
             print(f"Loaded checkpoint from {checkpoint_path} at epoch {epoch} with loss {loss:.4f}")
-
         return epoch, loss
 
     @staticmethod
-    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
+    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_steps: int) -> torch.optim.lr_scheduler.LambdaLR:
         """Creates a learning rate scheduler for warmup.
 
         Generates a scheduler that linearly increases the learning rate from 0 to the
@@ -1830,7 +1686,7 @@ class TrainAE(nn.Module):
         ----------
         optimizer : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
-        warmup_epochs : int
+        warmup_steps : int
             Number of epochs for the warmup phase.
 
         Returns
@@ -1838,34 +1694,23 @@ class TrainAE(nn.Module):
         torch.optim.lr_scheduler.LambdaLR
             Learning rate scheduler for warmup.
         """
-
-        def lr_lambda(epoch):
-            if epoch < warmup_epochs:
-                return epoch / warmup_epochs
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return 0.1 + (0.9 * step / warmup_steps)
             return 1.0
 
         return LambdaLR(optimizer, lr_lambda)
 
     def _wrap_models_for_ddp(self) -> None:
-        """Wrap models with DistributedDataParallel for multi-GPU training."""
+        """Wrap models with DistributedDataParallel for multi-GPU training"""
         if self.use_ddp:
-            # wrap noise predictor with DDP
-            self.noise_predictor = DDP(
-                self.noise_predictor,
+            self.model = DDP(
+                self.model,
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
 
-            # wrap conditional model with DDP if it exists
-            if self.conditional_model is not None:
-                self.conditional_model = DDP(
-                    self.conditional_model,
-                    device_ids=[self.ddp_local_rank],
-                    find_unused_parameters=True
-                )
-
-
-    def forward(self) -> Tuple[List[float], float]:
+    def forward(self) -> Dict:
         """Trains the AutoencoderLDM model with mixed precision and evaluation metrics.
 
         Performs training with reconstruction and regularization losses, KL warmup, gradient
@@ -1879,88 +1724,58 @@ class TrainAE(nn.Module):
         best_val_loss :  float
             Best validation loss achieved (or best training loss if no validation).
         """
-        # compile models for optimization (if supported)
-        if self.use_compilation:
+        if self.use_comp:
             try:
                 self.model = torch.compile(self.model)
             except Exception as e:
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
-
-        # wrap models for DDP after compilation
         self._wrap_models_for_ddp()
-
-        # initialize training components
         scaler = torch.GradScaler()
-        train_losses = []
-        best_val_loss = float("inf")
         wait = 0
-
-        # main training loop
         for epoch in range(self.max_epochs):
-            # set epoch for distributed sampler if using DDP
-            if self.use_ddp and hasattr(self.data_loader.sampler, 'set_epoch'):
-                self.data_loader.sampler.set_epoch(epoch)
-
+            pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
+            if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
+                self.train_loader.sampler.set_epoch(epoch)
             if self.model.use_vq:
-                beta = 1.0  # no warmup for VQ
+                beta = 1.0
             else:
                 beta = min(1.0, epoch / self.kl_warmup_epochs) * self.model.beta
                 self.model.current_beta = beta
-
             train_losses_epoch = []
-
-            # training step loop with gradient accumulation
-            for step, (x, y) in enumerate(tqdm(self.data_loader, disable=not self.master_process)):
+            for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device)
-
-                # forward pass with mixed precision
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     x_hat, loss, reg_loss, z = self.model(x)
-                    # compute loss and scale for gradient accumulation
-                    loss = loss / self.grad_accumulation_steps
+                    loss = loss / self.grad_acc
 
-                # backward pass
                 scaler.scale(loss).backward()
-
-                # gradient accumulation and optimizer step
-                if (step + 1) % self.grad_accumulation_steps == 0:
-                    # clip gradients
-                    scaler.unscale_(self.optimizer)
+                if (step + 1) % self.grad_acc == 0:
+                    scaler.unscale_(self.optim)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-
-                    # optimizer step
-                    scaler.step(self.optimizer)
+                    scaler.step(self.optim)
                     scaler.update()
-                    self.optimizer.zero_grad()
+                    self.optim.zero_grad()
+                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                        self.warmup_lr_scheduler.step()
+                    self.global_step += 1
 
-                    # update learning rate (warmup scheduler)
-                    self.warmup_lr_scheduler.step()
-
-                # record loss (unscaled)
-                train_losses_epoch.append(loss.item() * self.grad_accumulation_steps)
-
-            # compute mean training loss
+                pbar.set_postfix({'Loss': f'{loss.item() * self.grad_acc:.4f}'})
+                train_losses_epoch.append(loss.item() * self.grad_acc)
             mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
+            self.losses['train_losses'].append(mean_train_loss)
 
-            # all-reduce loss across processes for DDP
             if self.use_ddp:
                 loss_tensor = torch.tensor(mean_train_loss, device=self.device)
                 dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
                 mean_train_loss = loss_tensor.item()
-
-            train_losses.append(mean_train_loss)
-
-            # print training progress (only master process)
-            if self.master_process and (epoch + 1) % self.log_frequency == 0:
-                current_lr = self.optimizer.param_groups[0]['lr']
+            if self.master_process and (epoch + 1) % self.log_freq == 0:
+                current_lr = self.optim.param_groups[0]['lr']
                 print(f"\nEpoch: {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
 
-            # validation step
-            if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
+            if self.val_loader is not None and (epoch + 1) % self.val_freq == 0:
                 val_metrics = self.validate()
                 val_loss, fid, mse, psnr, ssim, lpips_score = val_metrics
-
                 if self.master_process:
                     print(f" | Val Loss: {val_loss:.4f}", end="")
                     if self.metrics_ and hasattr(self.metrics_, 'fid') and self.metrics_.fid:
@@ -1971,34 +1786,30 @@ class TrainAE(nn.Module):
                         print(f" | LPIPS: {lpips_score:.4f}", end="")
                     print()
 
-                current_best = val_loss
                 self.scheduler.step(val_loss)
+                self.losses['val_losses'].append((val_loss, fid, mse, psnr, ssim, lpips_score))
             else:
                 if self.master_process:
                     print()
-                current_best = mean_train_loss
-                self.scheduler.step(mean_train_loss)
-
-            # save checkpoint and early stopping (only master process)
+            self.scheduler.step(mean_train_loss)
             if self.master_process:
-                if current_best < best_val_loss and (epoch + 1) % self.val_frequency == 0:
-                    best_val_loss = current_best
+                if mean_train_loss < self.best_loss:
+                    self.best_loss = mean_train_loss
                     wait = 0
-                    self._save_checkpoint(epoch + 1, best_val_loss)
+                    self._save_checkpoint(epoch + 1, self.best_loss, "best_")
                 else:
                     wait += 1
                     if wait >= self.patience:
                         print("Early stopping triggered")
-                        self._save_checkpoint(epoch + 1, best_val_loss, "_early_stop")
+                        self._save_checkpoint(epoch + 1, mean_train_loss, "early_stop_")
                         break
-
-        # clean up DDP
+                if (epoch + 1) % self.val_freq == 0:
+                    self._save_checkpoint(epoch + 1, mean_train_loss, "")
         if self.use_ddp:
             destroy_process_group()
+        return self.losses
 
-        return train_losses, best_val_loss
-
-    def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "") -> None:
+    def _save_checkpoint(self, epoch: int, loss: float, pref: str = "") -> None:
         """Save model checkpoint (only called by master process).
 
         Parameters
@@ -2007,24 +1818,22 @@ class TrainAE(nn.Module):
             Current epoch number.
         loss : float
             Current loss value.
-        suffix : str, optional
+        pref : str, optional
             Suffix to add to checkpoint filename.
         """
         try:
-            # get state dicts, handling DDP wrapping
             model_state = (
                 self.model.module.state_dict() if self.use_ddp else self.model.state_dict()
             )
-
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model_state,
-                'optimizer_state_dict': self.optimizer.state_dict(),
+                'optim_state_dict': self.optim.state_dict(),
                 'loss': loss,
+                'losses': self.losses,
                 'max_epochs': self.max_epochs,
             }
-
-            filename = f"ldm_epoch_{epoch}{suffix}.pth"
+            filename = f"{pref}model_epoch_{epoch}.pth"
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
@@ -2054,21 +1863,16 @@ class TrainAE(nn.Module):
             Mean LPIPS score
         """
         self.model.eval()
-
         val_losses = []
         fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
-
         with torch.no_grad():
             for x, _ in self.val_loader:
                 x = x.to(self.device)
                 x_hat, loss, reg_loss, z = self.model(x)
                 val_losses.append(loss.item())
-
-                # compute metrics
                 if self.metrics_ is not None:
                     metrics_result = self.metrics_.forward(x, x_hat)
                     fid, mse, psnr, ssim, lpips_score = metrics_result
-
                     if hasattr(self.metrics_, 'fid') and self.metrics_.fid:
                         fid_scores.append(fid)
                     if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
@@ -2077,11 +1881,7 @@ class TrainAE(nn.Module):
                         ssim_scores.append(ssim)
                     if hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
                         lpips_scores.append(lpips_score)
-
-        # compute average metrics
         val_loss = torch.tensor(val_losses).mean().item()
-
-        # all-reduce validation metrics across processes for DDP
         if self.use_ddp:
             val_loss_tensor = torch.tensor(val_loss, device=self.device)
             dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
@@ -2092,7 +1892,5 @@ class TrainAE(nn.Module):
         psnr_avg = torch.tensor(psnr_scores).mean().item() if psnr_scores else None
         ssim_avg = torch.tensor(ssim_scores).mean().item() if ssim_scores else None
         lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
-
         self.model.train()
-
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
