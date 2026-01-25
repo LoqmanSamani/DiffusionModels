@@ -91,6 +91,9 @@ class ForwardSDE(nn.Module):
         Forward process type. Must be one of:
         {"vp", "ve", "sub-vp", "ode"}.
 
+    pred_type: Prediction parameterization.
+                One of {"noise", "x0", "score"}.
+
     sigma_min : float, default=0.01
         Minimum noise scale for the VE-SDE.
 
@@ -118,6 +121,7 @@ class ForwardSDE(nn.Module):
             self,
             scheduler: nn.Module,
             method: str = "vp",
+            pred_type = 'noise',
             sigma_min: float = 0.01,
             sigma_max: float = 50.0,
             eps: float = 1e-8
@@ -128,8 +132,13 @@ class ForwardSDE(nn.Module):
         if method not in valid_methods:
             raise ValueError(f"sde_method must be one of {valid_methods}, got {method}")
 
+        valid_types = ["noise", "score"]
+        if pred_type not in valid_types:
+            raise ValueError(f"pred_type must be one of {valid_types}, got {pred_type}")
+
         self.vs = scheduler
         self.method = method
+        self.pred_type = pred_type
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.eps = eps
@@ -190,9 +199,12 @@ class ForwardSDE(nn.Module):
         std = self._broadcast_to_shape(std, x0.shape)
         # x_t = mean_coeff * x_0 + std * ε
         xt = mean_coeff * x0 + std * noise
-        # ∇_x log p(x_t | x_0) = -(x_t - mean_coeff*x_0) / σ²(t) = -ε / σ(t)
-        score = -noise / (std + self.eps)
-        return xt, score
+        if self.pred_type == 'noise':
+            target = noise
+        elif self.pred_type == "score":
+            # ∇_x log p(x_t | x_0) = -(x_t - mean_coeff*x_0) / σ²(t) = -ε / σ(t)
+            target = -noise / (std + self.eps)
+        return xt, target
 
 ###==================================================================================================================###
 
@@ -236,6 +248,9 @@ class ReverseSDE(nn.Module):
         Type of reverse-time dynamics. Must be one of:
         {"vp", "ve", "sub-vp", "ode"}.
 
+    pred_type: Prediction parameterization.
+                One of {"noise", "score"}.
+
     sigma_min : float, default=0.01
         Minimum noise scale for the VE-SDE.
 
@@ -270,18 +285,22 @@ class ReverseSDE(nn.Module):
             self,
             scheduler: nn.Module,
             method: str = "vp",
+            pred_type: str = 'noise',
             sigma_min: float = 0.01,
             sigma_max: float = 50.0,
             eps: float = 1e-8
     ):
         super().__init__()
-
         valid_methods = ["vp", "ve", "sub-vp", "ode"]
         if method not in valid_methods:
             raise ValueError(f"sde_method must be one of {valid_methods}, got {method}")
+        valid_types = ["noise", "score"]
+        if pred_type not in valid_types:
+            raise ValueError(f"pred_type must be one of {valid_types}, got {pred_type}")
 
         self.vs = scheduler
         self.method = method
+        self.pred_type = pred_type
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.eps = eps
@@ -328,11 +347,11 @@ class ReverseSDE(nn.Module):
 
         return drift_coeff, g_squared, diffusion_coeff
 
-    def forward(self, xt: torch.Tensor, score: torch.Tensor, t: torch.Tensor, dt: float, last_step: bool = False) -> torch.Tensor:
+    def forward(self, xt: torch.Tensor, pred: torch.Tensor, t: torch.Tensor, dt: float, last_step: bool = False) -> torch.Tensor:
         """Single reverse Euler-Maruyama step
         Args:
             xt: (batch, ..., dims) current state
-            score: (batch, ..., dims) score estimate ∇_x log p_t(x)
+            pred: (batch, ..., dims) output (prediction of diffusion model)
             t: (batch,) current time
             dt: scalar time step (negative for reverse)
             last_step: if True, skip noise for deterministic final step
@@ -349,10 +368,20 @@ class ReverseSDE(nn.Module):
         drift_coeff = self._broadcast_to_shape(drift_coeff, xt.shape)
         g_squared = self._broadcast_to_shape(g_squared, xt.shape)
         diffusion_coeff = self._broadcast_to_shape(diffusion_coeff, xt.shape)
+        if self.method == "ve":
+            sigma_t = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
+            std = sigma_t
+        else:
+            std = self.vs.std(t)
+        while std.dim() < len(xt.shape):
+            std = std.unsqueeze(-1)
+        if self.pred_type == "noise":
+            score = -pred / (std + self.eps)
+        elif self.pred_type == "score":
+            score = pred
         # [-½β(t)x - β(t)∇log p_t(x)]dt + √β(t)dw̄
         # reverse drift: f(x,t) - g²(t)·score
         drift = drift_coeff * xt - g_squared * score
-        # diffusion term
         if last_step or self.method == "ode":
             noise = torch.zeros_like(xt)
         else:
@@ -579,7 +608,6 @@ class TrainSDE(nn.Module):
             log_freq: int = 1,
             use_comp: bool = False,
             time_eps: float = 1e-5,
-            pred_noise: bool = True,
             num_steps: int = 400,
             *args
     ) -> None:
@@ -615,7 +643,6 @@ class TrainSDE(nn.Module):
         self.log_freq = log_freq
         self.use_comp = use_comp
         self.time_eps = time_eps
-        self.pred_noise = pred_noise
         self.num_steps = num_steps
         self.global_step = 0
         self.warmup_steps = warmup_steps
@@ -835,21 +862,14 @@ class TrainSDE(nn.Module):
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
                     noise = torch.randn_like(x)
                     t = self.sample_time(x.shape[0], self.time_eps)
-                    xt, score = self.fwd_sde(x, noise, t)
+                    xt, target = self.fwd_sde(x, noise, t)
                     pred = self.score_net(xt, t, y_encoded, clip_embeddings=None)
                     var = self.fwd_sde.vs.variance(t)
-                    if self.pred_noise:  # if model predicts noise
-                        if self.fwd_sde.method == "ve":
-                            sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
-                            loss = self.loss_fn(pred, noise, sigma) / self.grad_acc
-                        else:
-                            loss = self.loss_fn(pred, noise, var) / self.grad_acc
-                    else:  # if model predicts score
-                        if self.fwd_sde.method == "ve":
-                            sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
-                            loss = self.loss_fn(pred, score, sigma) / self.grad_acc
-                        else:
-                            loss = self.loss_fn(pred, score, var) / self.grad_acc
+                    if self.fwd_sde.method == "ve":
+                        sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
+                        loss = self.loss_fn(pred, target, sigma) / self.grad_acc
+                    else:
+                        loss = self.loss_fn(pred, target, var) / self.grad_acc
                 scaler.scale(loss).backward()
                 if (step + 1) % self.grad_acc == 0:
                     scaler.unscale_(self.optim)
@@ -1025,21 +1045,14 @@ class TrainSDE(nn.Module):
 
                     noise = torch.randn_like(x)
                     t = self.sample_time(x.shape[0], self.time_eps)
-                    xt, score = self.fwd_sde(x, noise, t)
+                    xt, target = self.fwd_sde(x, noise, t)
                     pred = self.score_net(xt, t, y_encoded, clip_embeddings=None)
                     var = self.fwd_sde.vs.variance(t)
-                    if self.pred_noise:  # if model predicts noise
-                        if self.fwd_sde.method == "ve":
-                            sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
-                            loss = self.loss_fn(pred, noise, sigma) / self.grad_acc
-                        else:
-                            loss = self.loss_fn(pred, noise, var) / self.grad_acc
-                    else:  # if model predicts score
-                        if self.fwd_sde.method == "ve":
-                            sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
-                            loss = self.loss_fn(pred, score, sigma) / self.grad_acc
-                        else:
-                            loss = self.loss_fn(pred, score, var) / self.grad_acc
+                    if self.fwd_sde.method == "ve":
+                        sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
+                        loss = self.loss_fn(pred, target, sigma) / self.grad_acc
+                    else:
+                        loss = self.loss_fn(pred, target, var) / self.grad_acc
                     val_losses.append(loss.item())
                     if self.metrics_ is not None and self.rwd_sde is not None:
                         xt = torch.randn_like(x).to(self.device)
@@ -1050,15 +1063,8 @@ class TrainSDE(nn.Module):
                             t_current = float(t_schedule[t])
                             t_batch = torch.full((xt.shape[0],), t_current, dtype=xt.dtype, device=self.device)
                             pred = self.score_net(xt, t_batch, y_encoded, None)
-                            if self.pred_noise:
-                                std = self.fwd_sde.vs.std(t_batch)
-                                while std.dim() < len(xt.shape):
-                                    std = std.unsqueeze(-1)
-                                score = -pred / (std + self.fwd_sde.eps)
-                            else:
-                                score = pred
                             last_step = (t == self.num_steps - 1)
-                            xt = self.rwd_sde(xt, score, t_batch, dt, last_step = last_step)
+                            xt = self.rwd_sde(xt, pred, t_batch, dt, last_step = last_step)
 
                     x_hat = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
                     if self.norm_output:
@@ -1258,16 +1264,8 @@ class SampleSDE(nn.Module):
                 t_current = float(t_schedule[step])
                 t_batch = torch.full((self.batch_size,), t_current, dtype=xt.dtype, device=self.device)
                 pred = self.score_net(xt, t_batch, y)
-                if self.pred_noise:
-                    std = self.rwd_sde.vs.std(t_batch)
-                    while std.dim() < len(xt.shape):
-                        std = std.unsqueeze(-1)
-                    score = -pred / (std + self.rwd_sde.eps)
-                else:
-                    score = pred
                 last_step = (step == num_steps - 1)
-                xt = self.rwd_sde(xt, score, t_batch, dt, last_step = last_step)
-
+                xt = self.rwd_sde(xt, pred, t_batch, dt, last_step = last_step)
             samps = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
             if norm_output:
                 samps = (samps - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])

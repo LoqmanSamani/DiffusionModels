@@ -449,7 +449,7 @@ class TrainDDIM(nn.Module):
             loss_fn: Callable,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epochs: int = 1000,
-            device: str = None,
+            device: str = 'cuda',
             cond_model: torch.nn.Module = None,
             metrics_: Optional[Any] = None,
             bert_tokenizer: Optional[BertTokenizer] = None,

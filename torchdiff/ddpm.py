@@ -60,7 +60,7 @@ class ForwardDDPM(nn.Module):
         Args:
             scheduler: Noise scheduler providing diffusion coefficients.
             pred_type: Prediction parameterization.
-                One of {"x0", "v"}.
+                One of {"noise", "x0", "v"}.
         """
         super().__init__()
 
@@ -145,7 +145,7 @@ class ReverseDDPM(nn.Module):
         valid_var_types = ["fixed_small", "fixed_large", "learned"]
 
         if pred_type not in valid_pred_types:
-            raise ValueError(f"prediction_type must be one of {valid_pred_types}")
+            raise ValueError(f"pred_type must be one of {valid_pred_types}")
         if var_type not in valid_var_types:
             raise ValueError(f"var_type must be one of {valid_var_types}")
 
