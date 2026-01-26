@@ -51,34 +51,71 @@ import torch.nn as nn
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
-from torchdiff.ddpm import VarianceSchedulerDDPM, ForwardDDPM, ReverseDDPM, TrainDDPM, SampleDDPM
-from torchdiff.utils import NoisePredictor
+from torchdiff.ddpm import (SchedulerDDPM, ForwardDDPM, 
+                            ReverseDDPM, TrainDDPM, SampleDDPM)
+from torchdiff.utils import DiffusionNetwork, mse_loss
 
-# Dataset setup
+# dataset: CIFAR10
 transform = transforms.Compose([
     transforms.Resize(32),
     transforms.ToTensor(),
     transforms.Normalize((0.5,), (0.5,))
 ])
-train_dataset = datasets.CIFAR10(root="./data", train=True, download=True, transform=transform)
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-
-# Model components
-noise_pred = NoisePredictor(in_channels=3)
-vs = VarianceSchedulerDDPM(num_steps=1000)
-fwd, rev = ForwardDDPM(vs), ReverseDDPM(vs)
-
-# Training
-trainer = TrainDDPM(
-    diff_net=noise_pred, fwd_ddpm=fwd, rwd_ddpm=rev,
-    cond_model=None, optim=torch.optim.Adam(noise_pred.parameters(), lr=1e-4),
-    loss_fn=nn.MSELoss(), train_loader=train_loader, max_epochs=1, device="cpu"
+train_dataset = datasets.CIFAR10(
+    root="./data", train=True, download=True, transform=transform
 )
-trainer()
+train_loader = DataLoader(
+    train_dataset, batch_size=64, shuffle=True
+)
+device = 'cuda' # gpu is used for training and sampling
+
+# model components
+diff_net = DiffusionNetwork(
+    in_channels = 3,
+    down_channels = [32, 64, 128],
+    mid_channels = [128, 128],
+    up_channels = [128, 64, 32],
+    down_sampling = [True, True],
+    time_embed_dim = 128,
+    y_embed_dim = 128,
+    num_down_blocks = 2,
+    num_mid_blocks = 2,
+    num_up_blocks = 2,
+    dropout_rate = 0.1,
+    cont_time = False # time is not continuous, if SDE models it should be true
+)
+print(sum(p.numel() for p in diff_net.parameters()))
+
+vs = SchedulerDDPM(time_steps = 400)
+fwd = ForwardDDPM(vs, 'noise') # network is trained to predict noise
+rwd = ReverseDDPM(vs, 'noise')
+
+# optimizer
+optim = torch.optim.Adam(diff_net.parameters(), lr=1e-5)
+
+# training algorithm
+trainer = TrainDDPM(
+    diff_net = diff_net,
+    fwd_ddpm = fwd,
+    rwd_ddpm = rwd,
+    train_loader = train_loader,
+    optim = optim,
+    loss_fn = mse_loss,
+    max_epochs = 10,
+    device = device,
+    grad_acc = 2
+)
+#trainer()
 
 # Sampling
-sampler = SampleDDPM(rwd_ddpm=rev, diff_net=noise_pred,
-                     img_size=(32, 32), batch_size=4, in_channels=3, device="cpu")
+sampler = SampleDDPM(
+    rwd_ddpm = rwd,
+    diff_net = diff_net,
+    img_size = (32, 32),
+    batch_size = 10,
+    in_channels = 3,
+    device = device
+)
 images = sampler()
 ```
 
@@ -108,12 +145,12 @@ DALL·E 2 architecture leveraging CLIP latents for text-to-image generation.
 TorchDiff breaks each model into reusable components:
 - **Forward Diffusion**: Adds noise to data
 - **Reverse Diffusion**: Removes noise to recover data  
-- **Variance Scheduler**: Controls noise schedules
+- **Scheduler**: Controls noise schedules
 - **Training**: Complete training pipelines
 - **Sampling**: Efficient inference and generation
 
 Additional utilities:
-- **Noise Predictor**: U-Net-like model with attention and time embeddings
+- **Diffusion Network**: U-Net-like model with attention and time embeddings
 - **Text Encoder**: Transformer-based for conditional generation
 - **Metrics**: Evaluation suite (MSE, PSNR, SSIM, FID, LPIPS)
 
