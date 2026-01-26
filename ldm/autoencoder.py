@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple
+import torch.utils.checkpoint as checkpoint
 
 
 
@@ -58,6 +59,7 @@ class AutoencoderLDM(nn.Module):
             use_vq: bool = False,
             beta: float = 1.0,
             use_flash: bool = True,
+            use_grad_check: bool = False,
             *args
     ) -> None:
         super().__init__()
@@ -66,6 +68,7 @@ class AutoencoderLDM(nn.Module):
         self.beta = beta
         self.current_beta = beta
         self.use_flash = use_flash
+        self.use_grad_check = use_grad_check
         num_down_blocks = len(down_channels) - 1
         self.down_sampling_factor = int(total_down_sampling_factor ** (1 / num_down_blocks))
 
@@ -77,7 +80,8 @@ class AutoencoderLDM(nn.Module):
                 out_channels=down_channels[i + 1],
                 num_layers=num_layers_per_block,
                 down_sampling_factor=self.down_sampling_factor,
-                dropout_rate=dropout_rate
+                dropout_rate=dropout_rate,
+                use_grad_check=self.use_grad_check
             ) for i in range(num_down_blocks)
         ])
         self.attention1 = Attention(down_channels[-1], num_heads, num_groups, dropout_rate, use_flash)
@@ -99,7 +103,8 @@ class AutoencoderLDM(nn.Module):
                 out_channels=up_channels[i + 1],
                 num_layers=num_layers_per_block,
                 up_sampling_factor=self.down_sampling_factor,
-                dropout_rate=dropout_rate
+                dropout_rate=dropout_rate,
+                use_grad_check=use_grad_check
             ) for i in range(len(up_channels) - 1)
         ])
         self.conv3 = Conv3(up_channels[-1], out_channels, dropout_rate)
@@ -152,7 +157,11 @@ class AutoencoderLDM(nn.Module):
         x = self.conv1(x)
         for block in self.down_blocks:
             x = block(x)
-        x = x + self.attention1(x)
+
+        if self.use_grad_check and self.training:
+            x = x + checkpoint.checkpoint(self.attention1, x, use_reentrant=False)
+        else:
+            x = x + self.attention1(x)
         if self.use_vq:
             z, vq_loss = self.vq_layer(x)
             z = self.quant_conv(z)
@@ -182,7 +191,10 @@ class AutoencoderLDM(nn.Module):
         x (torch.Tensor) - Reconstructed images, shape (batch_size, out_channels, height, width).
         """
         x = self.conv2(z)
-        x = x + self.attention2(x)
+        if self.use_grad_check and self.training:
+            x = x + checkpoint.checkpoint(self.attention2, x, use_reentrant=False)
+        else:
+            x = x + self.attention2(x)
         for block in self.up_blocks:
             x = block(x)
         x = self.conv3(x)
@@ -320,9 +332,10 @@ class DownBlock(nn.Module):
     - The downsampling is applied after all convolutional layers, reducing spatial dimensions by `down_sampling_factor`.
     """
     def __init__(self, in_channels: int, out_channels: int, num_layers: int,
-                 down_sampling_factor: int, dropout_rate: float) -> None:
+                 down_sampling_factor: int, dropout_rate: float, use_grad_check: bool = False) -> None:
         super().__init__()
         self.num_layers = num_layers
+        self.use_grad_check = use_grad_check
         self.res_blocks = nn.ModuleList()
         for i in range(num_layers):
             in_ch = in_channels if i == 0 else out_channels
@@ -344,7 +357,10 @@ class DownBlock(nn.Module):
         output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor).
         """
         for block in self.res_blocks:
-            x = block(x)
+            if self.use_grad_check and self.training:
+                x = checkpoint.checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         x = self.down_sampling(x)
         return x
 
@@ -554,9 +570,10 @@ class UpBlock(nn.Module):
     - Each layer pair consists of two Conv3 modules.
     """
     def __init__(self, in_channels: int, out_channels: int, num_layers: int,
-                 up_sampling_factor: int, dropout_rate: float) -> None:
+                 up_sampling_factor: int, dropout_rate: float, use_grad_check: bool = False) -> None:
         super().__init__()
         self.up_sampling = UpSampling(in_channels, in_channels, up_sampling_factor)
+        self.use_grad_check = use_grad_check
         self.res_blocks = nn.ModuleList()
         for i in range(num_layers):
             in_ch = in_channels if i == 0 else out_channels
@@ -576,7 +593,10 @@ class UpBlock(nn.Module):
         """
         x = self.up_sampling(x)
         for block in self.res_blocks:
-            x = block(x)
+            if self.use_grad_check and self.training:
+                x = checkpoint.checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         return x
 
 

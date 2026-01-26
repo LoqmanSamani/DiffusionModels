@@ -3,6 +3,7 @@ import torch.nn as nn
 from typing import Optional, Tuple, List, Union, Self
 from transformers import BertTokenizer
 from torchvision.utils import save_image
+from tqdm import tqdm
 import os
 
 
@@ -47,6 +48,7 @@ class SampleLDM(nn.Module):
             rwd_diff: torch.nn.Module,
             diff_net: torch.nn.Module,
             comp_model: torch.nn.Module,
+            num_steps: int,
             img_size: Tuple[float, float],
             cond_model: Optional[torch.nn.Module] = None,
             tokenizer: str = "bert-base-uncased",
@@ -55,6 +57,7 @@ class SampleLDM(nn.Module):
             device: str = 'cuda',
             max_token_length: int = 77,
             norm_range: Tuple[float, float] = (-1.0, 1.0),
+            time_eps: float = 1e-5,
             *args
     ) -> None:
         super().__init__()
@@ -63,6 +66,7 @@ class SampleLDM(nn.Module):
         else:
             self.device = device
         self.diff_type = diff_type
+        self.num_steps = num_steps
         self.diff_net = diff_net.to(self.device)
         self.rwd_diff = rwd_diff.to(self.device)
         self.comp_model = comp_model.to(self.device)
@@ -73,6 +77,7 @@ class SampleLDM(nn.Module):
         self.batch_size = batch_size
         self.max_token_length = max_token_length
         self.norm_range = norm_range
+        self.time_eps = time_eps
         if not isinstance(img_size, (tuple, list)) or len(img_size) != 2 or not all(isinstance(s, int) and s > 0 for s in img_size):
             raise ValueError("img_size must be a tuple of two positive integers (height, width)")
         if batch_size <= 0:
@@ -162,23 +167,44 @@ class SampleLDM(nn.Module):
             else:
                 y = None
             if self.diff_type == 'ddpm':
-                for t in reversed(range(self.fwd_diff.vs.time_steps)):
+                iterator = tqdm(
+                    reversed(range(self.rwd_diff.vs.time_steps)),
+                    total=self.rwd_diff.vs.time_steps,
+                    desc="Sampling",
+                    dynamic_ncols=True,
+                    leave=True
+                )
+                for t in iterator:
                     time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
                     pred = self.diff_net(xt, time_steps, y, clip_embeddings=None)
                     xt, _ = self.rwd_diff(xt, pred, time_steps)
             elif self.diff_type == 'ddim':
-                timesteps = self.fwd_diff.vs.inference_timesteps.flip(0)
-                for i in range(len(timesteps) - 1):
-                    t_current = timesteps[i].item()
-                    t_next = timesteps[i + 1].item()
+                timesteps = self.rwd_diff.vs.inference_timesteps.flip(0)
+                iterator = tqdm(
+                    range(len(timesteps) - 1),
+                    total=len(timesteps) - 1,
+                    desc="Sampling",
+                    dynamic_ncols=True,
+                    leave=True
+                )
+                for t in iterator:
+                    t_current = timesteps[t].item()
+                    t_next = timesteps[t + 1].item()
                     time = torch.full((xt.shape[0],), t_current, device=self.device, dtype=torch.long)
                     prev_time = torch.full((xt.shape[0],), t_next, device=self.device, dtype=torch.long)
                     pred = self.diff_net(xt, time, y, clip_embeddings=None)
                     xt, _ = self.rwd_diff(xt, time, prev_time, pred)
             else:
+                iterator = tqdm(
+                    range(self.num_steps),
+                    total=self.num_steps,
+                    desc="Sampling",
+                    dynamic_ncols=True,
+                    leave=True
+                )
                 t_schedule = torch.linspace(1.0, self.time_eps, self.num_steps + 1)
                 dt = torch.tensor(-(1.0 - self.time_eps) / self.num_steps, device=xt.device, dtype=xt.dtype)
-                for t in range(self.num_steps):
+                for t in iterator:
                     t_current = float(t_schedule[t])
                     t_batch = torch.full((xt.shape[0],), t_current, dtype=xt.dtype, device=self.device)
                     pred = self.diff_net(xt, t_batch, y, None)
@@ -191,9 +217,9 @@ class SampleLDM(nn.Module):
                 samps = (samps - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
             if save_imgs:
                 os.makedirs(save_path, exist_ok=True)
-                for i in range(samps.size(0)):
-                    img_path = os.path.join(save_path, f"img_{i+1}.png")
-                    save_image(samps[i], img_path)
+                for t in range(samps.size(0)):
+                    img_path = os.path.join(save_path, f"img_{t + 1}.png")
+                    save_image(samps[t], img_path)
         return samps
 
     def to(self, device: torch.device) -> Self:

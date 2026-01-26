@@ -65,11 +65,11 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
+import torch.utils.checkpoint as checkpoint
 import warnings
 from tqdm import tqdm
 from torchvision.utils import save_image
 import os
-
 
 
 ###==================================================================================================================###
@@ -700,6 +700,7 @@ class SampleLDM(nn.Module):
             rwd_diff: torch.nn.Module,
             diff_net: torch.nn.Module,
             comp_model: torch.nn.Module,
+            num_steps: int,
             img_size: Tuple[float, float],
             cond_model: Optional[torch.nn.Module] = None,
             tokenizer: str = "bert-base-uncased",
@@ -708,6 +709,7 @@ class SampleLDM(nn.Module):
             device: str = 'cuda',
             max_token_length: int = 77,
             norm_range: Tuple[float, float] = (-1.0, 1.0),
+            time_eps: float = 1e-5,
             *args
     ) -> None:
         super().__init__()
@@ -716,6 +718,7 @@ class SampleLDM(nn.Module):
         else:
             self.device = device
         self.diff_type = diff_type
+        self.num_steps = num_steps
         self.diff_net = diff_net.to(self.device)
         self.rwd_diff = rwd_diff.to(self.device)
         self.comp_model = comp_model.to(self.device)
@@ -726,6 +729,7 @@ class SampleLDM(nn.Module):
         self.batch_size = batch_size
         self.max_token_length = max_token_length
         self.norm_range = norm_range
+        self.time_eps = time_eps
         if not isinstance(img_size, (tuple, list)) or len(img_size) != 2 or not all(isinstance(s, int) and s > 0 for s in img_size):
             raise ValueError("img_size must be a tuple of two positive integers (height, width)")
         if batch_size <= 0:
@@ -815,23 +819,44 @@ class SampleLDM(nn.Module):
             else:
                 y = None
             if self.diff_type == 'ddpm':
-                for t in reversed(range(self.fwd_diff.vs.time_steps)):
+                iterator = tqdm(
+                    reversed(range(self.rwd_diff.vs.time_steps)),
+                    total=self.rwd_diff.vs.time_steps,
+                    desc="Sampling",
+                    dynamic_ncols=True,
+                    leave=True
+                )
+                for t in iterator:
                     time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
                     pred = self.diff_net(xt, time_steps, y, clip_embeddings=None)
                     xt, _ = self.rwd_diff(xt, pred, time_steps)
             elif self.diff_type == 'ddim':
-                timesteps = self.fwd_diff.vs.inference_timesteps.flip(0)
-                for i in range(len(timesteps) - 1):
-                    t_current = timesteps[i].item()
-                    t_next = timesteps[i + 1].item()
+                timesteps = self.rwd_diff.vs.inference_timesteps.flip(0)
+                iterator = tqdm(
+                    range(len(timesteps) - 1),
+                    total=len(timesteps) - 1,
+                    desc="Sampling",
+                    dynamic_ncols=True,
+                    leave=True
+                )
+                for t in iterator:
+                    t_current = timesteps[t].item()
+                    t_next = timesteps[t + 1].item()
                     time = torch.full((xt.shape[0],), t_current, device=self.device, dtype=torch.long)
                     prev_time = torch.full((xt.shape[0],), t_next, device=self.device, dtype=torch.long)
                     pred = self.diff_net(xt, time, y, clip_embeddings=None)
                     xt, _ = self.rwd_diff(xt, time, prev_time, pred)
             else:
+                iterator = tqdm(
+                    range(self.num_steps),
+                    total=self.num_steps,
+                    desc="Sampling",
+                    dynamic_ncols=True,
+                    leave=True
+                )
                 t_schedule = torch.linspace(1.0, self.time_eps, self.num_steps + 1)
                 dt = torch.tensor(-(1.0 - self.time_eps) / self.num_steps, device=xt.device, dtype=xt.dtype)
-                for t in range(self.num_steps):
+                for t in iterator:
                     t_current = float(t_schedule[t])
                     t_batch = torch.full((xt.shape[0],), t_current, dtype=xt.dtype, device=self.device)
                     pred = self.diff_net(xt, t_batch, y, None)
@@ -844,9 +869,9 @@ class SampleLDM(nn.Module):
                 samps = (samps - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
             if save_imgs:
                 os.makedirs(save_path, exist_ok=True)
-                for i in range(samps.size(0)):
-                    img_path = os.path.join(save_path, f"img_{i+1}.png")
-                    save_image(samps[i], img_path)
+                for t in range(samps.size(0)):
+                    img_path = os.path.join(save_path, f"img_{t + 1}.png")
+                    save_image(samps[t], img_path)
         return samps
 
     def to(self, device: torch.device) -> Self:
@@ -924,6 +949,7 @@ class AutoencoderLDM(nn.Module):
             use_vq: bool = False,
             beta: float = 1.0,
             use_flash: bool = True,
+            use_grad_check: bool = False,
             *args
     ) -> None:
         super().__init__()
@@ -932,6 +958,7 @@ class AutoencoderLDM(nn.Module):
         self.beta = beta
         self.current_beta = beta
         self.use_flash = use_flash
+        self.use_grad_check = use_grad_check
         num_down_blocks = len(down_channels) - 1
         self.down_sampling_factor = int(total_down_sampling_factor ** (1 / num_down_blocks))
 
@@ -943,7 +970,8 @@ class AutoencoderLDM(nn.Module):
                 out_channels=down_channels[i + 1],
                 num_layers=num_layers_per_block,
                 down_sampling_factor=self.down_sampling_factor,
-                dropout_rate=dropout_rate
+                dropout_rate=dropout_rate,
+                use_grad_check=self.use_grad_check
             ) for i in range(num_down_blocks)
         ])
         self.attention1 = Attention(down_channels[-1], num_heads, num_groups, dropout_rate, use_flash)
@@ -965,7 +993,8 @@ class AutoencoderLDM(nn.Module):
                 out_channels=up_channels[i + 1],
                 num_layers=num_layers_per_block,
                 up_sampling_factor=self.down_sampling_factor,
-                dropout_rate=dropout_rate
+                dropout_rate=dropout_rate,
+                use_grad_check=use_grad_check
             ) for i in range(len(up_channels) - 1)
         ])
         self.conv3 = Conv3(up_channels[-1], out_channels, dropout_rate)
@@ -1018,7 +1047,11 @@ class AutoencoderLDM(nn.Module):
         x = self.conv1(x)
         for block in self.down_blocks:
             x = block(x)
-        x = x + self.attention1(x)
+
+        if self.use_grad_check and self.training:
+            x = x + checkpoint.checkpoint(self.attention1, x, use_reentrant=False)
+        else:
+            x = x + self.attention1(x)
         if self.use_vq:
             z, vq_loss = self.vq_layer(x)
             z = self.quant_conv(z)
@@ -1048,7 +1081,10 @@ class AutoencoderLDM(nn.Module):
         x (torch.Tensor) - Reconstructed images, shape (batch_size, out_channels, height, width).
         """
         x = self.conv2(z)
-        x = x + self.attention2(x)
+        if self.use_grad_check and self.training:
+            x = x + checkpoint.checkpoint(self.attention2, x, use_reentrant=False)
+        else:
+            x = x + self.attention2(x)
         for block in self.up_blocks:
             x = block(x)
         x = self.conv3(x)
@@ -1186,9 +1222,10 @@ class DownBlock(nn.Module):
     - The downsampling is applied after all convolutional layers, reducing spatial dimensions by `down_sampling_factor`.
     """
     def __init__(self, in_channels: int, out_channels: int, num_layers: int,
-                 down_sampling_factor: int, dropout_rate: float) -> None:
+                 down_sampling_factor: int, dropout_rate: float, use_grad_check: bool = False) -> None:
         super().__init__()
         self.num_layers = num_layers
+        self.use_grad_check = use_grad_check
         self.res_blocks = nn.ModuleList()
         for i in range(num_layers):
             in_ch = in_channels if i == 0 else out_channels
@@ -1210,7 +1247,10 @@ class DownBlock(nn.Module):
         output (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height/down_sampling_factor, width/down_sampling_factor).
         """
         for block in self.res_blocks:
-            x = block(x)
+            if self.use_grad_check and self.training:
+                x = checkpoint.checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         x = self.down_sampling(x)
         return x
 
@@ -1420,9 +1460,10 @@ class UpBlock(nn.Module):
     - Each layer pair consists of two Conv3 modules.
     """
     def __init__(self, in_channels: int, out_channels: int, num_layers: int,
-                 up_sampling_factor: int, dropout_rate: float) -> None:
+                 up_sampling_factor: int, dropout_rate: float, use_grad_check: bool = False) -> None:
         super().__init__()
         self.up_sampling = UpSampling(in_channels, in_channels, up_sampling_factor)
+        self.use_grad_check = use_grad_check
         self.res_blocks = nn.ModuleList()
         for i in range(num_layers):
             in_ch = in_channels if i == 0 else out_channels
@@ -1442,7 +1483,10 @@ class UpBlock(nn.Module):
         """
         x = self.up_sampling(x)
         for block in self.res_blocks:
-            x = block(x)
+            if self.use_grad_check and self.training:
+                x = checkpoint.checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         return x
 
 
