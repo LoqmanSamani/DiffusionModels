@@ -50,7 +50,8 @@ from torch.distributed import init_process_group, destroy_process_group
 import torchvision
 from PIL import Image
 from transformers import BertTokenizer, CLIPProcessor, CLIPModel
-from typing import Optional, List, Tuple, Union, Callable, Any, Self
+from typing import Optional, List, Tuple, Union, Callable, Any
+from typing_extensions import Self
 from tqdm import tqdm
 import os
 import warnings

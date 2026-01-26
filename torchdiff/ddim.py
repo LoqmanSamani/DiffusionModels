@@ -41,7 +41,8 @@ from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
-from typing import Optional, Tuple, Callable, List, Any, Union, Self, Dict
+from typing import Optional, Tuple, Callable, List, Any, Union, Dict
+from typing_extensions import Self
 import os
 
 

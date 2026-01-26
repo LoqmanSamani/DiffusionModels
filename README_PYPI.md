@@ -70,15 +70,15 @@ fwd, rev = ForwardDDPM(vs), ReverseDDPM(vs)
 
 # Training
 trainer = TrainDDPM(
-    noise_predictor=noise_pred, forward_diffusion=fwd, reverse_diffusion=rev,
-    conditional_model=None, optimizer=torch.optim.Adam(noise_pred.parameters(), lr=1e-4),
-    objective=nn.MSELoss(), data_loader=train_loader, max_epochs=1, device="cpu"
+    diff_net=noise_pred, fwd_ddpm=fwd, rwd_ddpm=rev,
+    cond_model=None, optim=torch.optim.Adam(noise_pred.parameters(), lr=1e-4),
+    loss_fn=nn.MSELoss(), train_loader=train_loader, max_epochs=1, device="cpu"
 )
 trainer()
 
 # Sampling
-sampler = SampleDDPM(reverse_diffusion=rev, noise_predictor=noise_pred,
-                     image_shape=(32, 32), batch_size=4, in_channels=3, device="cpu")
+sampler = SampleDDPM(rwd_ddpm=rev, diff_net=noise_pred,
+                     img_size=(32, 32), batch_size=4, in_channels=3, device="cpu")
 images = sampler()
 ```
 

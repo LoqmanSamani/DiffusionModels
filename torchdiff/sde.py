@@ -31,7 +31,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 import torch.distributed as dist
-from typing import Optional, Tuple, Callable, List, Any, Union, Self, Dict
+from typing import Optional, Tuple, Callable, List, Any, Union, Dict
+from typing_extensions import Self
 from tqdm import tqdm
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer

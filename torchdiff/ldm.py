@@ -58,7 +58,8 @@ Proceedings of the IEEE/CVF conference on computer vision and pattern recognitio
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple, Any, Callable, List, Union, Self, Dict
+from typing import Optional, Tuple, Any, Callable, List, Union, Dict
+from typing_extensions import Self
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP

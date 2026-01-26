@@ -28,7 +28,8 @@ arXiv preprint arXiv:1701.05517 (2017).
 
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Callable, List, Any, Union, Self, Dict
+from typing import Optional, Tuple, Callable, List, Any, Union, Dict
+from typing_extensions import Self
 from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
