@@ -846,8 +846,7 @@ class TrainDDPM(nn.Module):
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
-
-            print(f"Model saved at epoch {epoch}")
+            print(f"Model saved at epoch {epoch} with loss: {loss}")
         except Exception as e:
             print(f"Failed to save model: {e}")
 
