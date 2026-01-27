@@ -196,18 +196,11 @@ class TestUnCLIP(unittest.TestCase):
 
     def test_unclip_decoder(self):
         # Initialize UnClipDecoder
-        decoder = UnClipDecoder(
-            clip_embedding_dim=self.clip_embedding_dim,
-            noise_predictor=self.noise_predictor,
-            forward_diffusion=self.forward_diffusion,
-            reverse_diffusion=self.reverse_diffusion,
-            glide_text_encoder=self.glide_text_encoder,
-            device=self.device
-        )
+        decoder = UnClipDecoder(,,,,
 
         # Test forward pass
-        image_embeddings = torch.randn(self.batch_size, self.clip_embedding_dim).to(self.device)
-        text_embeddings = torch.randn(self.batch_size, self.clip_embedding_dim).to(self.device)
+        image_embeddings = torch.randn(self.batch_size, self.clip_embed_dim).to(self.device)
+        text_embeddings = torch.randn(self.batch_size, self.clip_embed_dim).to(self.device)
         images = torch.randn(self.batch_size, *self.image_size).to(self.device)
         texts = ["test prompt"] * self.batch_size
         predicted_noise, noise = decoder(image_embeddings, text_embeddings, images, texts, p_classifier_free=0.0,
@@ -225,24 +218,18 @@ class TestUnCLIP(unittest.TestCase):
 
     def test_unclip_transformer_prior(self):
         # Initialize UnCLIPTransformerPrior
-        prior = UnCLIPTransformerPrior(
-            forward_diffusion=self.forward_diffusion,
-            reverse_diffusion=self.reverse_diffusion,
-            clip_text_projection=None,
-            clip_image_projection=None,
-            transformer_embedding_dim=self.clip_embedding_dim
-        ).to(self.device)
+        prior = UnCLIPTransformerPrior(,,.to(self.device)
 
         # Test forward pass
-        text_embeddings = torch.randn(self.batch_size, self.clip_embedding_dim).to(self.device)
-        noisy_image_embeddings = torch.randn(self.batch_size, self.clip_embedding_dim).to(self.device)
+        text_embeddings = torch.randn(self.batch_size, self.clip_embed_dim).to(self.device)
+        noisy_image_embeddings = torch.randn(self.batch_size, self.clip_embed_dim).to(self.device)
         timesteps = torch.randint(0, self.num_steps, (self.batch_size,), device=self.device)
         predicted_embeddings = prior(text_embeddings, noisy_image_embeddings, timesteps)
         self.assertEqual(predicted_embeddings.shape, (self.batch_size, self.clip_embedding_dim))
 
     def test_clip_context_projection(self):
         # Initialize CLIPContextProjection
-        projection = CLIPContextProjection(clip_embedding_dim=self.clip_embedding_dim, num_tokens=4).to(self.device)
+        projection = CLIPContextProjection(clip_embed_dim=self.clip_embedding_dim, num_tokens=4).to(self.device)
 
         # Test forward pass
         z_i = torch.randn(self.batch_size, self.clip_embedding_dim).to(self.device)
@@ -251,10 +238,7 @@ class TestUnCLIP(unittest.TestCase):
 
     def test_clip_embedding_projection(self):
         # Initialize CLIPEmbeddingProjection
-        projection = CLIPEmbeddingProjection(
-            clip_embedding_dim=self.clip_embedding_dim,
-            transformer_embedding_dim=320
-        ).to(self.device)
+        projection = CLIPEmbeddingProjection().to(self.device)
 
         # Test forward and inverse transform
         x = torch.randn(self.batch_size, self.clip_embedding_dim).to(self.device)
@@ -264,21 +248,14 @@ class TestUnCLIP(unittest.TestCase):
         self.assertEqual(x_reconstructed.shape, x.shape)
 
         # Test reconstruction loss
-        loss = projection.reconstruction_loss(x)
+        loss = projection.rec_loss(x)
         self.assertTrue(torch.isfinite(loss))
 
     def test_upsampler_unclip(self):
         # Initialize UpsamplerUnCLIP
-        upsampler = UpsamplerUnCLIP(
-            forward_diffusion=self.forward_diffusion,
-            reverse_diffusion=self.reverse_diffusion,
-            in_channels=3,
-            out_channels=3,
-            model_channels=64,
-            num_res_blocks=2,
-            low_res_size=64,
-            high_res_size=256
-        ).to(self.device)
+        upsampler = UpsamplerUnCLIP(fwd_diff=self.forward_diffusion, rwd_diff=self.reverse_diffusion, in_channels=3,
+                                    out_channels=3, model_channels=64, num_res_blocks=2, low_res_size=64,
+                                    high_res_size=256).to(self.device)
 
         # Test forward pass
         x_high = torch.randn(self.batch_size, 3, 256, 256).to(self.device)
@@ -289,26 +266,13 @@ class TestUnCLIP(unittest.TestCase):
 
     def test_train_upsampler_unclip(self):
         # Initialize TrainUpsamplerUnCLIP
-        upsampler = UpsamplerUnCLIP(
-            forward_diffusion=self.forward_diffusion,
-            reverse_diffusion=self.reverse_diffusion,
-            in_channels=3,
-            out_channels=3,
-            model_channels=64,
-            num_res_blocks=2
-        ).to(self.device)
+        upsampler = UpsamplerUnCLIP(fwd_diff=self.forward_diffusion, rwd_diff=self.reverse_diffusion, in_channels=3,
+                                    out_channels=3, model_channels=64, num_res_blocks=2).to(self.device)
         train_loader = MockDataLoader(batch_size=self.batch_size)
         optimizer = torch.optim.Adam(upsampler.parameters(), lr=1e-3)
-        trainer = TrainUpsamplerUnCLIP(
-            upsampler_model=upsampler,
-            train_loader=train_loader,
-            optimizer=optimizer,
-            objective=self.metric,
-            max_epochs=1,
-            device=self.device,
-            use_ddp=False,
-            use_autocast=False
-        )
+        trainer = TrainUpsamplerUnCLIP(up_net=upsampler, train_loader=train_loader, optim=optimizer,
+                                       loss_fn=self.metric, max_epochs=1, device=self.device, use_ddp=False,
+                                       use_autocast=False)
 
         # Test training
         train_losses, best_val_loss = trainer()
@@ -317,39 +281,15 @@ class TestUnCLIP(unittest.TestCase):
 
     def test_sample_unclip(self):
         # Initialize SampleUnCLIP
-        prior = UnCLIPTransformerPrior(
-            forward_diffusion=self.forward_diffusion,
-            reverse_diffusion=self.reverse_diffusion,
-            transformer_embedding_dim=self.clip_embedding_dim
-        ).to(self.device)
-        decoder = UnClipDecoder(
-            clip_embedding_dim=self.clip_embedding_dim,
-            noise_predictor=self.noise_predictor,
-            forward_diffusion=self.forward_diffusion,
-            reverse_diffusion=self.reverse_diffusion,
-            glide_text_encoder=self.glide_text_encoder,
-            device=self.device
-        )
+        prior = UnCLIPTransformerPrior(,,.to(self.device)
+        decoder = UnClipDecoder(,,,,
         clip_encoder = CLIPEncoder(model_name="mock", device=self.device)
         clip_encoder.model = MockCLIPModel().to(self.device)
         clip_encoder.processor = MockCLIPProcessor()
-        upsampler = UpsamplerUnCLIP(
-            forward_diffusion=self.forward_diffusion,
-            reverse_diffusion=self.reverse_diffusion,
-            in_channels=3,
-            out_channels=3,
-            model_channels=64
-        ).to(self.device)
+        upsampler = UpsamplerUnCLIP(fwd_diff=self.forward_diffusion, rwd_diff=self.reverse_diffusion, in_channels=3,
+                                    out_channels=3, model_channels=64).to(self.device)
 
-        sample_unclip = SampleUnCLIP(
-            prior_model=prior,
-            decoder_model=decoder,
-            clip_model=clip_encoder,
-            low_res_upsampler=upsampler,
-            second_upsampler_model=None,
-            device=self.device,
-            batch_size=self.batch_size
-        )
+        sample_unclip = SampleUnCLIP(,
 
         # Test full pipeline
         prompts = ["A test image"] * self.batch_size

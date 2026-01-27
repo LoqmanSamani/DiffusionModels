@@ -50,7 +50,7 @@ from torch.distributed import init_process_group, destroy_process_group
 import torchvision
 from PIL import Image
 from transformers import BertTokenizer, CLIPProcessor, CLIPModel
-from typing import Optional, List, Tuple, Union, Callable, Any
+from typing import Optional, List, Tuple, Union, Callable, Any, Dict
 from typing_extensions import Self
 from tqdm import tqdm
 import os
@@ -62,389 +62,288 @@ import math
 ###==================================================================================================================###
 
 
-class VarianceSchedulerUnCLIP(nn.Module):
-    """Manages noise schedule parameters for UnCLIP diffusion models.
+class SchedulerUnCLIP(nn.Module):
+    """Unified noise scheduler for UnCLIP supporting multiple schedule types
 
-    Handles beta values, derived noise schedule quantities, and a subsampled time step schedule
-    (tau schedule) for UnCLIP diffusion processes. Supports trainable or fixed beta schedules
-    and multiple scheduling methods, including linear, sigmoid, quadratic, constant, inverse_time,
-    and cosine schedules.
-
-    Parameters
-    ----------
-    `eta` : float, optional
-        Noise scaling factor for the reverse process (default: 0, deterministic).
-    `num_steps` : int, optional
-        Total number of diffusion steps (default: 1000).
-    `tau_num_steps` : int, optional
-        Number of subsampled time steps for sampling (default: 100).
-    `beta_start` : float, optional
-        Starting value for beta (default: 1e-4).
-    `beta_end` : float, optional
-        Ending value for beta (default: 0.02).
-    `trainable_beta` : bool, optional
-        Whether the beta schedule is trainable (default: False).
-    `beta_method` : str, optional
-        Method for computing the beta schedule (default: "linear").
-        Supported methods: "linear", "sigmoid", "quadratic", "constant", "inverse_time", "cosine".
+    Manages noise schedule parameters with support for both full training schedule
+    and subsampled inference schedule (tau schedule) for faster sampling.
     """
+
     def __init__(
             self,
-            eta: Optional[float] = None,
-            num_steps: int = 1000,
-            tau_num_steps: int = 100,
-            beta_start: float = 1e-4,
-            beta_end: float = 0.02,
-            trainable_beta: bool = False,
-            beta_method: str = "linear"
-    ) -> None:
+            schedule_type: str = "linear",
+            train_steps: int = 1000,
+            sample_steps: Optional[int] = None,
+            beta_min: float = 1e-4,
+            beta_max: float = 0.02,
+            cosine_s: float = 0.008,
+            clip_min: float = 1e-4,
+            clip_max: float = 0.9999,
+            learn_var: bool = False
+    ):
         super().__init__()
-        self.eta = eta or 0
-        self.num_steps = num_steps
-        self.tau_num_steps = tau_num_steps
-        self.beta_start = beta_start
-        self.beta_end = beta_end
-        self.trainable_beta = trainable_beta
-        self.beta_method = beta_method
+        valid_schedules = ["linear", "cosine", "quadratic", "sigmoid", "constant", "inverse_time"]
+        if schedule_type not in valid_schedules:
+            raise ValueError(f"schedule_type must be one of {valid_schedules}, got {schedule_type}")
+        if not (0 < beta_min < beta_max < 1):
+            raise ValueError(f"beta_start and beta_end must satisfy 0 < beta_start < beta_end < 1")
 
-        if not (0 < beta_start < beta_end < 1):
-            raise ValueError(f"beta_start ({beta_start}) and beta_end ({beta_end}) must satisfy 0 < start < end < 1")
-        if num_steps <= 0:
-            raise ValueError(f"num_steps ({num_steps}) must be positive")
+        self.schedule_type = schedule_type
+        self.train_steps = train_steps
+        self.sample_steps = sample_steps or train_steps
+        self.beta_min = beta_min
+        self.beta_max = beta_max
+        self.cosine_s = cosine_s
+        self.clip_min = clip_min
+        self.clip_max = clip_max
+        self.learn_var = learn_var
+        self._setup_schedule()
+        self._setup_inf_timesteps()
 
-        beta_range = (beta_start, beta_end)
-        betas_init = self.compute_beta_schedule(beta_range, num_steps, beta_method)
-
-        if trainable_beta:
-            self.beta_raw = nn.Parameter(torch.logit((betas_init - beta_start) / (beta_end - beta_start)))
-        else:
-            self.register_buffer('betas_buffer', betas_init)
-            self.register_buffer('alphas', 1 - self.betas)
-            self.register_buffer('alpha_cumprod', torch.cumprod(self.alphas, dim=0))
-            self.register_buffer('sqrt_alpha_cumprod', torch.sqrt(self.alpha_cumprod))
-            self.register_buffer('sqrt_one_minus_alpha_cumprod', torch.sqrt(1 - self.alpha_cumprod))
-
-        self.register_buffer('tau_indices', torch.linspace(0, num_steps - 1, tau_num_steps, dtype=torch.long))
-
-    @property
-    def betas(self) -> torch.Tensor:
-        """Returns the beta values, applying reparameterization if trainable.
-
-        Returns the beta values, using sigmoid reparameterization for trainable betas
-        or directly accessing the stored buffer for fixed betas.
-
-        Returns
-        -------
-        betas : torch.Tensor
-            Beta values, shape (num_steps,).
-        """
-        if self.trainable_beta:
-            return self.beta_start + (self.beta_end - self.beta_start) * torch.sigmoid(self.beta_raw)
-        return self._buffers['betas_buffer']
-
-    def compute_beta_schedule(self, beta_range: Tuple[float, float], num_steps: int, method: str) -> torch.Tensor:
-        """Computes the beta schedule based on the specified method.
-
-        Generates a sequence of beta values for the noise schedule using the chosen method,
-        ensuring values are clamped within the specified range. Supports linear, sigmoid,
-        quadratic, constant, inverse_time, and cosine schedules.
-
-        Parameters
-        ----------
-        `beta_range` : tuple
-            Tuple of (min_beta, max_beta) specifying the valid range for beta values.
-        `num_steps` : int
-            Number of diffusion steps.
-        `method` : str
-            Method for computing the beta schedule. Supported methods:
-            "linear", "sigmoid", "quadratic", "constant", "inverse_time", "cosine".
-
-        Returns
-        -------
-        beta : torch.Tensor
-            Tensor of beta values, shape (num_steps,).
-        """
-        beta_min, beta_max = beta_range
-        if method == "sigmoid":
-            x = torch.linspace(-6, 6, num_steps)
-            beta = torch.sigmoid(x) * (beta_max - beta_min) + beta_min
-        elif method == "quadratic":
-            x = torch.linspace(beta_min ** 0.5, beta_max ** 0.5, num_steps)
-            beta = x ** 2
-        elif method == "constant":
-            beta = torch.full((num_steps,), beta_max)
-        elif method == "inverse_time":
-            beta = 1.0 / torch.linspace(num_steps, 1, num_steps)
-            beta = beta_min + (beta_max - beta_min) * (beta - beta.min()) / (beta.max() - beta.min())
-        elif method == "linear":
-            beta = torch.linspace(beta_min, beta_max, num_steps)
-        elif method == "cosine":
-            s = 0.008
-            steps = num_steps + 1
-            x = torch.linspace(0, num_steps, steps)
-            alphas_cumprod = torch.cos(((x / num_steps) + s) / (1 + s) * math.pi * 0.5) ** 2
+    def _setup_schedule(self):
+        """Setup the noise schedule and precompute all coefficients"""
+        if self.schedule_type == "linear":
+            betas = torch.linspace(self.beta_min, self.beta_max, self.train_steps)
+        elif self.schedule_type == "cosine":
+            steps = self.train_steps + 1
+            t = torch.linspace(0, self.train_steps, steps)
+            alphas_cumprod = torch.cos(((t / self.train_steps) + self.cosine_s) / (1 + self.cosine_s) * math.pi * 0.5) ** 2
             alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
-            beta = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+            betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+            betas = torch.clamp(betas, self.clip_min, self.clip_max)
+
+        elif self.schedule_type == "quadratic":
+            betas = torch.linspace(
+                self.beta_min ** 0.5,
+                self.beta_max ** 0.5,
+                self.train_steps
+            ) ** 2
+
+        elif self.schedule_type == "sigmoid":
+            x = torch.linspace(-6, 6, self.train_steps)
+            betas = torch.sigmoid(x) * (self.beta_max - self.beta_min) + self.beta_min
+
+        elif self.schedule_type == "constant":
+            betas = torch.full((self.train_steps,), self.beta_max)
+
+        elif self.schedule_type == "inverse_time":
+            beta = 1.0 / torch.linspace(self.train_steps, 1, self.train_steps)
+            betas = self.beta_min + (self.beta_max - self.beta_min) * (
+                    (beta - beta.min()) / (beta.max() - beta.min())
+            )
+        betas = torch.clamp(betas, min=self.clip_min, max=self.clip_max)
+        alphas = 1.0 - betas
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        alphas_cumprod_prev = torch.cat([torch.ones(1), alphas_cumprod[:-1]])
+        sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
+        sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
+        posterior_variance = betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
+        posterior_log_variance = torch.log(torch.clamp(posterior_variance, min=1e-20))
+
+        if self.learn_var:
+            self.register_parameter('log_variance', nn.Parameter(posterior_log_variance.clone()))
         else:
-            raise ValueError(f"Unknown beta_method: {method}")
-        beta = torch.clamp(beta, min=beta_min, max=beta_max)
-        return beta
+            self.register_buffer('log_variance', posterior_log_variance)
 
-    def get_tau_schedule(self) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Computes the subsampled (tau) noise schedule for UnCLIP.
+        self.register_buffer('betas', betas)
+        self.register_buffer('alphas', alphas)
+        self.register_buffer('alphas_cumprod', alphas_cumprod)
+        self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
+        self.register_buffer('sqrt_alphas_cumprod', sqrt_alphas_cumprod)
+        self.register_buffer('sqrt_one_minus_alphas_cumprod', sqrt_one_minus_alphas_cumprod)
+        self.register_buffer('posterior_variance', posterior_variance)
+        self.register_buffer('posterior_log_variance', posterior_log_variance)
 
-        Returns the noise schedule parameters for the subsampled time steps used in
-        UnCLIP sampling, based on the `tau_indices`.
+    def _setup_inf_timesteps(self):
+        """Setup inference timesteps (tau schedule for UnCLIP)
 
-        Returns
-        -------
-        tau_betas : torch.Tensor
-            Beta values for subsampled steps, shape (tau_num_steps,).
-        tau_alphas : torch.Tensor
-            Alpha values for subsampled steps, shape (tau_num_steps,).
-        tau_alpha_cumprod : torch.Tensor
-            Cumulative product of alphas for subsampled steps, shape (tau_num_steps,).
-        tau_sqrt_alpha_cumprod : torch.Tensor
-            Square root of alpha_cumprod for subsampled steps, shape (tau_num_steps,).
-        tau_sqrt_one_minus_alpha_cumprod : torch.Tensor
-            Square root of (1 - alpha_cumprod) for subsampled steps, shape (tau_num_steps,).
+        Creates a uniform subset of timesteps for faster sampling.
+        Similar to DDIM but called 'tau schedule' in UnCLIP literature.
         """
-        if self.trainable_beta:
-            betas, alphas, alpha_cumprod, sqrt_alpha_cumprod, sqrt_one_minus_alpha_cumprod = self.compute_schedule()
+        step_ratio = self.train_steps // self.sample_steps
+        # Create uniform spacing: [0, step_ratio, 2*step_ratio, ...]
+        inf_timesteps = torch.arange(0, self.train_steps, step_ratio, dtype=torch.long)
+        self.register_buffer('inference_timesteps', inf_timesteps)
+
+    def set_inf_timesteps(self, num_inf_timesteps: int):
+        """Dynamically change the number of inference steps
+
+        Allows using different numbers of steps at inference time.
+        """
+        self.sample_steps = num_inf_timesteps
+        self._setup_inf_timesteps()
+
+    def get_index(self, t: torch.Tensor, x_shape: torch.Size) -> torch.Tensor:
+        """Extract coefficients at timestep t and reshape for broadcasting"""
+        batch_size = t.shape[0]
+        out = t.to(t.device)
+        if len(x_shape) == 2:
+            return out.reshape(batch_size, 1)
         else:
-            betas = self.betas
-            alphas = self.alphas
-            alpha_cumprod = self.alpha_cumprod
-            sqrt_alpha_cumprod = self.sqrt_alpha_cumprod
-            sqrt_one_minus_alpha_cumprod = self.sqrt_one_minus_alpha_cumprod
-
-        tau_betas = betas[self.tau_indices]
-        tau_alphas = alphas[self.tau_indices]
-        tau_alpha_cumprod = alpha_cumprod[self.tau_indices]
-        tau_sqrt_alpha_cumprod = sqrt_alpha_cumprod[self.tau_indices]
-        tau_sqrt_one_minus_alpha_cumprod = sqrt_one_minus_alpha_cumprod[self.tau_indices]
-
-        return tau_betas, tau_alphas, tau_alpha_cumprod, tau_sqrt_alpha_cumprod, tau_sqrt_one_minus_alpha_cumprod
-
-    def compute_schedule(self, time_steps: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Computes noise schedule parameters dynamically from betas.
-
-        Calculates the derived noise schedule parameters (alphas, alpha_cumprod, etc.)
-        from the provided beta values for the UnCLIP diffusion process.
-
-        Parameters
-        ----------
-        `time_steps` : torch.Tensor, optional
-            If provided, returns parameters only for specified time steps.
-            If None, returns parameters for all time steps.
-
-        Returns
-        -------
-        betas : torch.Tensor
-            Beta values, shape (num_steps,) or (len(time_steps),).
-        alphas : torch.Tensor
-            1 - betas, shape (num_steps,) or (len(time_steps),).
-        alpha_cumprod : torch.Tensor
-            Cumulative product of alphas, shape (num_steps,) or (len(time_steps),).
-        sqrt_alpha_cumprod : torch.Tensor
-            Square root of alpha_cumprod, shape (num_steps,) or (len(time_steps),).
-        sqrt_one_minus_alpha_cumprod : torch.Tensor
-            Square root of (1 - alpha_cumprod), shape (num_steps,) or (len(time_steps),).
-        """
-        betas = self.betas
-        alphas = 1 - betas
-        alpha_cumprod = torch.cumprod(alphas, dim=0)
-        sqrt_alpha_cumprod = torch.sqrt(alpha_cumprod)
-        sqrt_one_minus_alpha_cumprod = torch.sqrt(1 - alpha_cumprod)
-        if time_steps is not None:
-            return (betas[time_steps], alphas[time_steps], alpha_cumprod[time_steps],
-                    sqrt_alpha_cumprod[time_steps], sqrt_one_minus_alpha_cumprod[time_steps])
-        return betas, alphas, alpha_cumprod, sqrt_alpha_cumprod, sqrt_one_minus_alpha_cumprod
+            return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
 
 ###==================================================================================================================###
 
 class ForwardUnCLIP(nn.Module):
-    """Forward diffusion process for UnCLIP diffusion models.
+    """Forward diffusion process for UnCLIP
 
-    Applies Gaussian noise to input data (2D or 4D tensors) according to the UnCLIP
-    forward diffusion process at specified time steps, using cumulative noise schedule
-    parameters from the variance scheduler.
+    Applies Gaussian noise to input data according to the forward diffusion process.
+    Supports both 2D (latent embeddings) and 4D (images) inputs.
 
-    Parameters
-    ----------
-    `variance_scheduler` : torch.nn.Module
-        Variance scheduler module (e.g., VarianceSchedulerUnCLIP) containing the noise
-        schedule parameters.
+    q(x_t | x_0) = N(x_t; √ᾱ_t x_0, (1 - ᾱ_t)I)
     """
-    def __init__(self, variance_scheduler: torch.nn.Module) -> None:
+    def __init__(self, scheduler: nn.Module, pred_type: str = "noise"):
         super().__init__()
-        self.variance_scheduler = variance_scheduler
+        valid_types = ["noise", "x0"]
+        if pred_type not in valid_types:
+            raise ValueError(f"pred_type must be one of {valid_types}, got {pred_type}")
+        self.vs = scheduler
+        self.pred_type = pred_type
 
-    def forward(self, x0: torch.Tensor, noise: torch.Tensor, time_steps: torch.Tensor) -> torch.Tensor:
-        """Applies the forward diffusion process to the input data.
+    def forward(
+            self,
+            x0: torch.Tensor,
+            noise: torch.Tensor,
+            t: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Sample from q(x_t | x_0) and compute prediction target
 
-        Perturbs the input data `x0` by adding Gaussian noise at specified time steps,
-        supporting both 2D (e.g., latent embeddings) and 4D (e.g., image) inputs.
+        Args:
+            x0: (batch, ...) clean data (2D or 4D)
+            t: (batch,) discrete timesteps in [0, train_steps-1]
+            noise: (batch, ...) gaussian noise
 
-        Parameters
-        ----------
-        `x0` : torch.Tensor
-            Input data tensor, shape (batch_size, embedding_dim) for 2D or
-            (batch_size, channels, height, width) for 4D.
-        `noise` : torch.Tensor
-            Gaussian noise tensor, same shape as `x0`.
-        `time_steps` : torch.Tensor
-            Tensor of time step indices (long), shape (batch_size,),
-            where each value is in the range [0, variance_scheduler.num_steps - 1].
-
-        Returns
-        -------
-        xt : torch.Tensor
-            Noisy data tensor at the specified time steps, same shape as `x0`.
+        Returns:
+            xt: (batch, ...) noised data
+            target: (batch, ...) prediction target (noise or x0)
         """
-        if not torch.all((time_steps >= 0) & (time_steps < self.variance_scheduler.num_steps)):
-            raise ValueError(f"time_steps must be between 0 and {self.variance_scheduler.num_steps - 1}")
-
-        if self.variance_scheduler.trainable_beta:
-            _, _, _, sqrt_alpha_cumprod_t, sqrt_one_minus_alpha_cumprod_t = self.variance_scheduler.compute_schedule(
-                time_steps
-            )
-            sqrt_alpha_cumprod_t = sqrt_alpha_cumprod_t.to(x0.device)
-            sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t.to(x0.device)
-        else:
-            sqrt_alpha_cumprod_t = self.variance_scheduler.sqrt_alpha_cumprod[time_steps].to(x0.device)
-            sqrt_one_minus_alpha_cumprod_t = self.variance_scheduler.sqrt_one_minus_alpha_cumprod[time_steps].to(x0.device)
-
-        # check input dimensions and adjust reshaping for 2D or 4D tensors
-        is_2d = x0.dim() == 2  # check if input is 2D (batch_size, embedding_dim)
-        if is_2d:
-            # for 2D inputs, reshape to [batch_size, 1]
-            sqrt_alpha_cumprod_t = sqrt_alpha_cumprod_t.view(-1, 1)
-            sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t.view(-1, 1)
-        else:
-            # for 4D inputs, reshape to [batch_size, 1, 1, 1]
-            sqrt_alpha_cumprod_t = sqrt_alpha_cumprod_t.view(-1, 1, 1, 1)
-            sqrt_one_minus_alpha_cumprod_t = sqrt_one_minus_alpha_cumprod_t.view(-1, 1, 1, 1)
-
+        if not torch.all((t >= 0) & (t < self.vs.train_steps)):
+            raise ValueError(f"t must be in [0, {self.vs.train_steps - 1}]")
+        sqrt_alpha_cumprod_t = self.vs.sqrt_alphas_cumprod[t]
+        sqrt_one_minus_alpha_cumprod_t = self.vs.sqrt_one_minus_alphas_cumprod[t]
+        sqrt_alpha_cumprod_t = self.vs.get_index(sqrt_alpha_cumprod_t, x0.shape)
+        sqrt_one_minus_alpha_cumprod_t = self.vs.get_index(sqrt_one_minus_alpha_cumprod_t, x0.shape)
+        # x_t ~ q(x_t | x_0)
+        # x_t = √ᾱ_t * x_0 + √(1 - ᾱ_t) * ε
         xt = sqrt_alpha_cumprod_t * x0 + sqrt_one_minus_alpha_cumprod_t * noise
-        return xt
+        if self.pred_type == "noise":
+            # predict noise ε (ddim-style)
+            target = noise
+        elif self.pred_type == "x0":
+            # predict original data x_0 (unclip prior style)
+            target = x0
+        return xt, target
 
 ###==================================================================================================================###
 
 class ReverseUnCLIP(nn.Module):
-    """Reverse diffusion process for UnCLIP diffusion models.
+    """Reverse diffusion process for UnCLIP
 
-    Denoises a noisy input `xt` using either a predicted noise component or predicted clean image
-    and a subsampled time step schedule, supporting both 2D (e.g., latent embeddings) and 4D (e.g., image) inputs.
-
-    Parameters
-    ----------
-    `variance_scheduler` : torch.nn.Module
-        Variance scheduler module (e.g., VarianceSchedulerUnCLIP) containing the noise
-        schedule parameters.
-    `prediction_type` : str, default "noise"
-        Type of prediction the model makes. Either "noise" (predicts noise like DDIM) or
-        "x0" (predicts clean image like UnCLIP prior).
+    Denoises input using DDIM-style sampling with the tau (subsampled) schedule.
+    Supports both noise prediction and x0 prediction modes.
+    Works with both 2D (latent embeddings) and 4D (images) inputs.
     """
-
-    def __init__(self, variance_scheduler: torch.nn.Module, prediction_type: str = "noise"):
+    def __init__(self, scheduler: nn.Module, pred_type: str = "noise", eta: float = 0.0, clip_: bool = True):
         super().__init__()
-        self.variance_scheduler = variance_scheduler
-        if prediction_type not in ["noise", "x0"]:
-            raise ValueError(f"prediction_type must be either 'noise' or 'x0', got {prediction_type}")
-        self.prediction_type = prediction_type
+        valid_pred_types = ["noise", "x0"]
+        if pred_type not in valid_pred_types:
+            raise ValueError(f"pred_type must be one of {valid_pred_types}")
 
-    def forward(
-            self,
-            xt: torch.Tensor,
-            model_prediction: torch.Tensor,
-            time_steps: torch.Tensor,
-            prev_time_steps: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Applies the reverse diffusion process to the noisy input.
+        self.vs = scheduler
+        self.pred_type = pred_type
+        self.eta = eta  # noise scaling factor (0 = deterministic)
+        self.clip_ = clip_
 
-        Denoises the input `xt` at time step `t` to produce the previous step `xt_prev`
-        at `prev_time_steps` using either the predicted noise or predicted clean image
-        and the UnCLIP reverse process. Supports both 2D and 4D inputs.
+    def predict_x0(self, xt: torch.Tensor, t: torch.Tensor, pred: torch.Tensor) -> torch.Tensor:
+        """Convert model output to x0 prediction based on prediction type"""
+        actual_t = self.vs.inference_timesteps[t]
+        sqrt_alpha_cumprod_t = self.vs.sqrt_alphas_cumprod[actual_t]
+        sqrt_one_minus_alpha_cumprod_t = self.vs.sqrt_one_minus_alphas_cumprod[actual_t]
+        sqrt_alpha_cumprod_t = self.vs.get_index(sqrt_alpha_cumprod_t, xt.shape)
+        sqrt_one_minus_alpha_cumprod_t = self.vs.get_index(sqrt_one_minus_alpha_cumprod_t, xt.shape)
+        if self.pred_type == "noise":
+            # x_0 = (x_t - √(1 - ᾱ_t) * ε_θ) / √ᾱ_t
+            x0_pred = (xt - sqrt_one_minus_alpha_cumprod_t * pred) / sqrt_alpha_cumprod_t
+        elif self.pred_type == "x0":
+            # directly predict x_0
+            x0_pred = pred
+        if self.clip_:
+            x0_pred = torch.clamp(x0_pred, -1.0, 1.0)
 
-        Parameters
-        ----------
-        `xt` : torch.Tensor
-            Noisy input tensor at time step `t`, shape (batch_size, embedding_dim) for 2D
-            or (batch_size, channels, height, width) for 4D.
-        `model_prediction` : torch.Tensor
-            Model prediction tensor, same shape as `xt`. Can be either predicted noise
-            or predicted clean image depending on `prediction_type`.
-        `time_steps` : torch.Tensor
-            Tensor of time step indices (long), shape (batch_size,), where each value
-            is in the range [0, variance_scheduler.tau_num_steps - 1].
-        `prev_time_steps` : torch.Tensor
-            Tensor of previous time step indices (long), shape (batch_size,), where each
-            value is in the range [0, variance_scheduler.tau_num_steps - 1].
+        return x0_pred
 
-        Returns
-        -------
-        xt_prev : torch.Tensor
-            Denoised tensor at `prev_time_steps`, same shape as `xt`.
-        x0 : torch.Tensor
-            Estimated original data (t=0), same shape as `xt`.
+    def predict_noise(self, xt: torch.Tensor, t: torch.Tensor, x0_pred: torch.Tensor) -> torch.Tensor:
+        """Predict noise from x0
+
+        ε̂ = (x_t - √ᾱ_t * x̂_0) / √(1 - ᾱ_t)
         """
-        if not torch.all((time_steps >= 0) & (time_steps < self.variance_scheduler.tau_num_steps)):
-            raise ValueError(f"time_steps must be between 0 and {self.variance_scheduler.tau_num_steps - 1}")
-        if not torch.all((prev_time_steps >= 0) & (prev_time_steps < self.variance_scheduler.tau_num_steps)):
-            raise ValueError(f"prev_time_steps must be between 0 and {self.variance_scheduler.tau_num_steps - 1}")
+        actual_t = self.vs.inference_timesteps[t]
+        sqrt_alpha_cumprod_t = self.vs.sqrt_alphas_cumprod[actual_t]
+        sqrt_one_minus_alpha_cumprod_t = self.vs.sqrt_one_minus_alphas_cumprod[actual_t]
+        sqrt_alpha_cumprod_t = self.vs.get_index(sqrt_alpha_cumprod_t, xt.shape)
+        sqrt_one_minus_alpha_cumprod_t = self.vs.get_index(sqrt_one_minus_alpha_cumprod_t, xt.shape)
+        pred_noise = (xt - sqrt_alpha_cumprod_t * x0_pred) / sqrt_one_minus_alpha_cumprod_t
+        return pred_noise
 
-        _, _, _, tau_sqrt_alpha_cumprod, tau_sqrt_one_minus_alpha_cumprod = self.variance_scheduler.get_tau_schedule()
+    def forward(self, xt: torch.Tensor, t: torch.Tensor, t_pre: torch.Tensor, pred: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """UnCLIP reverse step from x_t to x_{t_prev}
 
-        # check input dimensions and adjust reshaping for 2D or 4D tensors
-        is_2d = xt.dim() == 2  # check if input is 2D (batch_size, embedding_dim)
-        if is_2d:
-            # for 2D inputs, reshape to [batch_size, 1]
-            tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[time_steps].to(xt.device).view(-1, 1)
-            tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[time_steps].to(xt.device).view(-1, 1)
-            prev_tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1)
-            prev_tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1)
-        else:
-            # for 4D inputs, reshape to [batch_size, 1, 1, 1]
-            tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[time_steps].to(xt.device).view(-1, 1, 1, 1)
-            tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[time_steps].to(xt.device).view(-1, 1, 1, 1)
-            prev_tau_sqrt_alpha_cumprod_t = tau_sqrt_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1, 1, 1)
-            prev_tau_sqrt_one_minus_alpha_cumprod_t = tau_sqrt_one_minus_alpha_cumprod[prev_time_steps].to(xt.device).view(-1, 1, 1, 1)
+        Uses tau schedule (subsampled timesteps) for faster sampling.
 
-        eta = self.variance_scheduler.eta
+        Args:
+            xt: (batch, ...) current state (2D or 4D)
+            t: (batch,) current tau timestep indices [0, sample_steps-1]
+            t_pre: (batch,) previous tau timestep indices
+            pred: (batch, ...) model prediction
 
-        predicted_noise = None
-        x0 = None
-        # handle different prediction types
-        if self.prediction_type == "noise":
-            # model predicts noise
-            predicted_noise = model_prediction
-            x0 = (xt - tau_sqrt_one_minus_alpha_cumprod_t * predicted_noise) / tau_sqrt_alpha_cumprod_t
-        elif self.prediction_type == "x0":
-            # model predicts clean image
-            x0 = model_prediction
-            # calculate implied noise from the predicted clean image
-            predicted_noise = (xt - tau_sqrt_alpha_cumprod_t * x0) / tau_sqrt_one_minus_alpha_cumprod_t
-
-        # DDIM sampling step (same for both prediction types)
-        noise_coeff = eta * ((tau_sqrt_one_minus_alpha_cumprod_t / prev_tau_sqrt_alpha_cumprod_t) *
-                             prev_tau_sqrt_one_minus_alpha_cumprod_t / torch.clamp(tau_sqrt_one_minus_alpha_cumprod_t, min=1e-8))
-        direction_coeff = torch.clamp(prev_tau_sqrt_one_minus_alpha_cumprod_t ** 2 - noise_coeff ** 2, min=1e-8).sqrt()
-        xt_prev = prev_tau_sqrt_alpha_cumprod_t * x0 + noise_coeff * torch.randn_like(xt) + direction_coeff * predicted_noise
-
-        return xt_prev, x0
-
-    def set_prediction_type(self, prediction_type: str):
-        """Change the prediction type after initialization.
-
-        Parameters
-        ----------
-        prediction_type : str
-            Type of prediction the model makes. Either "noise" or "x0".
+        Returns:
+            x_prev: (batch, ...) previous state x_{t_prev}
+            pred_x0: (batch, ...) predicted x0 (if return_pred_x0=True)
         """
-        if prediction_type not in ["noise", "x0"]:
-            raise ValueError(f"prediction_type must be either 'noise' or 'x0', got {prediction_type}")
-        self.prediction_type = prediction_type
+        if not torch.all((t >= 0) & (t < self.vs.sample_steps)):
+            raise ValueError(f"t must be in [0, {self.vs.sample_steps - 1}]")
+        if not torch.all((t_pre >= 0) & (t_pre < self.vs.sample_steps)):
+            raise ValueError(f"t_prev must be in [0, {self.vs.sample_steps - 1}]")
+
+        pred_x0 = self.predict_x0(xt, t, pred)
+        pred_noise = self.predict_noise(xt, t, pred_x0)
+        actual_t = self.vs.inference_timesteps[t]
+        actual_t_prev = self.vs.inference_timesteps[t_pre]
+        alpha_cumprod_t = self.vs.alphas_cumprod[actual_t]
+        alpha_cumprod_t_prev = self.vs.alphas_cumprod[actual_t_prev]
+        alpha_cumprod_t = self.vs.get_index(alpha_cumprod_t, xt.shape)
+        alpha_cumprod_t_prev = self.vs.get_index(alpha_cumprod_t_prev, xt.shape)
+        sqrt_one_minus_alpha_cumprod_t = torch.sqrt(1.0 - alpha_cumprod_t)
+        sqrt_alpha_cumprod_t_prev = torch.sqrt(alpha_cumprod_t_prev)
+        sqrt_one_minus_alpha_cumprod_t_prev = torch.sqrt(1.0 - alpha_cumprod_t_prev)
+
+        noise_coeff = self.eta * (
+                (sqrt_one_minus_alpha_cumprod_t / sqrt_alpha_cumprod_t_prev) *
+                sqrt_one_minus_alpha_cumprod_t_prev /
+                torch.clamp(sqrt_one_minus_alpha_cumprod_t, min=1e-8)
+        )
+        direction_coeff = torch.sqrt(
+            torch.clamp(
+                sqrt_one_minus_alpha_cumprod_t_prev ** 2 - noise_coeff ** 2,
+                min=1e-8
+            )
+        )
+        noise = torch.randn_like(xt)
+        mask = (actual_t_prev != 0).float()
+        mask = self.vs.get_index(mask, xt.shape)
+        # x_{t_prev} = √ᾱ_{t_prev} * x̂_0 + noise_coeff * z + direction_coeff * ε̂
+        x_prev = (
+                sqrt_alpha_cumprod_t_prev * pred_x0 +
+                noise_coeff * mask * noise +
+                direction_coeff * pred_noise
+        )
+        return x_prev, pred_x0
+
+    def set_pred_type(self, pred_type: str):
+        """Change the prediction type after initialization"""
+        if pred_type not in ["noise", "x0"]:
+            raise ValueError(f"pred_type must be 'noise' or 'x0'")
+        self.pred_type = pred_type
 
 ###==================================================================================================================###
 
@@ -466,23 +365,22 @@ class CLIPEncoder(nn.Module):
     def __init__(
         self,
         model_name: str = "openai/clip-vit-base-patch32",
-        device: Optional[str] = None,
+        device: str = 'cuda',
         use_fast: bool = False,
     ) -> None:
         super().__init__()
-
-        # set model name and device
         self.model_name = model_name
-        self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
-
+        if isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
         try:
-            # load CLIP model and processor
+            # load clip model and processor
             self.model = CLIPModel.from_pretrained(self.model_name)
             self.processor = CLIPProcessor.from_pretrained(self.model_name, use_fast=use_fast)
             self.model = self.model.to(self.device)
         except Exception as e:
             raise RuntimeError(f"Failed to load CLIP model or processor for {self.model_name}: {e}")
-
         # set model to evaluation mode by default
         self.model.eval()
 
@@ -653,62 +551,55 @@ class UnClipDecoder(nn.Module):
     """
     def __init__(
             self,
-            clip_embedding_dim: int,
-            noise_predictor: nn.Module,
-            forward_diffusion: nn.Module,
-            reverse_diffusion: nn.Module,
+            clip_embed_dim: int,
+            diff_net: nn.Module,
+            fwd_unclip: nn.Module,
+            rwd_unclip: nn.Module,
             glide_text_encoder: torch.nn.Module = None,  # GLIDE text encoder
-            bert_tokenizer: Optional[BertTokenizer] = None,
-            device: Optional[Union[str, torch.device]] = None,
-            image_output_range: Tuple[float, float] = (-1.0, 1.0),
-            normalize_clip_embeddings: bool = True,
+            tokenizer: Optional[BertTokenizer] = None,
+            device: str = 'cuda',
+            norm_range: Tuple[float, float] = (-1.0, 1.0),
+            norm_clip_embed: bool = True,
             classifier_free_prop: float = 0.1,  # paper specifies 10%
             drop_caption: float = 0.5,  # paper specifies 50%
             max_token_length: int = 77  # max_token_length for tokenization
     ) -> None:
         super().__init__()
-
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
+        if isinstance(device, str):
             self.device = torch.device(device)
         else:
             self.device = device
-        self.clip_embedding_dim = clip_embedding_dim
-
+        self.clip_embed_dim = clip_embed_dim
         # core models
-        self.noise_predictor = noise_predictor.to(self.device)
-        self.forward_diffusion = forward_diffusion.to(self.device)
-        self.reverse_diffusion = reverse_diffusion.to(self.device)
+        self.diff_net = diff_net.to(self.device)
+        self.fwd_unclip = fwd_unclip.to(self.device)
+        self.rwd_unclip = rwd_unclip.to(self.device)
         self.glide_text_encoder = glide_text_encoder.to(self.device) if glide_text_encoder else None
 
-        # paper: "projecting CLIP embeddings into four extra tokens of context"
-        self.clip_decoder_projection = CLIPContextProjection(
-            clip_embedding_dim=self.clip_embedding_dim,
-            num_tokens=4
-        ).to(self.device)
-        self.clip_time_projection = nn.Linear(self.clip_embedding_dim, self.clip_embedding_dim).to(self.device)
+        # projecting CLIP embeddings into four extra tokens of context
+        self.clip_decoder_proj = CLIPContextProjection(clip_embed_dim=self.clip_embed_dim, num_tokens=4).to(self.device)
+        self.clip_time_proj = nn.Linear(self.clip_embed_dim, self.clip_embed_dim).to(self.device)
 
         # training parameters
-        self.image_output_range = image_output_range
-        self.normalize_clip_embeddings = normalize_clip_embeddings
+        self.norm_range = norm_range
+        self.norm_clip_embed = norm_clip_embed
         self.classifier_free_prop = classifier_free_prop
         self.drop_caption = drop_caption
         self.max_token_length = max_token_length
 
         # initialize tokenizer
-        if bert_tokenizer is None:
+        if tokenizer is None:
             try:
-                self.bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+                self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
             except Exception as e:
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
 
 
     def forward(
             self,
-            image_embeddings: torch.Tensor,
-            text_embeddings: torch.Tensor,
-            images: torch.Tensor,
+            img_embed: torch.Tensor,
+            text_embed: torch.Tensor,
+            imgs: torch.Tensor,
             texts: torch.Tensor,
             p_classifier_free: float,
             p_text_drop: float) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -740,26 +631,26 @@ class UnClipDecoder(nn.Module):
             Ground truth noise tensor, shape (batch_size, channels, height, width).
         """
 
-        image_embeddings = self._apply_classifier_free_guidance(image_embeddings, p_classifier_free)
-        text_embeddings = self._apply_text_dropout(text_embeddings, p_text_drop)
+        img_embed = self._classifier_free_guidance(img_embed, p_classifier_free)
+        text_embed = self._text_dropout(text_embed, p_text_drop)
         # project z_i to 4 tokens
-        c = self.clip_decoder_projection(image_embeddings)
+        c = self.clip_decoder_proj(img_embed)
         # encode text with GLIDE
-        y_encoded = self._encode_text_with_glide(texts if text_embeddings is not None else None)
+        y = self._encode_text_with_glide(texts if text_embed is not None else None)
         # concatenate embeddings
-        context = self._concatenate_embeddings(y_encoded, c)
+        context = self._conc_embed(y, c)
         # sample timestep and noise
-        t, noise = self._sample_timestep_and_noise(images.shape[0], images.shape)
+        t, noise = self._sample_time_and_noise(imgs.shape[0], imgs.shape)
         # compute noisy image
-        noisy_images = self.forward_diffusion(images, noise, t)
-        clip_image_embedding = self.clip_time_projection(image_embeddings)
-        predicted_noise = self.noise_predictor(noisy_images, t, context, clip_image_embedding)
-        return predicted_noise, noise
+        noisy_imgs = self.fwd_unclip(imgs, noise, t)
+        clip_img_embed = self.clip_time_proj(img_embed)
+        pred_noise = self.diff_net(noisy_imgs, t, context, clip_img_embed)
+        return pred_noise, noise
 
-    def inference_forward(self, image_embeddings, prompt_embeddings):
+    def inference_forward(self, img_embed, prompt_embed):
         pass
 
-    def _apply_classifier_free_guidance(self, image_embeddings: torch.Tensor, p_value: float) -> torch.Tensor:
+    def _classifier_free_guidance(self, img_embed: torch.Tensor, p_val: float) -> torch.Tensor:
         """Applies classifier-free guidance to image embeddings.
 
         Sets image embeddings to zero with a specified probability to implement
@@ -777,13 +668,13 @@ class UnClipDecoder(nn.Module):
         image_embeddings : torch.Tensor
             Modified image embeddings, shape (batch_size, embedding_dim).
         """
-        if p_value < self.classifier_free_prop:
+        if p_val < self.classifier_free_prop:
             # set z_i ← 0 {classifier-free guidance}
-            image_embeddings = torch.zeros_like(image_embeddings)
+            img_embed = torch.zeros_like(img_embed)
 
-        return image_embeddings
+        return img_embed
 
-    def _apply_text_dropout(self, text_embeddings: torch.Tensor, p_value: float) -> Optional[torch.Tensor]:
+    def _text_dropout(self, text_embed: torch.Tensor, p_val: float) -> Optional[torch.Tensor]:
         """Applies text caption dropout to text embeddings.
 
         Drops text embeddings with a specified probability to implement text dropout,
@@ -801,11 +692,11 @@ class UnClipDecoder(nn.Module):
         text_embeddings : torch.Tensor or None
             Modified text embeddings or None if dropped, shape (batch_size, embedding_dim).
         """
-        if p_value < self.drop_caption:
+        if p_val < self.drop_caption:
             # set y ← ∅ {drop text caption}
             return None
 
-        return text_embeddings
+        return text_embed
 
 
     def _encode_text_with_glide(self, texts: Union[List, torch.Tensor]) -> Optional[torch.Tensor]:
@@ -836,7 +727,7 @@ class UnClipDecoder(nn.Module):
         texts = [str(item) for item in texts]
 
         # tokenize
-        tokenized = self.bert_tokenizer(
+        tokenized = self.tokenizer(
             texts,
             padding="max_length",
             truncation=True,
@@ -846,13 +737,11 @@ class UnClipDecoder(nn.Module):
 
         # get embeddings from GLIDE text encoder
         input_ids = tokenized["input_ids"]
-        attention_mask = tokenized["attention_mask"]
-        y_encoded = self.glide_text_encoder(input_ids, attention_mask)
-        # print("y shape: ", y_encoded.size())
-
+        att_mask = tokenized["attention_mask"]
+        y_encoded = self.glide_text_encoder(input_ids, att_mask)
         return y_encoded
 
-    def _concatenate_embeddings(self, y_encoded: Optional[torch.Tensor], c: torch.Tensor) -> torch.Tensor:
+    def _conc_embed(self, y: Optional[torch.Tensor], c: torch.Tensor) -> torch.Tensor:
         """Concatenates GLIDE text embeddings and context tokens.
 
         Combines encoded text embeddings (if available) with projected context tokens
@@ -870,19 +759,16 @@ class UnClipDecoder(nn.Module):
         s : torch.Tensor
             Concatenated embeddings, shape (batch_size, seq_len + num_tokens, embedding_dim).
         """
-        if y_encoded is not None:
-            # ensure y_encoded has sequence dimension
-            if len(y_encoded.shape) == 2:  # [batch_size, embed_dim]
-                y_encoded = y_encoded.unsqueeze(1)  # [batch_size, 1, embed_dim]
-
+        if y is not None:
+            if len(y.shape) == 2:  # [batch_size, embed_dim]
+                y = y.unsqueeze(1)  # [batch_size, 1, embed_dim]
             # concatenate along the sequence dimension
-            s = torch.cat([y_encoded, c], dim=1)  # [batch_size, seq_len + 4, embed_dim]
+            s = torch.cat([y, c], dim=1)  # [batch_size, seq_len + 4, embed_dim]
         else:
             s = c  # [batch_size, 4, embed_dim]
-
         return s
 
-    def _sample_timestep_and_noise(self, batch_size: int, image_shape: torch.Size) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _sample_time_and_noise(self, batch_size: int, img_shape: torch.Size) -> Tuple[torch.Tensor, torch.Tensor]:
         """Samples timesteps and noise for the diffusion process.
 
         Generates random timesteps and Gaussian noise for use in the forward diffusion process.
@@ -902,9 +788,9 @@ class UnClipDecoder(nn.Module):
             Sampled Gaussian noise, shape (batch_size, channels, height, width).
         """
         # sample timestep t ~ Uniform(1, T)
-        t = torch.randint(0, self.forward_diffusion.variance_scheduler.num_steps, (batch_size,), device=self.device)
+        t = torch.randint(0, self.fwd_unclip.vs.num_steps, (batch_size,), device=self.device) # TODO: check it later for possible modifications
         # sample noise ε ~ N(0, I)
-        noise = torch.randn(image_shape, device=self.device)
+        noise = torch.randn(img_shape, device=self.device)
         return t, noise
 
 ###==================================================================================================================###
@@ -941,50 +827,50 @@ class UnCLIPTransformerPrior(nn.Module):
     """
     def __init__(
         self,
-        forward_diffusion: nn.Module, # will be used during training
-        reverse_diffusion: nn.Module, # will be used during training
-        clip_text_projection: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
-        clip_image_projection: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
-        transformer_embedding_dim: int = 320,
+        fwd_unclip: nn.Module, # will be used during training
+        rwd_unclip: nn.Module, # will be used during training
+        clip_text_proj: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
+        clip_img_proj: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
+        trans_embed_dim: int = 320,
         num_layers: int = 12,
-        num_attention_heads: int = 8,
-        feedforward_dim: int = 768,
+        num_att_heads: int = 8,
+        ff_dim: int = 768,
         max_sequence_length: int = 2,
-        dropout_rate: float = 0.2
+        dropout: float = 0.2
     ) -> None:
         super().__init__()
 
-        self.forward_diffusion = forward_diffusion
-        self.reverse_diffusion = reverse_diffusion
-        self.clip_text_projection = clip_text_projection
-        self.clip_image_projection = clip_image_projection
+        self.fwd_unclip = fwd_unclip
+        self.rwd_unclip = rwd_unclip
+        self.clip_text_proj = clip_text_proj
+        self.clip_img_proj = clip_img_proj
 
-        self.transformer_embedding_dim = transformer_embedding_dim
+        self.trans_embed_dim = trans_embed_dim
         self.max_sequence_length = max_sequence_length
 
         # time embedding network
-        self.time_embedding_net = nn.Sequential(
-            nn.Linear(transformer_embedding_dim, transformer_embedding_dim),
+        self.time_embed_net = nn.Sequential(
+            nn.Linear(trans_embed_dim, trans_embed_dim),
             nn.GELU(),
-            nn.Linear(transformer_embedding_dim, transformer_embedding_dim)
+            nn.Linear(trans_embed_dim, trans_embed_dim)
         )
 
         # positional embeddings
-        self.positional_embeddings = nn.Parameter(torch.randn(max_sequence_length, transformer_embedding_dim))
+        self.pos_embed = nn.Parameter(torch.randn(max_sequence_length, trans_embed_dim))
 
         # transformer layers
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(transformer_embedding_dim, num_attention_heads, feedforward_dim, dropout_rate)
+            TransformerBlock(trans_embed_dim, num_att_heads, ff_dim, dropout)
             for _ in range(num_layers)
         ])
 
         # final output projection
-        self.output_projection = nn.Linear(transformer_embedding_dim, transformer_embedding_dim)
+        self.out_proj = nn.Linear(trans_embed_dim, trans_embed_dim)
 
     def forward(
             self,
-            text_embeddings: torch.Tensor,
-            noisy_image_embeddings: torch.Tensor,
+            text_embed: torch.Tensor,
+            noisy_img_embed: torch.Tensor,
             timesteps: torch.Tensor
     ) -> torch.Tensor:
         """Predicts clean image embeddings from noisy inputs and text embeddings.
@@ -1006,30 +892,30 @@ class UnCLIPTransformerPrior(nn.Module):
         predicted_clean_embeddings : torch.Tensor
             Predicted clean image embeddings, shape (batch_size, embedding_dim).
         """
-        device = text_embeddings.device
+        device = text_embed.device
         # create sinusoidal time embeddings
-        time_embeddings = self._get_sinusoidal_embeddings(timesteps, self.transformer_embedding_dim, device)
-        time_embeddings = self.time_embedding_net(time_embeddings)
+        time_embed = self._sinusoidal_embed(timesteps, self.trans_embed_dim, device)
+        time_embed = self.time_embed_net(time_embed)
         # add time information to image embeddings
-        conditioned_image_embeddings = noisy_image_embeddings + time_embeddings
-        # create sequence: [text_embeddings, conditioned_image_embeddings]
-        sequence = torch.stack([text_embeddings, conditioned_image_embeddings], dim=1)  # [B, 2, D]
+        cond_img_embed = noisy_img_embed + time_embed
+        # create sequence: [text_embed, cond_img_embed]
+        seq = torch.stack([text_embed, cond_img_embed], dim=1)  # [B, 2, D]
         # add positional embeddings
-        sequence = sequence + self.positional_embeddings.unsqueeze(0)
+        seq = seq + self.pos_embed.unsqueeze(0)
         # pass through transformer blocks
         for transformer_block in self.transformer_blocks:
-            sequence = transformer_block(sequence)
+            seq = transformer_block(seq)
         # extract predicted clean image embedding (second position in sequence)
-        predicted_clean_embeddings = sequence[:, 1, :]  # [B, D]
+        pred_clean_embed = seq[:, 1, :]  # [B, D]
         # apply final projection
-        predicted_clean_embeddings = self.output_projection(predicted_clean_embeddings)
+        pred_clean_embed = self.out_proj(pred_clean_embed)
 
-        return predicted_clean_embeddings
+        return pred_clean_embed
 
-    def _get_sinusoidal_embeddings(
+    def _sinusoidal_embed(
             self,
             timesteps: torch.Tensor,
-            embedding_dim: int,
+            embed_dim: int,
             device: Union[torch.device, str]
     ) -> torch.Tensor:
         """Generates sinusoidal positional embeddings for timesteps.
@@ -1051,14 +937,14 @@ class UnCLIPTransformerPrior(nn.Module):
         embeddings : torch.Tensor
             Sinusoidal time embeddings, shape (batch_size, embedding_dim).
         """
-        half_dim = embedding_dim // 2
+        half_dim = embed_dim // 2
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
         emb = timesteps[:, None].float() * emb[None, :]
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
 
         # handle odd embedding dimensions
-        if embedding_dim % 2 == 1:
+        if embed_dim % 2 == 1:
             emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=1)
 
         return emb
@@ -1085,27 +971,27 @@ class TransformerBlock(nn.Module):
 
     def __init__(
             self,
-            embedding_dim: int,
+            embed_dim: int,
             num_heads: int,
-            feedforward_dim: int,
+            ff_dim: int,
             dropout: float
     ) -> None:
         super().__init__()
 
-        self.self_attention = nn.MultiheadAttention(
-            embedding_dim,
+        self.self_att = nn.MultiheadAttention(
+            embed_dim,
             num_heads,
             dropout=dropout,
             batch_first=True
         )
-        self.attention_norm = nn.LayerNorm(embedding_dim)
-        self.feedforward_norm = nn.LayerNorm(embedding_dim)
+        self.att_norm = nn.LayerNorm(embed_dim)
+        self.ff_norm = nn.LayerNorm(embed_dim)
 
-        self.feedforward = nn.Sequential(
-            nn.Linear(embedding_dim, feedforward_dim),
+        self.ff = nn.Sequential(
+            nn.Linear(embed_dim, ff_dim),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(feedforward_dim, embedding_dim),
+            nn.Linear(ff_dim, embed_dim),
             nn.Dropout(dropout)
         )
 
@@ -1126,13 +1012,11 @@ class TransformerBlock(nn.Module):
             Processed sequence tensor, shape (batch_size, sequence_length, embedding_dim).
         """
         # self-attention with residual connection
-        attn_output, _ = self.self_attention(x, x, x)
-        x = self.attention_norm(x + attn_output)
-
+        att_out, _ = self.self_att(x, x, x)
+        x = self.att_norm(x + att_out)
         # feedforward with residual connection
-        ff_output = self.feedforward(x)
-        x = self.feedforward_norm(x + ff_output)
-
+        ff_output = self.ff(x)
+        x = self.ff_norm(x + ff_output)
         return x
 
 ###==================================================================================================================###
@@ -1150,12 +1034,12 @@ class CLIPContextProjection(nn.Module):
     `num_tokens` : int, optional
         Number of context tokens to generate (default: 4).
     """
-    def __init__(self, clip_embedding_dim, num_tokens=4):
+    def __init__(self, clip_embed_dim, num_tokens=4):
         super().__init__()
-        self.clip_embedding_dim = clip_embedding_dim
+        self.clip_embed_dim = clip_embed_dim
         self.num_tokens = num_tokens
-        self.clip_projection = nn.Linear(clip_embedding_dim, clip_embedding_dim * num_tokens)
-        self.clip_embedding_norm = nn.LayerNorm(clip_embedding_dim)
+        self.clip_proj = nn.Linear(clip_embed_dim, clip_embed_dim * num_tokens)
+        self.clip_embed_norm = nn.LayerNorm(clip_embed_dim)
 
     def forward(self, z_i):
         """Projects CLIP image embedding into context tokens.
@@ -1174,9 +1058,9 @@ class CLIPContextProjection(nn.Module):
             Context tokens, shape (batch_size, num_tokens, input_dim).
         """
         batch_size = z_i.shape[0]
-        projected = self.clip_projection(z_i)
-        c = projected.view(batch_size, self.num_tokens, self.clip_embedding_dim)
-        c = self.clip_embedding_norm(c)
+        proj = self.clip_proj(z_i)
+        c = proj.view(batch_size, self.num_tokens, self.clip_embed_dim)
+        c = self.clip_embed_norm(c)
         return c
 
 ###==================================================================================================================###
@@ -1205,28 +1089,25 @@ class CLIPEmbeddingProjection(nn.Module):
     """
     def __init__(
         self,
-        clip_embedding_dim: int = 1024,
-        transformer_embedding_dim: int = 320,
+        clip_embed_dim: int = 1024,
+        trans_embed_dim: int = 320,
         hidden_dim: int = 512,
         num_layers: int = 2,
-        dropout_rate: float = 0.2,
+        dropout: float = 0.2,
         use_layer_norm: bool = True
     ) -> None:
         super().__init__()
-
-        self.clip_embedding_dim = clip_embedding_dim
-        self.transformer_embedding_dim = transformer_embedding_dim
-
-        # Forward projection: input_dim -> output_dim
-        self.forward_projection = self._build_projection_network(
-            clip_embedding_dim, transformer_embedding_dim, hidden_dim, num_layers, dropout_rate, use_layer_norm
+        self.clip_embed_dim = clip_embed_dim
+        self.trans_embed_dim = trans_embed_dim
+        # input_dim -> output_dim
+        self.fwd_proj = self._build_proj_net(
+            clip_embed_dim, trans_embed_dim, hidden_dim, num_layers, dropout, use_layer_norm
         )
-
-        # Inverse projection: output_dim -> input_dim
-        self.inverse_projection = self._build_projection_network(
-            transformer_embedding_dim, clip_embedding_dim, hidden_dim, num_layers, dropout_rate, use_layer_norm
+        # output_dim -> input_dim
+        self.inv_proj = self._build_proj_net(
+            trans_embed_dim, clip_embed_dim, hidden_dim, num_layers, dropout, use_layer_norm
         )
-    def _build_projection_network(
+    def _build_proj_net(
             self,
             input_dim: int,
             output_dim: int,
@@ -1292,9 +1173,9 @@ class CLIPEmbeddingProjection(nn.Module):
         x_reduced : torch.Tensor
             Projected tensor, shape (batch_size, output_dim).
         """
-        return self.forward_projection(x)
+        return self.fwd_proj(x)
 
-    def inverse_transform(self, x_reduced: torch.Tensor) -> torch.Tensor:
+    def inverse_transform(self, x: torch.Tensor) -> torch.Tensor:
         """Reconstructs input from lower-dimensional space.
 
         Applies the inverse projection network to restore the original dimensionality
@@ -1302,17 +1183,17 @@ class CLIPEmbeddingProjection(nn.Module):
 
         Parameters
         ----------
-        `x_reduced` : torch.Tensor
+        `x` : torch.Tensor
             Reduced-dimensionality tensor, shape (batch_size, output_dim).
 
         Returns
         -------
-        x_reconstructed : torch.Tensor
+        x : torch.Tensor
             Reconstructed tensor, shape (batch_size, input_dim).
         """
-        return self.inverse_projection(x_reduced)
+        return self.inv_proj(x)
 
-    def reconstruction_loss(self, x: torch.Tensor) -> torch.Tensor:
+    def rec_loss(self, x: torch.Tensor) -> torch.Tensor:
         """Computes the reconstruction loss for the projection.
 
         Calculates the mean squared error between the original input and its reconstruction
@@ -1328,9 +1209,9 @@ class CLIPEmbeddingProjection(nn.Module):
         loss : torch.Tensor
             Mean squared error loss between the original and reconstructed tensors.
         """
-        x_reduced = self.forward(x)
-        x_reconstructed = self.inverse_transform(x_reduced)
-        return F.mse_loss(x_reconstructed, x)
+        x = self.forward(x)
+        x_rec = self.inverse_transform(x)
+        return F.mse_loss(x_rec, x)
 
 ###==================================================================================================================###
 
@@ -1396,100 +1277,91 @@ class TrainUnClipDecoder(nn.Module):
     """
     def __init__(
             self,
-            clip_embedding_dim: int,
-            decoder_model: nn.Module,
-            clip_model: nn.Module,
+            clip_embed_dim: int,
+            decoder_net: nn.Module,
+            clip_net: nn.Module,
             train_loader: torch.utils.data.DataLoader,
-            optimizer: torch.optim.Optimizer,
-            objective: Callable,
-            clip_text_projection: Optional[nn.Module] = None,
-            clip_image_projection: Optional[nn.Module] = None,
+            optim: torch.optim.Optimizer,
+            loss_fn: Callable,
+            clip_text_proj: Optional[nn.Module] = None,
+            clip_img_proj: Optional[nn.Module] = None,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             metrics_: Optional[Any] = None,
             max_epochs: int = 1000,
-            device: Optional[Union[str, torch.device]] = None,
+            device: str = 'cuda',
             store_path: str = "unclip_decoder",
             patience: int = 100,
-            warmup_epochs: int = 100,
-            val_frequency: int = 10,
+            warmup_steps: int = 10000,
+            val_freq: int = 10,
             use_ddp: bool = False,
-            grad_accumulation_steps: int = 1,
-            log_frequency: int = 1,
-            use_compilation: bool = False,
-            image_output_range: Tuple[float, float] = (-1.0, 1.0),
-            reduce_clip_embedding_dim: bool = True,
-            transformer_embedding_dim: int = 312,
-            normalize_clip_embeddings: bool = True,
-            finetune_clip_projections: bool = False # if text_projection and image_projection model should be finetune
+            grad_acc: int = 1,
+            log_freq: int = 1,
+            use_comp: bool = False,
+            norm_range: Tuple[float, float] = (-1.0, 1.0),
+            reduce_clip_embed_dim: bool = True,
+            trans_embed_dim: int = 312,
+            norm_clip_embed: bool = True,
+            finetune_clip_proj: bool = False # if text_projection and image_projection model should be finetune
     ):
         super().__init__()
         # training configuration
         self.use_ddp = use_ddp
-        self.grad_accumulation_steps = grad_accumulation_steps
-        self.use_compilation = use_compilation
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
+        self.grad_acc = grad_acc
+        self.use_comp = use_comp
+        if isinstance(device, str):
             self.device = torch.device(device)
         else:
             self.device = device
-
         # core models
-        self.decoder_model = decoder_model.to(self.device)
-        self.clip_model = clip_model.to(self.device)
-
-        self.reduce_clip_embedding_dim = reduce_clip_embedding_dim
-
+        self.decoder_net = decoder_net.to(self.device)
+        self.clip_net = clip_net.to(self.device)
+        self.reduce_clip_embed_dim = reduce_clip_embed_dim
         # setup distributed training
         if self.use_ddp:
             self._setup_ddp()
         else:
             self._setup_single_gpu()
-
         # compile and wrap models
         self._compile_models()
         self._wrap_models_for_ddp()
-
         # projection models (PCA equivalent in the paper)
-        if self.reduce_clip_embedding_dim and clip_text_projection is not None and clip_image_projection is not None:
-            self.clip_text_projection = clip_text_projection.to(self.device)
-            self.clip_image_projection = clip_image_projection.to(self.device)
+        if self.reduce_clip_embed_dim and clip_text_proj is not None and clip_img_proj is not None:
+            self.clip_text_proj = clip_text_proj.to(self.device)
+            self.clip_img_proj = clip_img_proj.to(self.device)
         else:
-            self.clip_text_projection = None
-            self.clip_image_projection = None
-
+            self.clip_text_proj = None
+            self.clip_img_proj = None
         # training components
-        self.clip_embedding_dim = transformer_embedding_dim if self.reduce_clip_embedding_dim else clip_embedding_dim
+        self.clip_embed_dim = trans_embed_dim if self.reduce_clip_embed_dim else clip_embed_dim
         self.metrics_ = metrics_
-        self.optimizer = optimizer
-        self.objective = objective
+        self.optim = optim
+        self.loss_fn = loss_fn
         self.train_loader = train_loader
         self.val_loader = val_loader
-
         # training parameters
         self.max_epochs = max_epochs
         self.patience = patience
-        self.val_frequency = val_frequency
-        self.log_frequency = log_frequency
-        self.image_output_range = image_output_range
-        self.reduce_clip_embedding_dim = reduce_clip_embedding_dim
-        self.normalize_clip_embeddings = normalize_clip_embeddings
-        self.transformer_embedding_dim = transformer_embedding_dim
-        self.finetune_clip_projections = finetune_clip_projections
-
-
+        self.val_freq = val_freq
+        self.log_freq = log_freq
+        self.norm_range = norm_range
+        self.norm_clip_embed = norm_clip_embed
+        self.trans_embed_dim = trans_embed_dim
+        self.finetune_clip_proj = finetune_clip_proj
         # checkpoint management
         self.store_path = store_path
-
+        self.global_step = 0
+        self.warmup_steps = warmup_steps
+        self.best_loss = float('inf')
+        self.losses = {'train_losses': [], 'val_losses': []}
         # learning rate scheduling
         self.scheduler = ReduceLROnPlateau(
-            self.optimizer,
+            self.optim,
             patience=self.patience,
             factor=0.5
         )
-        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
 
-    def forward(self) -> Tuple[List[float], float]:
+    def forward(self) -> Dict:
         """Trains the UnCLIP decoder model to predict noise for denoising.
 
         Executes the training loop, optimizing the decoder model using CLIP embeddings, mixed
@@ -1503,98 +1375,73 @@ class TrainUnClipDecoder(nn.Module):
         best_val_loss : float
             Best validation or training loss achieved.
         """
-        # set models to training mode
-        self.decoder_model.train()  # sets noise_predictor, conditional_model, variance_scheduler, clip_time_proj to train mode
-        if not self.decoder_model.forward_diffusion.variance_scheduler.trainable_beta:  # ff beta is not trainable
-            self.decoder_model.forward_diffusion.variance_scheduler.eval()
-
+        self.decoder_net.train()
         # set text_projection and image_projection to train mode if fine-tuning
-        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
-            if self.finetune_clip_projections:
-                self.clip_text_projection.train()
-                self.clip_image_projection.train()
+        if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None:
+            if self.finetune_clip_proj:
+                self.clip_text_proj.train()
+                self.clip_img_proj.train()
             else:
-                self.clip_text_projection.eval()
-                self.clip_image_projection.eval()
+                self.clip_text_proj.eval()
+                self.clip_img_proj.eval()
+        # set clip model to eval mode (frozen)
+        if self.clip_net is not None:
+            self.clip_net.eval()
 
-        # set CLIP model to eval mode (frozen)
-        if self.clip_model is not None:
-            self.clip_model.eval()
-
-        # initialize training components
+        self._wrap_models_for_ddp()
         scaler = torch.GradScaler()
-        train_losses = []
-        best_val_loss = float("inf")
         wait = 0
-
-        # main training loop
         for epoch in range(self.max_epochs):
-            # set epoch for distributed sampler if using DDP
+            pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
+            # set epoch for distributed sampler if using ddp
             if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
                 self.train_loader.sampler.set_epoch(epoch)
-
             train_losses_epoch = []
-
-            # training step loop with gradient accumulation
-            for step, (images, texts) in enumerate(tqdm(self.train_loader, disable=not self.master_process)):
-                images = images.to(self.device, non_blocking=True)
-
-                # forward pass with mixed precision
+            for step, (imgs, texts) in enumerate(pbar):
+                imgs = imgs.to(self.device, non_blocking=True)
                 with torch.autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
-                    # encode text and image with CLIP
-                    text_embeddings, image_embeddings = self._get_clip_embeddings(images, texts)
-
-                    # reduce dimensionality (PCA equivalent)
-                    text_embeddings, image_embeddings = self._apply_dimensionality_reduction(
-                        text_embeddings, image_embeddings
-                    )
-
+                    # encode text and image with clip
+                    text_embed, img_embed = self._clip_embed(imgs, texts)
+                    # reduce dimensionality (pca equivalent)
+                    text_embed, img_embed = self._dim_reduction(text_embed, img_embed)
                     # use decoder model to predict noise
                     p_classifier_free = torch.rand(1).item()
                     p_text_drop = torch.rand(1).item()
-                    predicted_noise, noise = self.decoder_model(
-                        image_embeddings,
-                        text_embeddings,
-                        images,
+                    pred_noise, noise = self.decoder_net(
+                        img_embed,
+                        text_embed,
+                        imgs,
                         texts,
                         p_classifier_free,
                         p_text_drop
                     )
-
-                    # compute loss
-                    loss = self.objective(predicted_noise, noise) / self.grad_accumulation_steps
+                    loss = self.loss_fn(pred_noise, noise) / self.grad_acc
 
                 scaler.scale(loss).backward()
-
-                if (step + 1) % self.grad_accumulation_steps == 0:
-                    # clip gradients
-                    scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.decoder_model.parameters(), max_norm=1.0)  # covers all submodules
-                    if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None and self.finetune_clip_projections:
-                        torch.nn.utils.clip_grad_norm_(self.clip_text_projection.parameters(), max_norm=1.0)
-                        torch.nn.utils.clip_grad_norm_(self.clip_image_projection.parameters(), max_norm=1.0)
-
-                    scaler.step(self.optimizer)
+                if (step + 1) % self.grad_acc == 0:
+                    scaler.unscale_(self.optim)
+                    torch.nn.utils.clip_grad_norm_(self.decoder_net.parameters(), max_norm=1.0)  # covers all submodules
+                    if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None and self.finetune_clip_proj:
+                        torch.nn.utils.clip_grad_norm_(self.clip_text_proj.parameters(), max_norm=1.0)
+                        torch.nn.utils.clip_grad_norm_(self.clip_img_proj.parameters(), max_norm=1.0)
+                    scaler.step(self.optim)
                     scaler.update()
-                    self.optimizer.zero_grad()
-                    self.warmup_lr_scheduler.step()
-                    torch.cuda.empty_cache()  # clear memory after optimizer step
-
-                train_losses_epoch.append(loss.item() * self.grad_accumulation_steps)
-
-            mean_train_loss = self._compute_mean_loss(train_losses_epoch)
-            train_losses.append(mean_train_loss)
-
-            if self.master_process and (epoch + 1) % self.log_frequency == 0:
-                current_lr = self.optimizer.param_groups[0]['lr']
+                    self.optim.zero_grad()
+                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                        self.warmup_lr_scheduler.step()
+                    self.global_step += 1
+                    # torch.cuda.empty_cache()  # clear memory after optimizer step
+                pbar.set_postfix({'Loss': f'{loss.item() * self.grad_acc:.4f}'})
+                train_losses_epoch.append(loss.item() * self.grad_acc)
+            mean_train_loss = self._mean_loss(train_losses_epoch)
+            self.losses['train_losses'].append(mean_train_loss)
+            if self.master_process and (epoch + 1) % self.log_freq == 0:
+                current_lr = self.optim.param_groups[0]['lr']
                 print(f"Epoch {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
 
-            current_loss = mean_train_loss
-
-            if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
+            if self.val_loader is not None and (epoch + 1) % self.val_freq == 0:
                 val_metrics = self.validate()
                 val_loss, fid, mse, psnr, ssim, lpips_score = val_metrics
-
                 if self.master_process:
                     print(f" | Val Loss: {val_loss:.4f}", end="")
                     if self.metrics_ and hasattr(self.metrics_, 'fid') and self.metrics_.fid:
@@ -1604,25 +1451,29 @@ class TrainUnClipDecoder(nn.Module):
                     if self.metrics_ and hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
                         print(f" | LPIPS: {lpips_score:.4f}", end="")
                     print()
-
-            self.scheduler.step(current_loss)
+                self.scheduler.step(val_loss)
+                self.losses['val_losses'].append((val_loss, fid, mse, psnr, ssim, lpips_score))
+            else:
+                if self.master_process:
+                    print()
+                self.scheduler.step(mean_train_loss)
 
             if self.master_process:
-                if current_loss < best_val_loss and (epoch + 1) % self.val_frequency == 0:
-                    best_val_loss = current_loss
+                if mean_train_loss < self.best_loss:
+                    self.best_loss = mean_train_loss
                     wait = 0
-                    self._save_checkpoint(epoch + 1, best_val_loss, is_best=True)
+                    self._save_checkpoint(epoch + 1, self.best_loss, "best_")
                 else:
                     wait += 1
                     if wait >= self.patience:
                         print("Early stopping triggered")
-                        self._save_checkpoint(epoch + 1, current_loss, suffix="_early_stop")
+                        self._save_checkpoint(epoch + 1, mean_train_loss, "early_stop_")
                         break
-
+                if (epoch + 1) % self.val_freq == 0:
+                    self._save_checkpoint(epoch + 1, mean_train_loss, "")
         if self.use_ddp:
             destroy_process_group()
-
-        return train_losses, best_val_loss
+        return self.losses
 
     def _setup_ddp(self) -> None:
         """Sets up Distributed Data Parallel training configuration.
@@ -1634,22 +1485,16 @@ class TrainUnClipDecoder(nn.Module):
         for var in required_env_vars:
             if var not in os.environ:
                 raise ValueError(f"DDP enabled but {var} environment variable not set")
-
         if not torch.cuda.is_available():
             raise RuntimeError("DDP requires CUDA but CUDA is not available")
-
         if not torch.distributed.is_initialized():
             init_process_group(backend="nccl")
-
         self.ddp_rank = int(os.environ["RANK"])
         self.ddp_local_rank = int(os.environ["LOCAL_RANK"])
         self.ddp_world_size = int(os.environ["WORLD_SIZE"])
-
         self.device = torch.device(f"cuda:{self.ddp_local_rank}")
         torch.cuda.set_device(self.device)
-
         self.master_process = self.ddp_rank == 0
-
         if self.master_process:
             print(f"DDP initialized with world_size={self.ddp_world_size}")
 
@@ -1665,7 +1510,7 @@ class TrainUnClipDecoder(nn.Module):
         self.master_process = True
 
     @staticmethod
-    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
+    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_steps: int) -> torch.optim.lr_scheduler.LambdaLR:
         """Creates a learning rate scheduler for warmup.
 
         Generates a scheduler that linearly increases the learning rate from 0 to the
@@ -1683,9 +1528,10 @@ class TrainUnClipDecoder(nn.Module):
         lr_scheduler : torch.optim.lr_scheduler.LambdaLR
             Learning rate scheduler for warmup.
         """
-        def lr_lambda(epoch):
-            return min(1.0, epoch / warmup_epochs) if warmup_epochs > 0 else 1.0
-
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return 0.1 + (0.9 * step / warmup_steps)
+            return 1.0
         return LambdaLR(optimizer, lr_lambda)
 
     def _wrap_models_for_ddp(self) -> None:
@@ -1694,18 +1540,17 @@ class TrainUnClipDecoder(nn.Module):
         Configures the decoder model and, if fine-tuning, the projection models for DDP training.
         """
         if self.use_ddp:
-            self.decoder_model = self.decoder_model.to(self.ddp_local_rank)
-            self.decoder_model = DDP(
-                self.decoder_model,
+            self.decoder_net = self.decoder_net.to(self.ddp_local_rank)
+            self.decoder_net = DDP(
+                self.decoder_net,
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
-            # only wrap text_projection and image_projection if they are trainable
-            if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None and self.finetune_clip_projections:
-                self.clip_text_projection = self.clip_text_projection.to(self.ddp_local_rank)
-                self.clip_image_projection = self.clip_image_projection.to(self.ddp_local_rank)
-                self.clip_text_projection = DDP(self.clip_text_projection, device_ids=[self.ddp_local_rank])
-                self.clip_image_projection = DDP(self.clip_image_projection, device_ids=[self.ddp_local_rank])
+            if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None and self.finetune_clip_proj:
+                self.clip_text_proj = self.clip_text_proj.to(self.ddp_local_rank)
+                self.clip_img_proj = self.clip_img_proj.to(self.ddp_local_rank)
+                self.clip_text_proj = DDP(self.clip_text_proj, device_ids=[self.ddp_local_rank])
+                self.clip_img_proj = DDP(self.clip_img_proj, device_ids=[self.ddp_local_rank])
 
     def _compile_models(self) -> None:
         """Compiles models for optimization if supported.
@@ -1713,26 +1558,26 @@ class TrainUnClipDecoder(nn.Module):
         Attempts to compile the decoder model and, if fine-tuning, the projection models using
         torch.compile for optimization, falling back to uncompiled execution if compilation fails.
         """
-        if self.use_compilation:
+        if self.use_comp:
             try:
-                self.decoder_model = self.decoder_model.to(self.device)
-                self.decoder_model = torch.compile(self.decoder_model, mode="reduce-overhead")
+                self.decoder_net = self.decoder_net.to(self.device)
+                self.decoder_net = torch.compile(self.decoder_net, mode="reduce-overhead")
                 # only compile text_projection and image_projection if they are trainable
-                if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None and self.finetune_clip_projections:
-                    self.clip_text_projection = self.clip_text_projection.to(self.device)
-                    self.clip_image_projection = self.clip_image_projection.to(self.device)
-                    self.clip_text_projection = torch.compile(self.clip_text_projection, mode="reduce-overhead")
-                    self.clip_image_projection = torch.compile(self.clip_image_projection, mode="reduce-overhead")
+                if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None and self.finetune_clip_proj:
+                    self.clip_text_proj = self.clip_text_proj.to(self.device)
+                    self.clip_img_proj = self.clip_img_proj.to(self.device)
+                    self.clip_text_proj = torch.compile(self.clip_text_proj, mode="reduce-overhead")
+                    self.clip_img_proj = torch.compile(self.clip_img_proj, mode="reduce-overhead")
                 if self.master_process:
                     print("Models compiled successfully")
             except Exception as e:
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
-    def _get_clip_embeddings(
+    def _clip_embed(
             self,
-            images: torch.Tensor,
-            texts: Union[List, torch.Tensor]
+            imgs: torch.Tensor,
+            txts: Union[List, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Encodes images and texts using the CLIP model.
 
@@ -1753,16 +1598,16 @@ class TrainUnClipDecoder(nn.Module):
             CLIP image embeddings, shape (batch_size, embedding_dim).
         """
         with torch.no_grad():
-            # encode text y with CLIP text encoder: z_t ← CLIP_text(y)
-            text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize_clip_embeddings)
+            # encode text y with clip text encoder: z_t ← CLIP_text(y)
+            txt_embed = self.clip_net(data=txts, data_type="text", normalize=self.norm_clip_embed)
             # encode image x with CLIP image encoder: z_i ← CLIP_image(x)
-            image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize_clip_embeddings)
-        return text_embeddings, image_embeddings
+            img_embed = self.clip_net(data=imgs, data_type="img", normalize=self.norm_clip_embed)
+        return txt_embed, img_embed
 
-    def _apply_dimensionality_reduction(
+    def _dim_reduction(
             self,
-            text_embeddings: torch.Tensor,
-            image_embeddings: torch.Tensor
+            txt_embed: torch.Tensor,
+            img_embed: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Applies dimensionality reduction to embeddings if enabled.
 
@@ -1783,17 +1628,17 @@ class TrainUnClipDecoder(nn.Module):
         image_embeddings : torch.Tensor
             Projected image embeddings, shape (batch_size, output_dim) if reduced, else unchanged.
         """
-        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
-            if not self.finetune_clip_projections:
+        if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None:
+            if not self.finetune_clip_proj:
                 with torch.no_grad():
-                    text_embeddings = self.clip_text_projection(text_embeddings.to(self.device))
-                    image_embeddings = self.clip_image_projection(image_embeddings.to(self.device))
+                    txt_embed = self.clip_text_proj(txt_embed.to(self.device))
+                    img_embed = self.clip_img_proj(img_embed.to(self.device))
             else:
-                text_embeddings = self.clip_text_projection(text_embeddings.to(self.device))
-                image_embeddings = self.clip_image_projection(image_embeddings.to(self.device))
-        return text_embeddings.to(self.device), image_embeddings.to(self.device)
+                txt_embed = self.clip_text_proj(txt_embed.to(self.device))
+                img_embed = self.clip_img_proj(img_embed.to(self.device))
+        return txt_embed.to(self.device), img_embed.to(self.device)
 
-    def _compute_mean_loss(self, losses: List[float]) -> float:
+    def _mean_loss(self, losses: List[float]) -> float:
         """Computes mean loss with DDP synchronization if needed.
 
         Calculates the mean of the provided losses and synchronizes the result across
@@ -1820,7 +1665,7 @@ class TrainUnClipDecoder(nn.Module):
 
         return mean_loss
 
-    def _save_checkpoint(self, epoch: int, loss: float, is_best: bool = False, suffix: str = ""):
+    def _save_checkpoint(self, epoch: int, loss: float, pref: str = ""):
         """Saves model checkpoint.
 
         Saves the state of the decoder model, its submodules, optimizer, and schedulers,
@@ -1842,73 +1687,65 @@ class TrainUnClipDecoder(nn.Module):
         checkpoint = {
             'epoch': epoch,
             'loss': loss,
+            'losses': self.losses,
             # core models (submodules of decoder_model)
-            'noise_predictor_state_dict': self.decoder_model.module.noise_predictor.state_dict() if self.use_ddp else self.decoder_model.noise_predictor.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
+            'diff_net_state_dict': self.decoder_net.module.diff_net.state_dict() if self.use_ddp else self.decoder_net.diff_net.state_dict(),
+            'optim_state_dict': self.optim.state_dict(),
             # training configuration
-            'embedding_dim': self.clip_embedding_dim,
-            'output_dim': self.transformer_embedding_dim,
-            'reduce_dim': self.reduce_clip_embedding_dim,
-            'normalize': self.normalize_clip_embeddings
+            'embedding_dim': self.clip_embed_dim,
+            'output_dim': self.trans_embed_dim,
+            'reduce_dim': self.reduce_clip_embed_dim,
+            'normalize': self.norm_clip_embed
         }
-
         # save conditional model (submodule of decoder_model)
-        if self.decoder_model.glide_text_encoder is not None:
-            checkpoint['conditional_model_state_dict'] = (
-                self.decoder_model.module.glide_text_encoder.state_dict() if self.use_ddp
-                else self.decoder_model.glide_text_encoder.state_dict()
+        if self.decoder_net.glide_text_encoder is not None:
+            checkpoint['cond_model_state_dict'] = (
+                self.decoder_net.module.glide_text_encoder.state_dict() if self.use_ddp
+                else self.decoder_net.glide_text_encoder.state_dict()
             )
-
-        # save variance scheduler (submodule of decoder_model, always saved)
-        checkpoint['variance_scheduler_state_dict'] = (
-            self.decoder_model.forward_diffusion.module.variance_scheduler.state_dict() if self.use_ddp
-            else self.decoder_model.forward_diffusion.variance_scheduler.state_dict()
+        # save scheduler (submodule of decoder_model, always saved)
+        checkpoint['scheduler_state_dict'] = (
+            self.decoder_net.fwd_unclip.module.vs.state_dict() if self.use_ddp
+            else self.decoder_net.fwd_unclip.vs.state_dict()
         )
-
-        # save CLIP time projection layer (submodule of decoder_model)
+        # save clip time projection layer (submodule of decoder_net)
         checkpoint['clip_time_proj_state_dict'] = (
-            self.decoder_model.module.clip_time_projection.state_dict() if self.use_ddp
-            else self.decoder_model.clip_time_projection.state_dict()
+            self.decoder_net.module.clip_time_proj.state_dict() if self.use_ddp
+            else self.decoder_net.clip_time_proj.state_dict()
         )
-
-        # save decoder projection layer (submodule of decoder_model)
-        checkpoint['decoder_projection_state_dict'] = (
-            self.decoder_model.module.clip_decoder_projection.state_dict() if self.use_ddp
-            else self.decoder_model.clip_decoder_projection.state_dict()
+        # save decoder projection layer (submodule of decoder_net)
+        checkpoint['decoder_proj_state_dict'] = (
+            self.decoder_net.module.clip_decoder_proj.state_dict() if self.use_ddp
+            else self.decoder_net.clip_decoder_proj.state_dict()
         )
         # a nn.Linear projection layer
-        checkpoint['clip_time_projection_state_dict'] = (
-            self.decoder_model.module.clip_time_projection.state_dict() if self.use_ddp
-            else self.decoder_model.clip_time_projection.state_dict()
+        checkpoint['clip_time_proj_state_dict'] = (
+            self.decoder_net.module.clip_time_proj.state_dict() if self.use_ddp
+            else self.decoder_net.clip_time_proj.state_dict()
         )
-
-        # save projection models (PCA equivalent)
-        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
-            checkpoint['text_projection_state_dict'] = (
-                self.clip_text_projection.module.state_dict() if self.use_ddp
-                else self.clip_text_projection.state_dict()
+        # save projection models (pca equivalent)
+        if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None:
+            checkpoint['text_proj_state_dict'] = (
+                self.clip_text_proj.module.state_dict() if self.use_ddp
+                else self.clip_text_proj.state_dict()
             )
-            checkpoint['image_projection_state_dict'] = (
-                self.clip_image_projection.module.state_dict() if self.use_ddp
-                else self.clip_image_projection.state_dict()
+            checkpoint['img_proj_state_dict'] = (
+                self.clip_img_proj.module.state_dict() if self.use_ddp
+                else self.clip_img_proj.state_dict()
             )
-
         # save schedulers state
         checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         checkpoint['warmup_scheduler_state_dict'] = self.warmup_lr_scheduler.state_dict()
+        try:
+            filename = f"{pref}model_epoch_{epoch}.pth"
+            filepath = os.path.join(self.store_path, filename)
+            os.makedirs(self.store_path, exist_ok=True)
+            torch.save(checkpoint, filepath)
+            print(f"Model saved at epoch {epoch} with loss: {loss}")
+        except Exception as e:
+            print(f"Failed to save model: {e}")
 
-        filename = f"unclip_decoder_epoch_{epoch}{suffix}.pth"
-        if is_best:
-            filename = f"unclip_decoder_best{suffix}.pth"
-
-        filepath = os.path.join(self.store_path, filename)
-        os.makedirs(self.store_path, exist_ok=True)
-        torch.save(checkpoint, filepath)
-
-        if is_best:
-            print(f"Best model saved: {filepath}")
-
-    def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, float]:
+    def load_checkpoint(self, check_path: str) -> Tuple[int, float]:
         """Loads model checkpoint.
 
         Restores the state of the decoder model, its submodules, optimizer, and schedulers
@@ -1927,79 +1764,66 @@ class TrainUnClipDecoder(nn.Module):
             The loss at the checkpoint.
         """
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(check_path, map_location=self.device)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+            raise FileNotFoundError(f"Checkpoint not found: {check_path}")
 
-        def _load_model_state_dict(model: nn.Module, state_dict: dict, model_name: str) -> None:
+        def _load_model(model: nn.Module, state_dict: dict, model_name: str) -> None:
             """Helper function to load state dict with DDP compatibility."""
             try:
-                # handle DDP state dict compatibility
+                # handle ddp state dict compatibility
                 if self.use_ddp and not any(key.startswith('module.') for key in state_dict.keys()):
                     state_dict = {f'module.{k}': v for k, v in state_dict.items()}
                 elif not self.use_ddp and any(key.startswith('module.') for key in state_dict.keys()):
                     state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-
                 model.load_state_dict(state_dict)
                 if self.master_process:
                     print(f"✓ Loaded {model_name}")
             except Exception as e:
                 warnings.warn(f"Failed to load {model_name}: {e}")
 
-        # load core noise predictor model (submodule of decoder_model)
-        if 'noise_predictor_state_dict' in checkpoint:
-            _load_model_state_dict(self.decoder_model.noise_predictor, checkpoint['noise_predictor_state_dict'],
-                                   'noise_predictor')
-
+        # load core diffusion network model (submodule of decoder_model)
+        if 'diff_net_state_dict' in checkpoint:
+            _load_model(self.decoder_net.diff_net, checkpoint['diff_net_state_dict'], 'diff_net')
         # load conditional model (submodule of decoder_model) - matches your save logic
-        if self.decoder_model.glide_text_encoder is not None and 'conditional_model_state_dict' in checkpoint:
-            _load_model_state_dict(self.decoder_model.glide_text_encoder, checkpoint['conditional_model_state_dict'],
-                                   'glide_text_encoder')
+        if self.decoder_net.glide_text_encoder is not None and 'cond_model_state_dict' in checkpoint:
+            _load_model(self.decoder_net.glide_text_encoder, checkpoint['cond_model_state_dict'], 'glide_text_encoder')
 
-        # load variance scheduler (submodule of decoder_model)
-        if 'variance_scheduler_state_dict' in checkpoint:
+        # load scheduler (submodule of decoder_model)
+        if 'scheduler_state_dict' in checkpoint:
             try:
-                _load_model_state_dict(self.decoder_model.forward_diffusion.variance_scheduler,
-                                       checkpoint['variance_scheduler_state_dict'], 'variance_scheduler')
+                _load_model(self.decoder_net.fwd_unclip.vs, checkpoint['scheduler_state_dict'], 'scheduler')
             except Exception as e:
                 warnings.warn(f"Failed to load variance scheduler: {e}")
 
         # load CLIP time projection layer (submodule of decoder_model)
         if 'clip_time_proj_state_dict' in checkpoint:
             try:
-                _load_model_state_dict(self.decoder_model.clip_time_projection,
-                                       checkpoint['clip_time_proj_state_dict'], 'clip_time_projection')
+                _load_model(self.decoder_net.clip_time_proj, checkpoint['clip_time_proj_state_dict'],'clip_time_proj')
             except Exception as e:
                 warnings.warn(f"Failed to load CLIP time projection: {e}")
 
         # load decoder projection layer (submodule of decoder_model)
-        if 'decoder_projection_state_dict' in checkpoint:
+        if 'decoder_proj_state_dict' in checkpoint:
             try:
-                _load_model_state_dict(self.decoder_model.clip_decoder_projection,
-                                       checkpoint['decoder_projection_state_dict'], 'clip_decoder_projection')
+                _load_model(self.decoder_net.clip_decoder_proj, checkpoint['decoder_proj_state_dict'], 'clip_decoder_proj')
             except Exception as e:
                 warnings.warn(f"Failed to load decoder projection: {e}")
 
-        # handle the duplicate clip_time_projection_state_dict (from your save function)
-        # This loads the same thing as clip_time_proj_state_dict above, so we'll skip it
-        # to avoid overwriting, but add a warning if it exists
-        if 'clip_time_projection_state_dict' in checkpoint and self.master_process:
-            warnings.warn(
-                "Found duplicate 'clip_time_projection_state_dict' in checkpoint - skipping to avoid conflict")
+        if 'clip_time_proj_state_dict' in checkpoint and self.master_process:
+            warnings.warn("Found duplicate 'clip_time_proj_state_dict' in checkpoint - skipping to avoid conflict")
 
-        # load projection models (PCA equivalent)
-        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
-            if 'text_projection_state_dict' in checkpoint:
-                _load_model_state_dict(self.clip_text_projection, checkpoint['text_projection_state_dict'],
-                                       'text_projection')
-            if 'image_projection_state_dict' in checkpoint:
-                _load_model_state_dict(self.clip_image_projection, checkpoint['image_projection_state_dict'],
-                                       'image_projection')
+        # load projection models (pca equivalent)
+        if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None:
+            if 'text_proj_state_dict' in checkpoint:
+                _load_model(self.clip_text_proj, checkpoint['text_proj_state_dict'], 'text_proj')
+            if 'image_proj_state_dict' in checkpoint:
+                _load_model(self.clip_img_proj, checkpoint['image_proj_state_dict'], 'image_proj')
 
         # load optimizer
-        if 'optimizer_state_dict' in checkpoint:
+        if 'optim_state_dict' in checkpoint:
             try:
-                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.optim.load_state_dict(checkpoint['optim_state_dict'])
                 if self.master_process:
                     print("✓ Loaded optimizer")
             except Exception as e:
@@ -2024,20 +1848,20 @@ class TrainUnClipDecoder(nn.Module):
 
         # verify configuration compatibility
         if 'embedding_dim' in checkpoint:
-            if checkpoint['embedding_dim'] != self.clip_embedding_dim:
+            if checkpoint['embedding_dim'] != self.clip_embed_dim:
                 warnings.warn(
-                    f"Embedding dimension mismatch: checkpoint={checkpoint['embedding_dim']}, current={self.clip_embedding_dim}")
+                    f"Embedding dimension mismatch: checkpoint={checkpoint['embedding_dim']}, current={self.clip_embed_dim}")
 
         if 'reduce_dim' in checkpoint:
-            if checkpoint['reduce_dim'] != self.reduce_clip_embedding_dim:
+            if checkpoint['reduce_dim'] != self.reduce_clip_embed_dim:
                 warnings.warn(
-                    f"Reduce dimension setting mismatch: checkpoint={checkpoint['reduce_dim']}, current={self.reduce_clip_embedding_dim}")
+                    f"Reduce dimension setting mismatch: checkpoint={checkpoint['reduce_dim']}, current={self.reduce_clip_embed_dim}")
 
         epoch = checkpoint.get('epoch', 0)
         loss = checkpoint.get('loss', float('inf'))
 
         if self.master_process:
-            print(f"Successfully loaded checkpoint from {checkpoint_path}")
+            print(f"Successfully loaded checkpoint from {check_path}")
             print(f"Epoch: {epoch}, Loss: {loss:.4f}")
 
         return epoch, loss
@@ -2065,58 +1889,50 @@ class TrainUnClipDecoder(nn.Module):
         lpips_avg : float or None
             Average LPIPS score, if computed.
         """
-
-        # set models to eval mode for evaluation
-        self.decoder_model.eval()  # sets noise_predictor, conditional_model, variance_scheduler, clip_time_proj, decoder_projection to eval mode
-        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
-            self.clip_text_projection.eval()
-            self.clip_image_projection.eval()
-        if self.clip_model is not None:
-            self.clip_model.eval()
-
+        self.decoder_net.eval()
+        if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None:
+            self.clip_text_proj.eval()
+            self.clip_img_proj.eval()
+        if self.clip_net is not None:
+            self.clip_net.eval()
         val_losses = []
         fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
-
         with torch.no_grad():
-            for images, texts in self.val_loader:
-                images = images.to(self.device, non_blocking=True)
-                images_orig = images.clone()
-                text_embeddings, image_embeddings = self._get_clip_embeddings(images, texts)
-                text_embeddings, image_embeddings = self._apply_dimensionality_reduction(
-                    text_embeddings, image_embeddings
-                )
+            for imgs, txts in self.val_loader:
+                imgs = imgs.to(self.device, non_blocking=True)
+                img_orig = imgs.clone()
+                txt_embed, img_embed = self._clip_embed(imgs, txts)
+                txt_embed, img_embed = self._dim_reduction(txt_embed, img_embed)
                 p_classifier_free = torch.rand(1).item()
                 p_text_drop = torch.rand(1).item()
-                predicted_noise, noise = self.decoder_model(
-                    image_embeddings,
-                    text_embeddings,
-                    images,
-                    texts,
+                pred_noise, noise = self.decoder_net(
+                    img_embed,
+                    txt_embed,
+                    imgs,
+                    txts,
                     p_classifier_free,
                     p_text_drop
                 )
-                loss = self.objective(predicted_noise, noise)
+                loss = self.loss_fn(pred_noise, noise)
                 val_losses.append(loss.item())
+                if self.metrics_ is not None and self.decoder_net.rwd_unclip is not None:
+                    xt = torch.randn_like(imgs).to(self.device)
+                    for t in reversed(range(self.decoder_net.fwd_unclip.vs.tau_num_steps)):
+                        t_ = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
+                        t_pre = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
+                        img_embed = self.decoder_net._classifier_free_guidance(img_embed, p_classifier_free)
+                        txt_embed = self.decoder_net._text_dropout(txt_embed, p_text_drop)
+                        c = self.decoder_net.clip_decoder_proj(img_embed)
+                        y = self.decoder_net._encode_text_with_glide(txts if txt_embed is not None else None)
+                        context = self.decoder_net._conc_embed(y, c)
+                        clip_img_embed = self.decoder_net.clip_time_proj(img_embed)
+                        pred_noise = self.decoder_net.diff_net(xt, t_, context, clip_img_embed)
+                        xt, _ = self.decoder_net.rwd_unclip(xt, pred_noise, t_, t_pre)
 
-                if self.metrics_ is not None and self.decoder_model.reverse_diffusion is not None:
-                    xt = torch.randn_like(images).to(self.device)
-                    for t in reversed(range(self.decoder_model.forward_diffusion.variance_scheduler.tau_num_steps)):
-                        time_steps = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
-                        prev_time_steps = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
-                        image_embeddings = self.decoder_model._apply_classifier_free_guidance(image_embeddings, p_classifier_free)
-                        text_embeddings = self.decoder_model._apply_text_dropout(text_embeddings, p_text_drop)
-                        c = self.decoder_model.clip_decoder_projection(image_embeddings)
-                        y_encoded = self.decoder_model._encode_text_with_glide(texts if text_embeddings is not None else None)
-                        context = self.decoder_model._concatenate_embeddings(y_encoded, c)
-                        clip_image_embedding = self.decoder_model.clip_time_projection(image_embeddings)
-                        predicted_noise = self.decoder_model.noise_predictor(xt, time_steps, context, clip_image_embedding)
-                        xt, _ = self.decoder_model.reverse_diffusion(xt, predicted_noise, time_steps, prev_time_steps)
-
-                    x_hat = torch.clamp(xt, min=self.image_output_range[0], max=self.image_output_range[1])
-
-                    if self.normalize_clip_embeddings:
-                        x_hat = (x_hat - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
-                        x_orig = (images_orig - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
+                    x_hat = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
+                    if self.norm_clip_embed:
+                        x_hat = (x_hat - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
+                        x_orig = (img_orig - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
 
                     metrics_result = self.metrics_.forward(x_orig, x_hat)
                     fid = metrics_result[0] if getattr(self.metrics_, 'fid', False) else float('inf')
@@ -2152,20 +1968,16 @@ class TrainUnClipDecoder(nn.Module):
                 dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
             val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg = [t.item() if t.item() != float('inf') else (None if i > 1 else float('inf')) for i, t in enumerate(metrics_tensors)]
 
-        # return to training mode
-        self.decoder_model.train()  # sets noise_predictor, conditional_model, variance_scheduler, clip_time_proj, decoder_projection to train mode
-        if not self.decoder_model.forward_diffusion.variance_scheduler.trainable_beta:
-            self.decoder_model.forward_diffusion.variance_scheduler.eval()
-            self.decoder_model.reverse_diffusion.variance_scheduler.eval()
-        if self.reduce_clip_embedding_dim and self.clip_text_projection is not None and self.clip_image_projection is not None:
-            if self.finetune_clip_projections:
-                self.clip_text_projection.train()
-                self.clip_image_projection.train()
+        self.decoder_net.train()
+        if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None:
+            if self.finetune_clip_proj:
+                self.clip_text_proj.train()
+                self.clip_img_proj.train()
             else:
-                self.clip_text_projection.eval()
-                self.clip_image_projection.eval()
-        if self.clip_model is not None:
-            self.clip_model.eval()
+                self.clip_text_proj.eval()
+                self.clip_img_proj.eval()
+        if self.clip_net is not None:
+            self.clip_net.eval()
 
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
 
@@ -2224,77 +2036,64 @@ class TrainUnCLIPPrior(nn.Module):
 
     def __init__(
             self,
-            prior_model: nn.Module,
-            clip_model: nn.Module,
+            prior_net: nn.Module,
+            clip_net: nn.Module,
             train_loader: torch.utils.data.DataLoader,
-            optimizer: torch.optim.Optimizer,
-            objective: Callable,
+            optim: torch.optim.Optimizer,
+            loss_fn: Callable,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epochs: int = 1000,
-            device: Optional[Union[str, torch.device]] = None,
+            device: str = 'cuda',
             store_path: Optional[str] = None,
             patience: int = 100,
-            warmup_epochs: int = 100,
-            val_frequency: int = 10,
+            warmup_steps: int = 10000,
+            val_freq: int = 10,
             use_ddp: bool = False,
-            grad_accumulation_steps: int = 1,
-            log_frequency: int = 1,
-            use_compilation: bool = False,
-            embedding_output_range: Tuple[float, float] = (-1.0, 1.0),
-            reduce_clip_embedding_dim: bool = True,
-            transformer_embedding_dim: int = 319,
-            normalize_clip_embeddings: bool = True
+            grad_acc: int = 1,
+            log_freq: int = 1,
+            use_comp: bool = False,
+            norm_range: Tuple[float, float] = (-1.0, 1.0),
+            reduce_clip_embed_dim: bool = True,
+            trans_embed_dim: int = 319,
+            norm_clip_embed: bool = True
     ) -> None:
         super().__init__()
-
-        # training configuration
         self.use_ddp = use_ddp
-        self.grad_accumulation_steps = grad_accumulation_steps
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
+        self.grad_acc = grad_acc
+        if isinstance(device, str):
             self.device = torch.device(device)
         else:
             self.device = device
-
-        # setup distributed training
         if self.use_ddp:
             self._setup_ddp()
         else:
             self._setup_single_gpu()
-
-        # core models
-        self.prior_model = prior_model.to(self.device)
-        self.clip_model = clip_model.to(self.device)
-
-        # training components
-        self.optimizer = optimizer
-        self.objective = objective
+        self.prior_net = prior_net.to(self.device)
+        self.clip_net = clip_net.to(self.device)
+        self.optim = optim
+        self.loss_fn = loss_fn
         self.train_loader = train_loader
         self.val_loader = val_loader
-
-        # training parameters
         self.max_epochs = max_epochs
         self.patience = patience
-        self.val_frequency = val_frequency
-        self.log_frequency = log_frequency
-        self.use_compilation = use_compilation
-        self.embedding_output_range = embedding_output_range
-        self.reduce_clip_embedding_dim = reduce_clip_embedding_dim
-        self.normalize_clip_embeddings = normalize_clip_embeddings
-        self.transformer_embedding_dim = transformer_embedding_dim
-
-        # checkpoint management
+        self.val_freq = val_freq
+        self.log_freq = log_freq
+        self.use_comp = use_comp
+        self.norm_range = norm_range
+        self.reduce_clip_embed_dim = reduce_clip_embed_dim
+        self.norm_clip_embed = norm_clip_embed
+        self.trans_embed_dim = trans_embed_dim
         self.store_path = store_path
-
-        # learning rate scheduling
+        self.global_step = 0
+        self.warmup_steps = warmup_steps
+        self.best_loss = float('inf')
+        self.losses = {'train_losses': [], 'val_losses': []}
         self.scheduler = ReduceLROnPlateau(
             self.optimizer,
             patience=self.patience,
             factor=0.5
         )
-        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
-
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_steps)
 
     def _setup_ddp(self) -> None:
         """Sets up Distributed Data Parallel training configuration.
@@ -2309,32 +2108,20 @@ class TrainUnCLIPPrior(nn.Module):
         RuntimeError
             If CUDA is not available when DDP is enabled.
         """
-
         required_env_vars = ["RANK", "LOCAL_RANK", "WORLD_SIZE"]
         for var in required_env_vars:
             if var not in os.environ:
                 raise ValueError(f"DDP enabled but {var} environment variable not set")
-
-        # ensure CUDA is available for DDP
         if not torch.cuda.is_available():
             raise RuntimeError("DDP requires CUDA but CUDA is not available")
-
-        # initialize process group only if not already initialized
         if not torch.distributed.is_initialized():
             init_process_group(backend="nccl")
-
-        # get rank information
         self.ddp_rank = int(os.environ["RANK"])  # global rank across all nodes
         self.ddp_local_rank = int(os.environ["LOCAL_RANK"])  # local rank on current node
         self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # total number of processes
-
-        # set device and make it current
         self.device = torch.device(f"cuda:{self.ddp_local_rank}")
         torch.cuda.set_device(self.device)
-
-        # master process handles logging, checkpointing, etc.
         self.master_process = self.ddp_rank == 0
-
         if self.master_process:
             print(f"DDP initialized with world_size={self.ddp_world_size}")
 
@@ -2351,7 +2138,7 @@ class TrainUnCLIPPrior(nn.Module):
         self.master_process = True
 
     @staticmethod
-    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
+    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_steps: int) -> torch.optim.lr_scheduler.LambdaLR:
         """Creates a learning rate scheduler for warmup.
 
         Generates a scheduler that linearly increases the learning rate from 0 to the
@@ -2369,8 +2156,10 @@ class TrainUnCLIPPrior(nn.Module):
         lr_scheduler : torch.optim.lr_scheduler.LambdaLR
             Learning rate scheduler for warmup.
         """
-        def lr_lambda(epoch):
-            return min(1.0, epoch / warmup_epochs) if warmup_epochs > 0 else 1.0
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return 0.1 + (0.9 * step / warmup_steps)
+            return 1.0
         return LambdaLR(optimizer, lr_lambda)
 
     def _wrap_models_for_ddp(self) -> None:
@@ -2379,9 +2168,8 @@ class TrainUnCLIPPrior(nn.Module):
         Configures the prior model for DDP, setting device IDs and handling unused parameters.
         """
         if self.use_ddp:
-            # wrap prior with DDP
-            self.prior_model = DDP(
-                self.prior_model,
+            self.prior_net = DDP(
+                self.prior_net,
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
@@ -2392,17 +2180,16 @@ class TrainUnCLIPPrior(nn.Module):
         Attempts to compile the prior model using torch.compile for performance optimization,
         with fallback to uncompiled models if compilation fails.
         """
-        if self.use_compilation:
+        if self.use_comp:
             try:
-                self.prior_model = torch.compile(self.prior_model)
-
+                self.prior_net = torch.compile(self.prior_net)
                 if self.master_process:
                     print("Models compiled successfully")
             except Exception as e:
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
-    def forward(self) -> Tuple[List[float], float]:
+    def forward(self) -> Dict:
         """Trains the UnCLIP prior model.
 
         Executes the training loop, optimizing the prior model to predict clean image embeddings
@@ -2416,92 +2203,65 @@ class TrainUnCLIPPrior(nn.Module):
         best_val_loss : float
             Best validation or training loss achieved.
         """
-        # set models to training mode
-        self.prior_model.train()
-
-        # compile and wrap models
+        self.prior_net.train()
         self._compile_models()
         self._wrap_models_for_ddp()
-
-        # initialize training components
         scaler = torch.GradScaler()
-        train_losses = []
-        best_val_loss = float("inf")
         wait = 0
-
-        # main training loop
         for epoch in range(self.max_epochs):
-            # set epoch for distributed sampler if using DDP
+            pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
             if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
                 self.train_loader.sampler.set_epoch(epoch)
-
             train_losses_epoch = []
-
-            # training step loop with gradient accumulation
-            for step, (x, y) in enumerate(tqdm(self.train_loader, disable=not self.master_process)):
+            for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device, non_blocking=True)
-
-                # forward pass with mixed precision
                 with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
-                    loss = self._compute_training_loss(x, y)
-                    loss = loss / self.grad_accumulation_steps
-
-                # backward pass
+                    loss = self._train_loss(x, y)
+                    loss = loss / self.grad_acc
                 scaler.scale(loss).backward()
-
-                # optimizer step with gradient accumulation
-                if (step + 1) % self.grad_accumulation_steps == 0:
-                    self._optimizer_step(scaler)
-                    # update learning rate (warmup scheduler)
-                    self.warmup_lr_scheduler.step()
-
-                # record loss (unscaled)
-                train_losses_epoch.append(loss.item() * self.grad_accumulation_steps)
-
-            # compute and sync training loss
-            mean_train_loss = self._compute_mean_loss(train_losses_epoch)
-            train_losses.append(mean_train_loss)
-
-            # print training progress (only master process)
-            if self.master_process and (epoch + 1) % self.log_frequency == 0:
+                if (step + 1) % self.grad_acc == 0:
+                    self._optim_step(scaler)
+                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                        self.warmup_lr_scheduler.step()
+                    self.global_step += 1
+                pbar.set_postfix({'Loss': f'{loss.item() * self.grad_acc:.4f}'})
+                train_losses_epoch.append(loss.item() * self.grad_acc)
+            mean_train_loss = self._mean_loss(train_losses_epoch)
+            self.losses['train_losses'].append(mean_train_loss)
+            if self.master_process and (epoch + 1) % self.log_freq == 0:
                 current_lr = self.optimizer.param_groups[0]['lr']
                 print(f"Epoch {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}", end="")
 
-            # validation and checkpointing
-            current_loss = mean_train_loss
-            if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
+            if self.val_loader is not None and (epoch + 1) % self.val_freq == 0:
                 val_loss = self.validate()
-                current_loss = val_loss
-
                 if self.master_process:
                     print(f" | Val Loss: {val_loss:.4f}")
-            elif self.master_process:
-                print()
-
-            # learning rate scheduling
-            self.scheduler.step(current_loss)
-
-            # save checkpoint and early stopping
+                    print()
+                self.scheduler.step(val_loss)
+                self.losses['val_losses'].append(val_loss)
+            else:
+                if self.master_process:
+                    print()
+                self.scheduler.step(mean_train_loss)
             if self.master_process:
-                if current_loss < best_val_loss and (epoch + 1) % self.val_frequency == 0:
-                    best_val_loss = current_loss
+                if mean_train_loss < self.best_loss:
+                    self.best_loss = mean_train_loss
                     wait = 0
-                    self._save_checkpoint(epoch + 1, best_val_loss, is_best=True)
+                    self._save_checkpoint(epoch + 1, self.best_loss, "best_")
                 else:
                     wait += 1
                     if wait >= self.patience:
                         print("Early stopping triggered")
-                        self._save_checkpoint(epoch + 1, current_loss, suffix="_early_stop")
+                        self._save_checkpoint(epoch + 1, mean_train_loss, "early_stop_")
                         break
-
-        # cleanup
+                if (epoch + 1) % self.val_freq == 0:
+                    self._save_checkpoint(epoch + 1, mean_train_loss, "")
         if self.use_ddp:
             destroy_process_group()
+        return self.losses
 
-        return train_losses, best_val_loss
 
-
-    def _compute_training_loss(self, images: torch.Tensor, texts: List[str]) -> torch.Tensor:
+    def _train_loss(self, imgs: torch.Tensor, txts: List[str]) -> torch.Tensor:
         """Computes the training loss for the UnCLIP prior model.
 
         Calculates the loss by encoding images and text with CLIP, applying forward diffusion,
@@ -2519,42 +2279,34 @@ class TrainUnCLIPPrior(nn.Module):
         loss : torch.Tensor
             Loss value computed between predicted and target embeddings.
         """
-
         with torch.no_grad():
-            # encode text and image with CLIP
-            text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize_clip_embeddings)
-            image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize_clip_embeddings)
-
-        # reduce dimensionality (optional)
-        if self.reduce_clip_embedding_dim:
-            text_embeddings = self.prior_model.clip_text_projection(text_embeddings)
-            image_embeddings = self.prior_model.clip_image_projection(image_embeddings)
-
-        # sample timestep t ~ Uniform(1, T)
-        batch_size = image_embeddings.shape[0]
-        timesteps = torch.randint(0, self.prior_model.forward_diffusion.variance_scheduler.num_steps, (batch_size,), device=self.device)
-
-        # sample noise ε ~ N(0, I)
-        noise = torch.randn_like(image_embeddings)
-
-        # compute noised embedding z_{i,t}
-        noisy_image_embeddings = self.prior_model.forward_diffusion(image_embeddings, noise, timesteps)
-
-        # Predict unnoised embedding ẑ_i
-        predicted_image_embeddings = self.prior_model(text_embeddings, noisy_image_embeddings, timesteps)
-
+            # encode text and image with clip
+            txt_embed = self.clip_net(data=txts, data_type="text", normalize=self.norm_clip_embed)
+            img_embed = self.clip_net(data=imgs, data_type="img", normalize=self.norm_clip_embed)
+        # reduce dimensionality
+        if self.reduce_clip_embed_dim:
+            txt_embed = self.prior_net.clip_text_projection(txt_embed)
+            img_embed = self.prior_net.clip_image_projection(img_embed)
+        # t ~ Uniform(1, T)
+        batch_size = img_embed.shape[0]
+        timesteps = torch.randint(0, self.prior_net.fwd_unclip.vs.num_steps, (batch_size,), device=self.device)
+        # ε ~ N(0, I)
+        noise = torch.randn_like(img_embed)
+        # z_{i,t}
+        noisy_img_embed = self.prior_net.fwd_unclip(img_embed, noise, timesteps)
+        # ẑ_i
+        pred_img_embed = self.prior_net(txt_embed, noisy_img_embed, timesteps)
         # transform back to original space if using dimension reduction
-        if self.reduce_clip_embedding_dim:
-            predicted_image_embeddings = self.prior_model.clip_image_projection.inverse_transform(predicted_image_embeddings)
-            target_embeddings = self.prior_model.clip_image_projection.inverse_transform(image_embeddings)
+        if self.reduce_clip_embed_dim:
+            pred_img_embed = self.prior_net.clip_image_proj.inverse_transform(pred_img_embed)
+            t_embed = self.prior_net.clip_image_proj.inverse_transform(img_embed)
         else:
-            target_embeddings = image_embeddings
-
-        # compute loss L = ||ẑ_i - z_i||²
-        loss = self.objective(predicted_image_embeddings, target_embeddings)
+            t_embed = img_embed
+        # L = ||ẑ_i - z_i||²
+        loss = self.loss_fn(pred_img_embed, t_embed)
         return loss
 
-    def _optimizer_step(self, scaler: torch.GradScaler) -> None:
+    def _optim_step(self, scaler: torch.GradScaler) -> None:
         """Performs an optimizer step with gradient clipping.
 
         Applies gradient clipping, updates the optimizer with scaled gradients, and resets
@@ -2565,16 +2317,13 @@ class TrainUnCLIPPrior(nn.Module):
         `scaler` : torch.GradScaler
             Gradient scaler for mixed precision training.
         """
-        scaler.unscale_(self.optimizer)
-
-        # gradient clipping
-        torch.nn.utils.clip_grad_norm_(self.prior_model.parameters(), max_norm=1.0)
-
-        scaler.step(self.optimizer)
+        scaler.unscale_(self.optim)
+        torch.nn.utils.clip_grad_norm_(self.prior_net.parameters(), max_norm=1.0)
+        scaler.step(self.optim)
         scaler.update()
         self.optimizer.zero_grad()
 
-    def _compute_mean_loss(self, losses: List[float]) -> float:
+    def _mean_loss(self, losses: List[float]) -> float:
         """Computes the mean loss and synchronizes across processes if using DDP.
 
         Calculates the mean of the provided loss values and performs an all-reduce operation
@@ -2591,12 +2340,10 @@ class TrainUnCLIPPrior(nn.Module):
             Mean loss value, synchronized across processes if DDP is enabled.
         """
         mean_loss = torch.tensor(losses).mean().item()
-
         if self.use_ddp:
             loss_tensor = torch.tensor(mean_loss, device=self.device)
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
             mean_loss = loss_tensor.item()
-
         return mean_loss
 
 
@@ -2611,51 +2358,35 @@ class TrainUnCLIPPrior(nn.Module):
         val_loss : float
             Mean validation loss, synchronized across processes if DDP is enabled.
         """
-
-        self.prior_model.eval()
-
+        self.prior_net.eval()
         val_losses = []
-
         with torch.no_grad():
-            for images, texts in self.val_loader:
-                images = images.to(self.device, non_blocking=True)
-
+            for imgs, txts in self.val_loader:
+                imgs = imgs.to(self.device, non_blocking=True)
                 # get embeddings
-                text_embeddings = self.clip_model(data=texts, data_type="text", normalize=self.normalize_clip_embeddings)
-                image_embeddings = self.clip_model(data=images, data_type="img", normalize=self.normalize_clip_embeddings)
-                original_image_embeddings = image_embeddings.clone()
+                txt_embed = self.clip_net(data=txts, data_type="text", normalize=self.norm_clip_embed)
+                img_embed = self.clip_net(data=imgs, data_type="img", normalize=self.norm_clip_embed)
+                orig_img_embed = img_embed.clone()
+                if self.reduce_clip_embed_dim:
+                    txt_embed = self.prior_net.clip_text_proj(txt_embed)
+                    img_embed = self.prior_net.clip_image_proj(img_embed)
 
-                if self.reduce_clip_embedding_dim:
-                    text_embeddings = self.prior_model.clip_text_projection(text_embeddings)
-                    image_embeddings = self.prior_model.clip_image_projection(image_embeddings)
-
-                # forward diffusion
-                batch_size = image_embeddings.shape[0]
-                timesteps = torch.randint(0, self.prior_model.forward_diffusion.variance_scheduler.num_steps, (batch_size,), device=self.device)
-                noise = torch.randn_like(image_embeddings)
-                noisy_image_embeddings = self.prior_model.forward_diffusion(image_embeddings, noise, timesteps)
-
-                # predict
-                predicted_embeddings = self.prior_model(text_embeddings, noisy_image_embeddings, timesteps)
-
-                if self.reduce_clip_embedding_dim:
-                    predicted_embeddings = self.prior_model.clip_image_projection.inverse_transform(predicted_embeddings)
-
+                batch_size = img_embed.shape[0]
+                timesteps = torch.randint(0, self.prior_net.fwd_unclip.vs.num_steps, (batch_size,), device=self.device)
+                noise = torch.randn_like(img_embed)
+                noisy_img_embed = self.prior_net.fwd_unclip(img_embed, noise, timesteps)
+                pred_embed = self.prior_net(txt_embed, noisy_img_embed, timesteps)
+                if self.reduce_clip_embed_dim:
+                    pred_embed = self.prior_net.clip_image_proj.inverse_transform(pred_embed)
                 # compute loss
-                loss = self.objective(predicted_embeddings, original_image_embeddings)
+                loss = self.loss_fn(pred_embed, orig_img_embed)
                 val_losses.append(loss.item())
-
-
-        # compute averages
-        val_loss = self._compute_mean_loss(val_losses)
-
-        # return to training mode
-        self.prior_model.train()
-
+        val_loss = self._mean_loss(val_losses)
+        self.prior_net.train()
         return val_loss
 
 
-    def _save_checkpoint(self, epoch: int, loss: float, suffix: str = "", is_best: bool = False) -> None:
+    def _save_checkpoint(self, epoch: int, loss: float, pref: str = "") -> None:
         """Saves a model checkpoint.
 
         Saves the state of the prior model and optimizer to a checkpoint file, with options
@@ -2667,47 +2398,32 @@ class TrainUnCLIPPrior(nn.Module):
             Current epoch number.
         `loss` : float
             Current loss value.
-        `suffix` : str, optional
-            Suffix to append to the checkpoint filename, default "".
-        `is_best` : bool, optional
-            Whether to save the checkpoint as the best model, default False.
+        `pref` : str, optional
+            prefix to append to the checkpoint filename, default "".
+
         """
         try:
-            # Get state dicts
             prior_state = (
-                self.prior_model.module.state_dict() if self.use_ddp
-                else self.prior_model.state_dict()
+                self.prior_net.module.state_dict() if self.use_ddp
+                else self.prior_net.state_dict()
             )
-
             checkpoint = {
                 'epoch': epoch,
-                'prior_model_state_dict': prior_state,
-                'optimizer_state_dict': self.optimizer.state_dict(),
+                'prior_net_state_dict': prior_state,
+                'optim_state_dict': self.optim.state_dict(),
                 'loss': loss,
+                'losses': self.losses,
                 'max_epochs': self.max_epochs,
             }
-
-            # create the directory if it doesn't exist
+            filename = f"{pref}model_epoch_{epoch}.pth"
+            filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
-
-            # define the checkpoint filename
-            if is_best:
-                filename = "best_model.pth"
-            else:
-                filename = f"checkpoint_epoch_{epoch}{suffix}.pth"
-
-            # construct the full save path
-            save_path = os.path.join(self.store_path, filename)
-
-            # save checkpoint
-            torch.save(checkpoint, save_path)
-            if self.master_process:  # only print from the master process in DDP
-                print(f"Checkpoint saved: {save_path}")
-
+            torch.save(checkpoint, filepath)
+            print(f"Model saved at epoch {epoch} with loss: {loss}")
         except Exception as e:
-            print(f"Failed to save checkpoint: {e}")
+            print(f"Failed to save model: {e}")
 
-    def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, float]:
+    def load_checkpoint(self, check_path: str) -> Tuple[int, float]:
         """Loads a model checkpoint to resume training.
 
         Restores the prior model and optimizer states from a saved checkpoint, handling
@@ -2726,35 +2442,25 @@ class TrainUnCLIPPrior(nn.Module):
             The loss value at the checkpoint.
         """
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(check_path, map_location=self.device)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-        # load prior model
-        if 'prior_model_state_dict' in checkpoint:
-            state_dict = checkpoint['prior_model_state_dict']
-
-            # handle DDP state dict compatibility
+            raise FileNotFoundError(f"Checkpoint not found: {check_path}")
+        if 'prior_net_state_dict' in checkpoint:
+            state_dict = checkpoint['prior_net_state_dict']
             if self.use_ddp and not any(key.startswith('module.') for key in state_dict.keys()):
                 state_dict = {f'module.{k}': v for k, v in state_dict.items()}
             elif not self.use_ddp and any(key.startswith('module.') for key in state_dict.keys()):
                 state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-
-            self.prior_model.load_state_dict(state_dict)
-
-        # load optimizer
-        if 'optimizer_state_dict' in checkpoint:
+            self.prior_net.load_state_dict(state_dict)
+        if 'optim_state_dict' in checkpoint:
             try:
-                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.optimizer.load_state_dict(checkpoint['optim_state_dict'])
             except Exception as e:
                 warnings.warn(f"Failed to load optimizer state: {e}")
-
         epoch = checkpoint.get('epoch', 0)
         loss = checkpoint.get('loss', float('inf'))
-
         if self.master_process:
-            print(f"Loaded checkpoint from {checkpoint_path} (epoch {epoch}, loss {loss:.4f})")
-
+            print(f"Loaded checkpoint from {check_path} (epoch {epoch}, loss {loss:.4f})")
         return epoch, loss
 
 ###==================================================================================================================###
@@ -2801,55 +2507,50 @@ class SampleUnCLIP(nn.Module):
     """
     def __init__(
             self,
-            prior_model: nn.Module,
-            decoder_model: nn.Module,
-            clip_model: nn.Module,
+            prior_net: nn.Module,
+            decoder_net: nn.Module,
+            clip_net: nn.Module,
             low_res_upsampler: nn.Module,
             high_res_upsampler: Optional[nn.Module] = None,
-            device: Optional[Union[torch.device, str]] = None,
-            clip_embedding_dim: int = 512,  # CLIP embedding dimension
+            device: str = 'cuda',
+            clip_embed_dim: int = 512,  # clip embedding dimension
             prior_guidance_scale: float = 4.0,
             decoder_guidance_scale: float = 8.0,
             batch_size: int = 1,
-            normalize_clip_embeddings: bool = True,
+            norm_clip_embed: bool = True,
             prior_dim_reduction: bool = True,
-            initial_image_size: Tuple[int, int, int] = (3, 64, 64),
+            init_img_size: Tuple[int, int, int] = (3, 64, 64),
             use_high_res_upsampler: bool = True,
-            image_output_range: Tuple[float, float] = (-1.0, 1.0)
+            norm_range: Tuple[float, float] = (-1.0, 1.0)
     ) -> None:
         super().__init__()
-
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
+        if isinstance(device, str):
             self.device = torch.device(device)
         else:
             self.device = device
-
-        self.prior_model = prior_model.to(self.device).eval()
-        self.decoder_model = decoder_model.to(self.device).eval()
-        self.clip_model = clip_model.to(self.device).eval()
+        self.prior_net = prior_net.to(self.device).eval()
+        self.decoder_net = decoder_net.to(self.device).eval()
+        self.clip_net = clip_net.to(self.device).eval()
         self.low_res_upsampler = low_res_upsampler.to(self.device).eval()
         self.high_res_upsampler = high_res_upsampler.to(self.device).eval() if high_res_upsampler else None
-
         self.prior_guidance_scale = prior_guidance_scale
         self.decoder_guidance_scale = decoder_guidance_scale
         self.batch_size = batch_size
-        self.normalize_clip_embeddings = normalize_clip_embeddings
+        self.norm_clip_embed = norm_clip_embed
         self.prior_dim_reduction = prior_dim_reduction
-        self.clip_embedding_dim = clip_embedding_dim
-        self.initial_image_size = initial_image_size
+        self.clip_embed_dim = clip_embed_dim
+        self.init_img_size = init_img_size
         self.use_high_res_upsampler = use_high_res_upsampler
-        self.image_output_range = image_output_range
-        self.images_256 = None
-        self.images_1024 = None
+        self.norm_range = norm_range
+        self.imgs_256 = None
+        self.imgs_1024 = None
 
     def forward(
             self,
             prompts: Optional[Union[str, List]] = None,
-            normalize_output: bool = True,
-                save_images: bool = True,
-            save_path: str = "unclip_generated"
+            norm_output: bool = True,
+                save_imgs: bool = True,
+            save_path: str = "unclip_samples"
     ):
         """Generates images from text prompts or noise using the UnCLIP pipeline.
 
@@ -2875,14 +2576,15 @@ class SampleUnCLIP(nn.Module):
             Generated images, shape (batch_size, channels, height, width), either 256x256
             or 1024x1024 depending on use_second_upsampler.
         """
+        # TODO: until here everything is reviewed!!!
         # initialize noise for prior sampling (image embedding space)
-        embedding_noise = torch.randn((self.batch_size, self.clip_embedding_dim), device=self.device)
+        embedding_noise = torch.randn((self.batch_size, self.clip_embed_dim), device=self.device)
 
         with torch.no_grad():
 
             # ====== PRIOR STAGE: generate image embeddings from text ======
             # encode text prompt using CLIP
-            text_embeddings = self.clip_model(data=prompts, data_type="text", normalize=self.normalize_clip_embeddings)
+            text_embeddings = self.clip_net(data=prompts, data_type="text", normalize=self.norm_clip_embed)
             current_embeddings = embedding_noise.clone()
 
             # optionally reduce dimensionality for prior model
@@ -2919,26 +2621,26 @@ class SampleUnCLIP(nn.Module):
 
             # ====== DECODER STAGE: generate 64x64 images from embeddings ======
             # initialize noise for decoder sampling
-            decoder_noise = torch.randn((self.batch_size, self.initial_image_size[0], self.initial_image_size[1], self.initial_image_size[2]), device=self.device)
+            decoder_noise = torch.randn((self.batch_size, self.init_img_size[0], self.init_img_size[1], self.init_img_size[2]), device=self.device)
 
             # project image embeddings to 4 tokens
-            projected_embeddings = self.decoder_model.clip_decoder_projection(final_image_embeddings)
+            projected_embeddings = self.decoder_net.clip_decoder_projection(final_image_embeddings)
 
             # encode text with GLIDE/decoder's text encoder
-            glide_text_embeddings = self.decoder_model._encode_text_with_glide(prompts)
+            glide_text_embeddings = self.decoder_net._encode_text_with_glide(prompts)
 
             # concatenate embeddings for context
-            context = self.decoder_model._concatenate_embeddings(glide_text_embeddings, projected_embeddings)
+            context = self.decoder_net._concatenate_embeddings(glide_text_embeddings, projected_embeddings)
 
             current_images = decoder_noise
 
-            for t in reversed(range(self.decoder_model.forward_diffusion.variance_scheduler.tau_num_steps)):
+            for t in reversed(range(self.decoder_net.forward_diffusion.variance_scheduler.tau_num_steps)):
 
                 timesteps = torch.full((self.batch_size,), t, device=self.device)
                 prev_timesteps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
 
                 # predict noise
-                predicted_noise = self.decoder_model.noise_predictor(current_images, timesteps, context, None)
+                predicted_noise = self.decoder_net.noise_predictor(current_images, timesteps, context, None)
 
                 # apply guidance
                 guided_noise = self.compute_decoder_guided_prediction(
@@ -2946,14 +2648,14 @@ class SampleUnCLIP(nn.Module):
                 )
 
                 # update images using reverse diffusion
-                current_images, _ = self.decoder_model.reverse_diffusion(
+                current_images, _ = self.decoder_net.reverse_diffusion(
                     current_images, guided_noise, timesteps, prev_timesteps
                 )
 
             generated_64x64 = current_images
 
             # ====== FIRST UPSAMPLER: 64x64 -> 256x256 ======
-            upsampled_256_noise = torch.randn((self.batch_size, self.initial_image_size[0], 256, 256), device=self.device)
+            upsampled_256_noise = torch.randn((self.batch_size, self.init_img_size[0], 256, 256), device=self.device)
             current_256_images = upsampled_256_noise
 
             for t in reversed(range(self.low_res_upsampler.forward_diffusion.variance_scheduler.tau_num_steps)):
@@ -2968,11 +2670,11 @@ class SampleUnCLIP(nn.Module):
                     current_256_images, predicted_noise, timesteps, prev_timesteps
                 )
 
-            self.images_256 = current_256_images
+            self.imgs_256 = current_256_images
 
             # ====== SECOND UPSAMPLER: 256x256 -> 1024x1024 (if enabled) ======
             if self.use_high_res_upsampler and self.high_res_upsampler:
-                upsampled_1024_noise = torch.randn((self.batch_size, self.initial_image_size[0], 1024, 1024), device=self.device)
+                upsampled_1024_noise = torch.randn((self.batch_size, self.init_img_size[0], 1024, 1024), device=self.device)
                 current_1024_images = upsampled_1024_noise
 
                 for t in reversed(range(self.high_res_upsampler.forward_diffusion.variance_scheduler.tau_num_steps)):
@@ -2980,29 +2682,29 @@ class SampleUnCLIP(nn.Module):
                     prev_timesteps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
 
                     # predict noise for upsampling (conditioned on 256x256 image)
-                    predicted_noise = self.high_res_upsampler(current_1024_images, timesteps, self.images_256)
+                    predicted_noise = self.high_res_upsampler(current_1024_images, timesteps, self.imgs_256)
 
                     # update using reverse diffusion
                     current_1024_images, _ = self.high_res_upsampler.reverse_diffusion(
                         current_1024_images, predicted_noise, timesteps, prev_timesteps
                     )
 
-                self.images_1024 = current_1024_images
+                self.imgs_1024 = current_1024_images
 
             # ====== POST-PROCESSING ======
             # normalize output to [0, 1] range if requested
-            if normalize_output:
-                final_256 = (self.images_256 - self.image_output_range[0]) / (self.image_output_range[1] - self.image_output_range[0])
+            if norm_output:
+                final_256 = (self.imgs_256 - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
                 final_1024 = None
-                if self.images_1024 is not None:
-                    final_1024 = (self.images_1024 - self.image_output_range[0]) / (
-                            self.image_output_range[1] - self.image_output_range[0])
+                if self.imgs_1024 is not None:
+                    final_1024 = (self.imgs_1024 - self.norm_range[0]) / (
+                            self.norm_range[1] - self.norm_range[0])
             else:
-                final_256 = self.images_256
-                final_1024 = self.images_1024
+                final_256 = self.imgs_256
+                final_1024 = self.imgs_1024
 
             # save images if requested
-            if save_images:
+            if save_imgs:
                 os.makedirs(save_path, exist_ok=True)
                 os.makedirs(os.path.join(save_path, "images_256"), exist_ok=True)
                 if final_1024 is not None:
@@ -3087,7 +2789,7 @@ class SampleUnCLIP(nn.Module):
             Guided noise prediction, shape (batch_size, channels, height, width).
         """
         zero_context = torch.zeros_like(context)
-        unconditioned_noise = self.decoder_model.noise_predictor(current_images, timesteps, zero_context, None)
+        unconditioned_noise = self.decoder_net.noise_predictor(current_images, timesteps, zero_context, None)
 
         # CFG formula: (1 + guidance_scale) * conditioned - guidance_scale * unconditioned
         return (1.0 + self.decoder_guidance_scale) * predicted_noise - self.decoder_guidance_scale * unconditioned_noise
@@ -3115,8 +2817,8 @@ class SampleUnCLIP(nn.Module):
 
         # move all sub-models to the specified device
         self.prior_model.to(device)
-        self.decoder_model.to(device)
-        self.clip_model.to(device)
+        self.decoder_net.to(device)
+        self.clip_net.to(device)
         self.low_res_upsampler.to(device)
 
         if self.second_upsampler_model is not None:
