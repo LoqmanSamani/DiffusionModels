@@ -2861,22 +2861,22 @@ class UpsamplerUnCLIP(nn.Module):
 
     def __init__(
             self,
-            forward_diffusion: nn.Module,
-            reverse_diffusion: nn.Module,
+            fwd_unclip: nn.Module,
+            rwd_unclip: nn.Module,
             in_channels: int = 3,
             out_channels: int = 3,
             model_channels: int = 192,
             num_res_blocks: int = 2,
             channel_mult: Tuple[int, ...] = (1, 2, 4, 8),
-            dropout_rate: float = 0.1,
+            dropout: float = 0.1,
             time_embed_dim: int = 768,
             low_res_size: int = 64,
             high_res_size: int = 256,
     ) -> None:
         super().__init__()
 
-        self.forward_diffusion = forward_diffusion # this will be used on training time inside 'TrainUpsamplerUnCLIP'
-        self.reverse_diffusion = reverse_diffusion # this module will be used in inference time
+        self.fwd_unclip = fwd_unclip # this will be used on training time inside 'TrainUpsamplerUnCLIP'
+        self.rwd_unclip = rwd_unclip # this module will be used in inference time
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.model_channels = model_channels
@@ -2891,52 +2891,44 @@ class UpsamplerUnCLIP(nn.Module):
             nn.SiLU(),
             nn.Linear(time_embed_dim, time_embed_dim),
         )
-
-        # Input projection
-        # concatenate noisy high-res and upsampled low-res
+        # input projection
+        # cocatenate noisy high-res and upsampled low-res
         self.input_proj = nn.Conv2d(in_channels * 2, model_channels, 3, padding=1)
 
         # encoder (downsampling path)
         self.encoder_blocks = nn.ModuleList()
-        self.downsample_blocks = nn.ModuleList()
-
+        self.down_blocks = nn.ModuleList()
         ch = model_channels
         for level, mult in enumerate(channel_mult):
             for _ in range(num_res_blocks):
                 self.encoder_blocks.append(
-                    ResBlock(ch, model_channels * mult, time_embed_dim, dropout_rate)
+                    ResBlock(ch, model_channels * mult, time_embed_dim, dropout)
                 )
                 ch = model_channels * mult
 
             if level != len(channel_mult) - 1:
-                self.downsample_blocks.append(DownsampleBlock(ch, ch))
-
+                self.down_blocks.append(DownsampleBlock(ch, ch))
         # middle blocks
-        self.middle_blocks = nn.ModuleList([
-            ResBlock(ch, ch, time_embed_dim, dropout_rate),
-            ResBlock(ch, ch, time_embed_dim, dropout_rate),
+        self.mid_blocks = nn.ModuleList([
+            ResBlock(ch, ch, time_embed_dim, dropout),
+            ResBlock(ch, ch, time_embed_dim, dropout),
         ])
-
         # decoder (upsampling path)
         self.decoder_blocks = nn.ModuleList()
-        self.upsample_blocks = nn.ModuleList()
-
+        self.up_blocks = nn.ModuleList()
         for level, mult in reversed(list(enumerate(channel_mult))):
             for i in range(num_res_blocks + 1):
                 # skip connections double the input channels
                 in_ch = ch + (model_channels * mult if i == 0 else 0)
                 out_ch = model_channels * mult
-
                 self.decoder_blocks.append(
-                    ResBlock(in_ch, out_ch, time_embed_dim, dropout_rate)
+                    ResBlock(in_ch, out_ch, time_embed_dim, dropout)
                 )
                 ch = out_ch
-
             if level != 0:
-                self.upsample_blocks.append(UpsampleBlock(ch, ch))
-
+                self.up_blocks.append(UpsampleBlock(ch, ch))
         # output projection
-        self.output_proj = nn.Sequential(
+        self.out_proj = nn.Sequential(
             nn.GroupNorm(8, ch),
             nn.SiLU(),
             nn.Conv2d(ch, out_channels, 3, padding=1),
@@ -2963,60 +2955,47 @@ class UpsamplerUnCLIP(nn.Module):
             Predicted noise, shape (batch_size, out_channels, high_res_size, high_res_size).
         """
         # upsample low-resolution image to match high-resolution
-        x_low_upsampled = F.interpolate(
+        x_low_up = F.interpolate(
             x_low,
             size=(x_high.shape[-2], x_high.shape[-1]),
             mode='bicubic',
             align_corners=False
         )
-
         # concatenate noisy high-res and upsampled low-res
-        x = torch.cat([x_high, x_low_upsampled], dim=1)
-
+        x = torch.cat([x_high, x_low_up], dim=1)
         # time embedding
-        time_emb = self.time_embed(t.float())  # Ensure float for embedding
-
+        time_emb = self.time_embed(t.float())
         # input projection
         h = self.input_proj(x)
-
         # store skip connections
-        skip_connections = []
-
+        skip_cons = []
         # encoder
         for i, block in enumerate(self.encoder_blocks):
             h = block(h, time_emb)
             if (i + 1) % self.num_res_blocks == 0:
-                skip_connections.append(h)
-                downsample_idx = (i + 1) // self.num_res_blocks - 1
-                if downsample_idx < len(self.downsample_blocks):
-                    h = self.downsample_blocks[downsample_idx](h)
-
+                skip_cons.append(h)
+                down_idx = (i + 1) // self.num_res_blocks - 1
+                if down_idx < len(self.down_blocks):
+                    h = self.down_blocks[down_idx](h)
         # middle
-        for i, block in enumerate(self.middle_blocks):
+        for i, block in enumerate(self.mid_blocks):
             h = block(h, time_emb)
-
         # decoder
-        upsample_idx = 0
+        up_idx = 0
         for i, block in enumerate(self.decoder_blocks):
             # add skip connection
-            if i % (self.num_res_blocks + 1) == 0 and skip_connections:
-                skip = skip_connections.pop()
+            if i % (self.num_res_blocks + 1) == 0 and skip_cons:
+                skip = skip_cons.pop()
                 h = torch.cat([h, skip], dim=1)
-
             h = block(h, time_emb)
-
             # upsample at the end of each resolution level
             if ((i + 1) % (self.num_res_blocks + 1) == 0 and
-                    upsample_idx < len(self.upsample_blocks)):
-                h = self.upsample_blocks[upsample_idx](h)
-                upsample_idx += 1
-
+                    up_idx < len(self.up_blocks)):
+                h = self.up_blocks[up_idx](h)
+                up_idx += 1
         # output projection
-        out = self.output_proj(h)
-
+        out = self.out_proj(h)
         return out
-
-
 
 class SinusoidalPositionalEmbedding(nn.Module):
     """Sinusoidal positional embedding for timesteps.
@@ -3034,7 +3013,7 @@ class SinusoidalPositionalEmbedding(nn.Module):
         super().__init__()
         self.dim = dim
 
-    def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
         """Generates sinusoidal embeddings for timesteps.
 
         Parameters
@@ -3047,14 +3026,13 @@ class SinusoidalPositionalEmbedding(nn.Module):
         embeddings : torch.Tensor
             Sinusoidal embeddings, shape (batch_size, dim).
         """
-        device = timesteps.device
+        device = t.device
         half_dim = self.dim // 2
-        embeddings = math.log(10000) / (half_dim - 1)
-        embeddings = torch.exp(torch.arange(half_dim, device=device) * -embeddings)
-        embeddings = timesteps[:, None] * embeddings[None, :]
-        embeddings = torch.cat([torch.sin(embeddings), torch.cos(embeddings)], dim=-1)
-        return embeddings
-
+        embeds = math.log(10000) / (half_dim - 1)
+        embeds = torch.exp(torch.arange(half_dim, device=device) * -embeds)
+        embeds = t[:, None] * embeds[None, :]
+        embeds = torch.cat([torch.sin(embeds), torch.cos(embeds)], dim=-1)
+        return embeds
 
 class ResBlock(nn.Module):
     """Residual block with time embedding and conditioning.
@@ -3099,9 +3077,9 @@ class ResBlock(nn.Module):
         )
 
         if in_channels != out_channels:
-            self.skip_connection = nn.Conv2d(in_channels, out_channels, 1)
+            self.skip_con = nn.Conv2d(in_channels, out_channels, 1)
         else:
-            self.skip_connection = nn.Identity()
+            self.skip_con = nn.Identity()
 
     def forward(self, x: torch.Tensor, time_emb: torch.Tensor) -> torch.Tensor:
         """Processes input through the residual block with time conditioning.
@@ -3119,10 +3097,8 @@ class ResBlock(nn.Module):
             Output tensor, shape (batch_size, out_channels, height, width).
         """
         h = self.in_layers(x)
-
         # apply time embedding
         emb_out = self.time_emb_proj(time_emb)[:, :, None, None]
-
         if self.use_scale_shift_norm:
             scale, shift = torch.chunk(emb_out, 2, dim=1)
             h = self.out_norm(h) * (1 + scale) + shift
@@ -3131,8 +3107,7 @@ class ResBlock(nn.Module):
             h = h + emb_out
             h = self.out_norm(h)
             h = self.out_rest(h)
-
-        return h + self.skip_connection(x)
+        return h + self.skip_con(x)
 
 
 class UpsampleBlock(nn.Module):
@@ -3147,7 +3122,6 @@ class UpsampleBlock(nn.Module):
     `out_channels` : int
         Number of output channels.
     """
-
     def __init__(self, in_channels: int, out_channels: int):
         super().__init__()
         self.conv = nn.ConvTranspose2d(in_channels, out_channels, 4, stride=2, padding=1)
@@ -3249,84 +3223,70 @@ class TrainUpsamplerUnCLIP(nn.Module):
     `use_autocast` : bool, optional
         Whether to use automatic mixed precision training (default: True).
     """
-
     def __init__(
             self,
-            upsampler_model: nn.Module,
+            up_net: nn.Module,
             train_loader: torch.utils.data.DataLoader,
-            optimizer: torch.optim.Optimizer,
-            objective: Callable,
+            optim: torch.optim.Optimizer,
+            loss_fn: Callable,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epochs: int = 1000,
-            device: Optional[Union[str, torch.device]] = None,
+            device: str = 'cuda',
             store_path: str = "unclip_upsampler",
             patience: int = 100,
-            warmup_epochs: int = 100,
-            val_frequency: int = 10,
+            warmup_steps: int = 10000,
+            val_freq: int = 10,
             use_ddp: bool = False,
-            grad_accumulation_steps: int = 1,
-            log_frequency: int = 1,
-            use_compilation: bool = False,
-            image_output_range: Tuple[float, float] = (-1.0, 1.0),
-            normalize_image_outputs: bool = True,
+            grad_acc: int = 1,
+            log_freq: int = 1,
+            use_comp: bool = False,
+            norm_range: Tuple[float, float] = (-1.0, 1.0),
+            norm_out: bool = True,
             use_autocast: bool = True
     ) -> None:
         super().__init__()
-
         # training configuration
         self.use_ddp = use_ddp
-        self.grad_accumulation_steps = grad_accumulation_steps
-        self.use_compilation = use_compilation
-        self.use_autocast = use_autocast  # Store autocast flag
-
-        # device initialization
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        elif isinstance(device, str):
+        self.grad_acc = grad_acc
+        self.use_comp = use_comp
+        self.use_autocast = use_autocast
+        if isinstance(device, str):
             self.device = torch.device(device)
         else:
             self.device = device
-
-        # setup distributed training
         if self.use_ddp:
             self._setup_ddp()
         else:
             self._setup_single_gpu()
-
-        # compile and wrap models
         self._compile_models()
         self._wrap_models_for_ddp()
 
-        # core model
-        self.upsampler_model = upsampler_model.to(self.device)
-        self.num_timesteps = self.upsampler_model.forward_diffusion.variance_scheduler.num_steps
-
-        # training components
-        self.optimizer = optimizer
-        self.objective = objective
+        self.up_net = up_net.to(self.device)
+        self.num_steps = self.up_net.fwd_unclip.vs.num_steps
+        self.optim = optim
+        self.loss_fn = loss_fn
         self.train_loader = train_loader
         self.val_loader = val_loader
-
-        # training parameters
         self.max_epochs = max_epochs
         self.patience = patience
-        self.val_frequency = val_frequency
-        self.log_frequency = log_frequency
-        self.image_output_range = image_output_range
-        self.normalize_image_outputs = normalize_image_outputs
-
-        # checkpoint management
+        self.val_freq = val_freq
+        self.log_freq = log_freq
+        self.norm_range = norm_range
+        self.norm_out = norm_out
         self.store_path = store_path
-
+        self.global_step = 0
+        self.warmup_steps = warmup_steps
+        self.best_loss = float('inf')
+        self.losses = {'train_losses': [], 'val_losses': []}
         # learning rate scheduling
         self.scheduler = ReduceLROnPlateau(
-            self.optimizer,
+            self.optim,
             patience=self.patience,
             factor=0.5
         )
-        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_epochs)
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_epochs)
 
-    def forward(self) -> Tuple[List[float], float]:
+    def forward(self) -> Dict:
         """Trains the UnCLIP upsampler model to predict noise for denoising.
 
         Executes the training loop, optimizing the upsampler model using low- and high-resolution
@@ -3340,141 +3300,97 @@ class TrainUpsamplerUnCLIP(nn.Module):
         best_val_loss : float
             Best validation or training loss achieved.
         """
-        # set models to training mode
-        self.upsampler_model.train()
-        if self.upsampler_model.forward_diffusion.variance_scheduler.trainable_beta:
-            self.upsampler_model.forward_diffusion.variance_scheduler.train()
-        else:
-            self.upsampler_model.forward_diffusion.variance_scheduler.eval()
-
-        # initialize training components
+        self.up_net.train()
+        self._wrap_models_for_ddp()
         scaler = torch.GradScaler() if self.use_autocast else None
-        train_losses = []
-        best_val_loss = float("inf")
         wait = 0
-
-        # main training loop
         for epoch in range(self.max_epochs):
+            pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
             if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
                 self.train_loader.sampler.set_epoch(epoch)
-
             train_losses_epoch = []
-
-            # training step loop with gradient accumulation
-            for step, (low_res_images, high_res_images) in enumerate(tqdm(self.train_loader, disable=not self.master_process)):
-                low_res_images = low_res_images.to(self.device, non_blocking=True)
-                high_res_images = high_res_images.to(self.device, non_blocking=True)
-
-                # forward pass with optional autocast
+            for step, (low_imgs, high_imgs) in enumerate(pbar):
+                low_imgs = low_imgs.to(self.device, non_blocking=True)
+                high_imgs = high_imgs.to(self.device, non_blocking=True)
                 if self.use_autocast:
                     with torch.autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
-                        batch_size = high_res_images.shape[0]
-                        timesteps = torch.randint(0, self.num_timesteps, (batch_size,), device=self.device)
-                        noise = torch.randn_like(high_res_images)
-                        # force FP32 for forward_diffusion to avoid NaN in variance scheduling
+                        batch_size = high_imgs.shape[0]
+                        timesteps = torch.randint(0, self.num_steps, (batch_size,), device=self.device)
+                        noise = torch.randn_like(high_imgs)
                         with torch.autocast(device_type='cuda', enabled=False):
-                            high_res_images_noisy = self.upsampler_model.forward_diffusion(high_res_images, noise, timesteps)
-                        corruption_type = "gaussian_blur" if self.upsampler_model.low_res_size == 64 else "bsr_degradation"
-                        low_res_images_corrupted = self.corrupt_conditioning_image(low_res_images, corruption_type)
-                        predicted_noise = self.upsampler_model(high_res_images_noisy, timesteps, low_res_images_corrupted)
-                        loss = self.objective(predicted_noise, noise) / self.grad_accumulation_steps
+                            high_imgs_noisy = self.up_net.fwd_unclip(high_imgs, noise, timesteps)
+                        corr_type = "gaussian_blur" if self.up_net.low_res_size == 64 else "bsr_degradation"
+                        low_imgs_corr = self.corrupt_cond_img(low_imgs, corr_type)
+                        pred_noise = self.up_net(high_imgs_noisy, timesteps, low_imgs_corr)
+                        loss = self.loss_fn(pred_noise, noise) / self.grad_acc
                 else:
-                    batch_size = high_res_images.shape[0]
-                    timesteps = torch.randint(0, self.num_timesteps, (batch_size,), device=self.device)
-                    noise = torch.randn_like(high_res_images)
-                    high_res_images_noisy = self.upsampler_model.forward_diffusion(high_res_images, noise, timesteps)
-                    corruption_type = "gaussian_blur" if self.upsampler_model.low_res_size == 64 else "bsr_degradation"
-                    low_res_images_corrupted = self.corrupt_conditioning_image(low_res_images, corruption_type)
-                    predicted_noise = self.upsampler_model(high_res_images_noisy, timesteps, low_res_images_corrupted)
-                    loss = self.objective(predicted_noise, noise) / self.grad_accumulation_steps
+                    batch_size = high_imgs.shape[0]
+                    timesteps = torch.randint(0, self.num_steps, (batch_size,), device=self.device)
+                    noise = torch.randn_like(high_imgs)
+                    high_imgs_noisy = self.up_net.forward_diffusion(high_imgs, noise, timesteps)
+                    corr_type = "gaussian_blur" if self.up_net.low_res_size == 64 else "bsr_degradation"
+                    low_imgs_corr = self.corrupt_cond_img(low_imgs, corr_type)
+                    pred_noise = self.up_net(high_imgs_noisy, timesteps, low_imgs_corr)
+                    loss = self.loss_fn(pred_noise, noise) / self.grad_acc
 
-                # backward pass
                 if self.use_autocast:
                     scaler.scale(loss).backward()
                 else:
                     loss.backward()
-
-                if (step + 1) % self.grad_accumulation_steps == 0:
-                    # clip gradients
+                if (step + 1) % self.grad_acc == 0:
                     if self.use_autocast:
-                        scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.upsampler_model.parameters(), max_norm=1.0)
-                    torch.nn.utils.clip_grad_norm_(self.upsampler_model.forward_diffusion.parameters(), max_norm=1.0)
-
-                    # optimizer step
+                        scaler.unscale_(self.optim)
+                    torch.nn.utils.clip_grad_norm_(self.up_net.parameters(), max_norm=1.0)
                     if self.use_autocast:
-                        scaler.step(self.optimizer)
+                        scaler.step(self.optim)
                         scaler.update()
                     else:
-                        self.optimizer.step()
-                    self.optimizer.zero_grad()
-                    torch.cuda.empty_cache()  # clear memory after optimizer step
-
-                train_losses_epoch.append(loss.item() * self.grad_accumulation_steps)
-
-            self.warmup_lr_scheduler.step()
-
-            mean_train_loss = self._compute_mean_loss(train_losses_epoch)
-            train_losses.append(mean_train_loss)
-
-            if self.master_process and (epoch + 1) % self.log_frequency == 0:
-                current_lr = self.optimizer.param_groups[0]['lr']
+                        self.optim.step()
+                    self.optim.zero_grad()
+                    # torch.cuda.empty_cache()  # clear memory after optimizer step
+                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                        self.warmup_lr_scheduler.step()
+                    self.global_step += 1
+                pbar.set_postfix({'Loss': f'{loss.item() * self.grad_acc:.4f}'})
+                train_losses_epoch.append(loss.item() * self.grad_acc)
+            mean_train_loss = torch.tensor(train_losses_epoch).mean().item()
+            self.losses['train_losses'].append(mean_train_loss)
+            if self.use_ddp:
+                loss_tensor = torch.tensor(mean_train_loss, device=self.device)
+                dist.all_reduce(loss_tensor, op=dist.ReduceOp.AVG)
+                mean_train_loss = loss_tensor.item()
+            if self.master_process and (epoch + 1) % self.log_freq == 0:
+                current_lr = self.optim.param_groups[0]['lr']
                 print(f"Epoch {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}")
 
-            current_loss = mean_train_loss
-
-            if self.val_loader is not None and (epoch + 1) % self.val_frequency == 0:
+            if self.val_loader is not None and (epoch + 1) % self.val_freq == 0:
                 val_loss = self.validate()
                 if self.master_process:
                     print(f" | Val Loss: {val_loss:.4f}")
                     print()
-                current_loss = val_loss
-
-            self.scheduler.step(current_loss)
+                self.scheduler.step(val_loss)
+                self.losses['val_losses'].append(val_loss)
+            else:
+                if self.master_process:
+                    print()
+                self.scheduler.step(mean_train_loss)
 
             if self.master_process:
-                if current_loss < best_val_loss and (epoch + 1) % self.val_frequency == 0:
-                    best_val_loss = current_loss
+                if mean_train_loss < self.best_loss:
+                    self.best_loss = mean_train_loss
                     wait = 0
-                    self._save_checkpoint(epoch + 1, best_val_loss, is_best=True)
+                    self._save_checkpoint(epoch + 1, self.best_loss)
                 else:
                     wait += 1
                     if wait >= self.patience:
                         print("Early stopping triggered")
-                        self._save_checkpoint(epoch + 1, current_loss, suffix="_early_stop")
+                        self._save_checkpoint(epoch + 1, mean_train_loss)
                         break
-
+                if (epoch + 1) % self.val_freq == 0:
+                    self._save_checkpoint(epoch + 1, mean_train_loss)
         if self.use_ddp:
             destroy_process_group()
-
-        return train_losses, best_val_loss
-
-    def _compute_mean_loss(self, losses: List[float]) -> float:
-        """Computes mean loss with DDP synchronization if needed.
-
-        Calculates the mean of the provided losses and synchronizes the result across
-        processes in DDP mode.
-
-        Parameters
-        ----------
-        `losses` : List[float]
-            List of loss values for the current epoch.
-
-        Returns
-        -------
-        mean_loss : float
-            Mean loss value, synchronized if using DDP.
-        """
-        if not losses:
-            return 0.0
-        mean_loss = sum(losses) / len(losses)
-        if self.use_ddp:
-            # synchronize loss across all processes
-            loss_tensor = torch.tensor(mean_loss, device=self.device)
-            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-            mean_loss = (loss_tensor / self.ddp_world_size).item()
-
-        return mean_loss
+        return self.losses
 
     def _setup_ddp(self) -> None:
         """Sets up Distributed Data Parallel training configuration.
@@ -3486,22 +3402,16 @@ class TrainUpsamplerUnCLIP(nn.Module):
         for var in required_env_vars:
             if var not in os.environ:
                 raise ValueError(f"DDP enabled but {var} environment variable not set")
-
         if not torch.cuda.is_available():
             raise RuntimeError("DDP requires CUDA but CUDA is not available")
-
         if not torch.distributed.is_initialized():
             init_process_group(backend="nccl")
-
         self.ddp_rank = int(os.environ["RANK"])
         self.ddp_local_rank = int(os.environ["LOCAL_RANK"])
         self.ddp_world_size = int(os.environ["WORLD_SIZE"])
-
         self.device = torch.device(f"cuda:{self.ddp_local_rank}")
         torch.cuda.set_device(self.device)
-
         self.master_process = self.ddp_rank == 0
-
         if self.master_process:
             print(f"DDP initialized with world_size={self.ddp_world_size}")
 
@@ -3517,7 +3427,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
         self.master_process = True
 
     @staticmethod
-    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_epochs: int) -> torch.optim.lr_scheduler.LambdaLR:
+    def warmup_scheduler(optimizer: torch.optim.Optimizer, warmup_steps: int) -> torch.optim.lr_scheduler.LambdaLR:
         """Creates a learning rate scheduler for warmup.
 
         Generates a scheduler that linearly increases the learning rate from 0 to the
@@ -3535,9 +3445,10 @@ class TrainUpsamplerUnCLIP(nn.Module):
         lr_scheduler : torch.optim.lr_scheduler.LambdaLR
             Learning rate scheduler for warmup.
         """
-        def lr_lambda(epoch):
-            return min(1.0, epoch / warmup_epochs) if warmup_epochs > 0 else 1.0
-
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return 0.1 + (0.9 * step / warmup_steps)
+            return 1.0
         return LambdaLR(optimizer, lr_lambda)
 
     def _wrap_models_for_ddp(self) -> None:
@@ -3546,31 +3457,14 @@ class TrainUpsamplerUnCLIP(nn.Module):
         Configures the upsampler model for DDP training by wrapping it with DistributedDataParallel.
         """
         if self.use_ddp:
-            self.upsampler_model = self.upsampler_model.to(self.ddp_local_rank)
-            self.upsampler_model = DDP(
-                self.upsampler_model,
+            self.up_net = self.up_net.to(self.ddp_local_rank)
+            self.up_net = DDP(
+                self.up_net,
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
 
-    def _compile_models(self) -> None:
-        """Compiles models for optimization if supported.
-
-        Attempts to compile the upsampler model using torch.compile for optimization,
-        falling back to uncompiled execution if compilation fails.
-        """
-        if self.use_compilation:
-            try:
-                self.upsampler_model = self.upsampler_model.to(self.device)
-                self.upsampler_model = torch.compile(self.upsampler_model, mode="reduce-overhead")
-
-                if self.master_process:
-                    print("Models compiled successfully")
-            except Exception as e:
-                if self.master_process:
-                    print(f"Model compilation failed: {e}. Continuing without compilation.")
-
-    def corrupt_conditioning_image(self, x_low: torch.Tensor, corruption_type: str = "gaussian_blur") -> torch.Tensor:
+    def corrupt_cond_img(self, x_low: torch.Tensor, corr_type: str = "gaussian_blur") -> torch.Tensor:
         """Corrupts the low-resolution conditioning image for robustness.
 
         Applies Gaussian blur or BSR degradation to the low-resolution image to simulate
@@ -3588,12 +3482,12 @@ class TrainUpsamplerUnCLIP(nn.Module):
         x_degraded : torch.Tensor
             Corrupted low-resolution image, same shape as input.
         """
-        if corruption_type == "gaussian_blur":
+        if corr_type == "gaussian_blur":
             # apply Gaussian blur
             kernel_size = random.choice([3, 5, 7])
             sigma = random.uniform(0.5, 2.0)
             return self._gaussian_blur(x_low, kernel_size, sigma)
-        elif corruption_type == "bsr_degradation":
+        elif corr_type == "bsr_degradation":
             # more diverse BSR degradation for second upsampler
             return self._bsr_degradation(x_low)
         else:
@@ -3617,12 +3511,12 @@ class TrainUpsamplerUnCLIP(nn.Module):
             Blurred image tensor, same shape as input.
         """
         # create Gaussian kernel
-        kernel = self._get_gaussian_kernel(kernel_size, sigma).to(x.device)
+        kernel = self._gaussian_kernel(kernel_size, sigma).to(x.device)
         kernel = kernel.expand(x.shape[1], 1, kernel_size, kernel_size)
         padding = kernel_size // 2
         return F.conv2d(x, kernel, padding=padding, groups=x.shape[1])
 
-    def _get_gaussian_kernel(self, kernel_size: int, sigma: float) -> torch.Tensor:
+    def _gaussian_kernel(self, kernel_size: int, sigma: float) -> torch.Tensor:
         """Generates a 2D Gaussian kernel.
 
         Parameters
@@ -3661,12 +3555,10 @@ class TrainUpsamplerUnCLIP(nn.Module):
         # add noise
         noise_level = random.uniform(0.0, 0.1)
         noise = torch.randn_like(x) * noise_level
-
         # apply blur
         kernel_size = random.choice([3, 5, 7])
         sigma = random.uniform(0.5, 3.0)
         x_degraded = self._gaussian_blur(x + noise, kernel_size, sigma)
-
         return torch.clamp(x_degraded, -1.0, 1.0)
 
     def validate(self) -> float:
@@ -3681,43 +3573,30 @@ class TrainUpsamplerUnCLIP(nn.Module):
         val_loss : float
             Mean validation loss.
         """
-        # set models to eval mode for evaluation
-        self.upsampler_model.eval()
-        self.upsampler_model.forward_diffusion.eval()
-
+        self.up_net.eval()
         val_losses = []
-
         with torch.no_grad():
-            for low_res_images, high_res_images in self.val_loader:
-                low_res_images = low_res_images.to(self.device, non_blocking=True)
-                high_res_images = high_res_images.to(self.device, non_blocking=True)
-                batch_size = high_res_images.shape[0]
-                timesteps = torch.randint(0, self.num_timesteps, (batch_size,), device=self.device)
-                noise = torch.randn_like(high_res_images)
-                high_res_images_noisy = self.upsampler_model.forward_diffusion(high_res_images, noise, timesteps)
-                corruption_type = "gaussian_blur" if self.upsampler_model.low_res_size == 64 else "bsr_degradation"
-                low_res_images_corrupted = self.corrupt_conditioning_image(low_res_images, corruption_type)
-                predicted_noise = self.upsampler_model(high_res_images_noisy, timesteps, low_res_images_corrupted)
-                # compute loss
-                loss = self.objective(predicted_noise, noise)
+            for low_imgs, high_imgs in self.val_loader:
+                low_imgs = low_imgs.to(self.device, non_blocking=True)
+                high_imgs = high_imgs.to(self.device, non_blocking=True)
+                batch_size = high_imgs.shape[0]
+                timesteps = torch.randint(0, self.num_steps, (batch_size,), device=self.device)
+                noise = torch.randn_like(high_imgs)
+                high_imgs_noisy = self.up_net.fwd_unclip(high_imgs, noise, timesteps)
+                corr_type = "gaussian_blur" if self.up_net.low_res_size == 64 else "bsr_degradation"
+                low_imgs_corr = self.corrupt_cond_img(low_imgs, corr_type)
+                pred_noise = self.up_net(high_imgs_noisy, timesteps, low_imgs_corr)
+                loss = self.loss_fn(pred_noise, noise)
                 val_losses.append(loss.item())
-
-        # compute average loss
         val_loss = torch.tensor(val_losses).mean().item()
-
         if self.use_ddp:
             val_loss_tensor = torch.tensor(val_loss, device=self.device)
             dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
             val_loss = val_loss_tensor.item()
-
-        # return to training mode
-        self.upsampler_model.train()
-        if not self.upsampler_model.forward_diffusion.variance_scheduler.trainable_beta:
-            self.upsampler_model.forward_diffusion.variance_scheduler.eval()
-
+        self.up_net.train()
         return val_loss
 
-    def _save_checkpoint(self, epoch: int, loss: float, is_best: bool = False, suffix: str = ""):
+    def _save_checkpoint(self, epoch: int, loss: float, pref: str = ""):
         """Saves model checkpoint.
 
         Saves the state of the upsampler model, its variance scheduler, optimizer, and
@@ -3739,38 +3618,27 @@ class TrainUpsamplerUnCLIP(nn.Module):
         checkpoint = {
             'epoch': epoch,
             'loss': loss,
-            # core model
-            'upsampler_model_state_dict': self.upsampler_model.module.state_dict() if self.use_ddp else self.upsampler_model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            # training configuration
-            'model_channels': self.upsampler_model.model_channels,
-            'num_res_blocks': self.upsampler_model.num_res_blocks,
-            'normalize': self.normalize_image_outputs,
-            'output_range': self.image_output_range
+            'losses': self.losses,
+            'up_net_state_dict': self.up_net.module.state_dict() if self.use_ddp else self.up_net.state_dict(),
+            'optim_state_dict': self.optim.state_dict(),
+            'model_channels': self.up_net.model_channels,
+            'num_res_blocks': self.up_net.num_res_blocks,
+            'normalize': self.norm_out,
+            'norm_range': self.norm_range
         }
 
-        # save variance scheduler (submodule of forward_diffusion)
-        checkpoint['variance_scheduler_state_dict'] = (
-            self.upsampler_model.module.forward_diffusion.variance_scheduler.state_dict() if self.use_ddp
-            else self.upsampler_model.forward_diffusion.variance_scheduler.state_dict()
-        )
-
-        # save schedulers state
         checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         checkpoint['warmup_scheduler_state_dict'] = self.warmup_lr_scheduler.state_dict()
-
-        filename = f"unclip_upsampler_epoch_{epoch}{suffix}.pth"
-        if is_best:
-            filename = f"unclip_upsampler_best{suffix}.pth"
-
-        filepath = os.path.join(self.store_path, filename)
-        os.makedirs(self.store_path, exist_ok=True)
-        torch.save(checkpoint, filepath)
-
-        if is_best:
-            print(f"Best model saved: {filepath}")
-
-    def load_checkpoint(self, checkpoint_path: str) -> Tuple[int, float]:
+        try:
+            filename = f"{pref}model_epoch_{epoch}.pth"
+            filepath = os.path.join(self.store_path, filename)
+            os.makedirs(self.store_path, exist_ok=True)
+            torch.save(checkpoint, filepath)
+            print(f"Model saved at epoch {epoch} with loss: {loss}")
+        except Exception as e:
+            print(f"Failed to save model: {e}")
+    # TODO: we are here
+    def load_checkpoint(self, check_path: str) -> Tuple[int, float]:
         """Loads model checkpoint.
 
         Restores the state of the upsampler model, its variance scheduler, optimizer, and
@@ -3789,9 +3657,9 @@ class TrainUpsamplerUnCLIP(nn.Module):
             The loss at the checkpoint.
         """
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+            checkpoint = torch.load(check_path, map_location=self.device)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+            raise FileNotFoundError(f"Checkpoint not found: {check_path}")
 
         def _load_model_state_dict(model: nn.Module, state_dict: dict, model_name: str) -> None:
             """Helper function to load state dict with DDP compatibility."""
@@ -3810,21 +3678,21 @@ class TrainUpsamplerUnCLIP(nn.Module):
 
         # load core upsampler model
         if 'upsampler_model_state_dict' in checkpoint:
-            _load_model_state_dict(self.upsampler_model, checkpoint['upsampler_model_state_dict'],
+            _load_model_state_dict(self.up_net, checkpoint['upsampler_model_state_dict'],
                                    'upsampler_model')
 
         # load variance scheduler (submodule of forward_diffusion)
         if 'variance_scheduler_state_dict' in checkpoint or 'hyper_params_state_dict' in checkpoint:
             state_dict = checkpoint.get('variance_scheduler_state_dict', checkpoint.get('hyper_params_state_dict'))
             try:
-                _load_model_state_dict(self.upsampler_model.forward_diffusion.variance_scheduler, state_dict, 'variance_scheduler')
+                _load_model_state_dict(self.up_net.forward_diffusion.variance_scheduler, state_dict, 'variance_scheduler')
             except Exception as e:
                 warnings.warn(f"Failed to load variance scheduler: {e}")
 
         # load optimizer
         if 'optimizer_state_dict' in checkpoint:
             try:
-                self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.optim.load_state_dict(checkpoint['optimizer_state_dict'])
                 if self.master_process:
                     print("✓ Loaded optimizer")
             except Exception as e:
@@ -3849,14 +3717,14 @@ class TrainUpsamplerUnCLIP(nn.Module):
 
         # verify configuration compatibility
         if 'model_channels' in checkpoint:
-            if checkpoint['model_channels'] != self.upsampler_model.model_channels:
+            if checkpoint['model_channels'] != self.up_net.model_channels:
                 warnings.warn(
-                    f"Model channels mismatch: checkpoint={checkpoint['model_channels']}, current={self.upsampler_model.model_channels}")
+                    f"Model channels mismatch: checkpoint={checkpoint['model_channels']}, current={self.up_net.model_channels}")
 
         if 'num_res_blocks' in checkpoint:
-            if checkpoint['num_res_blocks'] != self.upsampler_model.num_res_blocks:
+            if checkpoint['num_res_blocks'] != self.up_net.num_res_blocks:
                 warnings.warn(
-                    f"Num res blocks mismatch: checkpoint={checkpoint['num_res_blocks']}, current={self.upsampler_model.num_res_blocks}")
+                    f"Num res blocks mismatch: checkpoint={checkpoint['num_res_blocks']}, current={self.up_net.num_res_blocks}")
 
         if 'normalize' in checkpoint:
             if checkpoint['normalize'] != self.normalize_image_outputs:
@@ -3867,7 +3735,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
         loss = checkpoint.get('loss', float('inf'))
 
         if self.master_process:
-            print(f"Successfully loaded checkpoint from {checkpoint_path}")
+            print(f"Successfully loaded checkpoint from {check_path}")
             print(f"Epoch: {epoch}, Loss: {loss:.4f}")
 
         return epoch, loss
