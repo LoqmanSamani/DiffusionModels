@@ -938,8 +938,7 @@ def mse_loss(pred: torch.Tensor, target: torch.Tensor, *args) -> torch.Tensor:
     return ((pred - target) ** 2).mean()
 
 
-def snr_capped_loss(pred_noise: torch.Tensor, target_noise: torch.Tensor, variance: torch.Tensor,
-                    gamma: float = 5.0, *args) -> torch.Tensor:
+def snr_capped_loss(pred_noise: torch.Tensor, target_noise: torch.Tensor, variance: torch.Tensor, gamma: float = 5.0, *args) -> torch.Tensor:
     """
     Signal-to-noise-ratio (SNR) capped noise prediction loss for diffusion models.
 

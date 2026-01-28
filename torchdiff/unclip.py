@@ -1077,7 +1077,74 @@ class CLIPEmbeddingProjection(nn.Module):
         Input dimensionality (default: 1024).
     `transformer_embedding_dim` : int, optional
         Output dimensionality for forward projection (default: 320).
-    `hidden_dim` : int, optional
+    `hidden_dim` : int, optionaltrain_loader = DataLoader(train_subset, batch_size=2, shuffle=True, pin_memory=True)
+val_loader = DataLoader(test_subset, batch_size=1, shuffle=False, pin_memory=True)
+
+# prior scheduler, forward and reverse modules
+pvs = SchedulerUnCLIP()
+pfwd = ForwardUnCLIP(pvs)
+prwd = ReverseUnCLIP(pvs)
+
+clip_encoder = CLIPEncoder(model_name="openai/clip-vit-base-patch32")
+
+tp = CLIPEmbeddingProjection(
+    clip_embed_dim=512,
+    trans_embed_dim=320,
+    hidden_dim=480,
+    num_layers=2,
+    dropout=0.1,
+    use_layer_norm=True
+)
+
+ip = CLIPEmbeddingProjection(
+    clip_embed_dim=512,
+    trans_embed_dim=320,
+    hidden_dim=480,
+    num_layers=2,
+    dropout=0.1,
+    use_layer_norm=True
+)
+
+p_net = UnCLIPTransformerPrior(
+    fwd_unclip=pfwd,
+    rwd_unclip=prwd,
+    clip_text_proj=tp,
+    clip_img_proj=ip,
+    trans_embed_dim=320,
+    num_layers=12,
+    num_att_heads=8,
+    ff_dim=512,
+    max_sequence_length=2,
+    dropout=0.3
+)
+
+optim = torch.optim.AdamW([p for p in p_net.parameters() if p.requires_grad], lr=1e-5)
+loss_fn = nn.MSELoss()
+
+p_trainer = TrainUnCLIPPrior(
+    prior_net=p_net,
+    clip_net=clip_encoder,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    optim=optim,
+    loss_fn=loss_fn,
+    max_epochs=10,
+    device="cuda",
+    grad_acc=2,
+    warmup_steps=2,
+    patience=10,
+    val_freq=3,
+    log_freq=1,
+    reduce_clip_embed_dim=True,
+    trans_embed_dim=320,
+    norm_clip_embed=True,
+
+)
+
+num_params = sum(param.numel() for param in p_trainer.parameters())
+print(f"Number of trainable parameters in the Prior model: {num_params:,}")
+
+losses = p_trainer()
         Hidden layer dimensionality (default: 512).
     `num_layers` : int, optional
         Number of layers in the projection network (default: 2).
@@ -1703,7 +1770,7 @@ class TrainUnClipDecoder(nn.Module):
                 else self.decoder_net.glide_text_encoder.state_dict()
             )
         # save scheduler (submodule of decoder_model, always saved)
-        checkpoint['scheduler_state_dict'] = (
+        checkpoint['variance_scheduler_state_dict'] = (
             self.decoder_net.fwd_unclip.module.vs.state_dict() if self.use_ddp
             else self.decoder_net.fwd_unclip.vs.state_dict()
         )
@@ -1789,9 +1856,9 @@ class TrainUnClipDecoder(nn.Module):
             _load_model(self.decoder_net.glide_text_encoder, checkpoint['cond_model_state_dict'], 'glide_text_encoder')
 
         # load scheduler (submodule of decoder_model)
-        if 'scheduler_state_dict' in checkpoint:
+        if 'variance_scheduler_state_dict' in checkpoint:
             try:
-                _load_model(self.decoder_net.fwd_unclip.vs, checkpoint['scheduler_state_dict'], 'scheduler')
+                _load_model(self.decoder_net.fwd_unclip.vs, checkpoint['variance_scheduler_state_dict'], 'variance_scheduler')
             except Exception as e:
                 warnings.warn(f"Failed to load variance scheduler: {e}")
 
@@ -2008,7 +2075,7 @@ class TrainUnCLIPPrior(nn.Module):
     `device` : Union[str, torch.device], optional
         Device for computation (default: CUDA if available, else CPU).
     `store_path` : str, optional
-        Directory path to save model checkpoints, default None.
+        Directory path to save model checkpoints, default 'unclip_prior_train'".
     `patience` : int, optional
         Number of epochs to wait for improvement before early stopping (default: 100).
     `warmup_epochs` : int, optional
@@ -2043,7 +2110,7 @@ class TrainUnCLIPPrior(nn.Module):
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epochs: int = 1000,
             device: str = 'cuda',
-            store_path: Optional[str] = None,
+            store_path: str = 'unclip_prier_train',
             patience: int = 100,
             warmup_steps: int = 10000,
             val_freq: int = 10,
@@ -2088,11 +2155,11 @@ class TrainUnCLIPPrior(nn.Module):
         self.best_loss = float('inf')
         self.losses = {'train_losses': [], 'val_losses': []}
         self.scheduler = ReduceLROnPlateau(
-            self.optimizer,
+            self.optim,
             patience=self.patience,
             factor=0.5
         )
-        self.warmup_lr_scheduler = self.warmup_scheduler(self.optimizer, warmup_steps)
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
 
     def _setup_ddp(self) -> None:
         """Sets up Distributed Data Parallel training configuration.
@@ -2228,7 +2295,7 @@ class TrainUnCLIPPrior(nn.Module):
             mean_train_loss = self._mean_loss(train_losses_epoch)
             self.losses['train_losses'].append(mean_train_loss)
             if self.master_process and (epoch + 1) % self.log_freq == 0:
-                current_lr = self.optimizer.param_groups[0]['lr']
+                current_lr = self.optim.param_groups[0]['lr']
                 print(f"Epoch {epoch + 1}/{self.max_epochs} | LR: {current_lr:.2e} | Train Loss: {mean_train_loss:.4f}", end="")
 
             if self.val_loader is not None and (epoch + 1) % self.val_freq == 0:
@@ -2284,25 +2351,23 @@ class TrainUnCLIPPrior(nn.Module):
             img_embed = self.clip_net(data=imgs, data_type="img", normalize=self.norm_clip_embed)
         # reduce dimensionality
         if self.reduce_clip_embed_dim:
-            txt_embed = self.prior_net.clip_text_projection(txt_embed)
-            img_embed = self.prior_net.clip_image_projection(img_embed)
+            txt_embed = self.prior_net.clip_text_proj(txt_embed)
+            img_embed = self.prior_net.clip_img_proj(img_embed)
         # t ~ Uniform(1, T)
         batch_size = img_embed.shape[0]
-        timesteps = torch.randint(0, self.prior_net.fwd_unclip.vs.num_steps, (batch_size,), device=self.device)
+        timesteps = torch.randint(0, self.prior_net.fwd_unclip.vs.train_steps, (batch_size,), device=self.device)
         # ε ~ N(0, I)
         noise = torch.randn_like(img_embed)
         # z_{i,t}
-        noisy_img_embed = self.prior_net.fwd_unclip(img_embed, noise, timesteps)
+        noisy_img_embed, target = self.prior_net.fwd_unclip(img_embed, noise, timesteps)
         # ẑ_i
         pred_img_embed = self.prior_net(txt_embed, noisy_img_embed, timesteps)
         # transform back to original space if using dimension reduction
         if self.reduce_clip_embed_dim:
-            pred_img_embed = self.prior_net.clip_image_proj.inverse_transform(pred_img_embed)
-            t_embed = self.prior_net.clip_image_proj.inverse_transform(img_embed)
-        else:
-            t_embed = img_embed
+            pred_img_embed = self.prior_net.clip_img_proj.inverse_transform(pred_img_embed)
+            target = self.prior_net.clip_img_proj.inverse_transform(target)
         # L = ||ẑ_i - z_i||²
-        loss = self.loss_fn(pred_img_embed, t_embed)
+        loss = self.loss_fn(pred_img_embed, target)
         return loss
 
     def _optim_step(self, scaler: torch.GradScaler) -> None:
@@ -2320,7 +2385,7 @@ class TrainUnCLIPPrior(nn.Module):
         torch.nn.utils.clip_grad_norm_(self.prior_net.parameters(), max_norm=1.0)
         scaler.step(self.optim)
         scaler.update()
-        self.optimizer.zero_grad()
+        self.optim.zero_grad()
 
     def _mean_loss(self, losses: List[float]) -> float:
         """Computes the mean loss and synchronizes across processes if using DDP.
@@ -2362,23 +2427,20 @@ class TrainUnCLIPPrior(nn.Module):
         with torch.no_grad():
             for imgs, txts in self.val_loader:
                 imgs = imgs.to(self.device, non_blocking=True)
-                # get embeddings
                 txt_embed = self.clip_net(data=txts, data_type="text", normalize=self.norm_clip_embed)
                 img_embed = self.clip_net(data=imgs, data_type="img", normalize=self.norm_clip_embed)
-                orig_img_embed = img_embed.clone()
                 if self.reduce_clip_embed_dim:
                     txt_embed = self.prior_net.clip_text_proj(txt_embed)
-                    img_embed = self.prior_net.clip_image_proj(img_embed)
-
+                    img_embed = self.prior_net.clip_img_proj(img_embed)
                 batch_size = img_embed.shape[0]
-                timesteps = torch.randint(0, self.prior_net.fwd_unclip.vs.num_steps, (batch_size,), device=self.device)
+                timesteps = torch.randint(0, self.prior_net.fwd_unclip.vs.train_steps, (batch_size,), device=self.device)
                 noise = torch.randn_like(img_embed)
-                noisy_img_embed = self.prior_net.fwd_unclip(img_embed, noise, timesteps)
+                noisy_img_embed, target = self.prior_net.fwd_unclip(img_embed, noise, timesteps)
                 pred_embed = self.prior_net(txt_embed, noisy_img_embed, timesteps)
                 if self.reduce_clip_embed_dim:
-                    pred_embed = self.prior_net.clip_image_proj.inverse_transform(pred_embed)
-                # compute loss
-                loss = self.loss_fn(pred_embed, orig_img_embed)
+                    pred_embed = self.prior_net.clip_img_proj.inverse_transform(pred_embed)
+                    target = self.prior_net.clip_img_proj.inverse_transform(target)
+                loss = self.loss_fn(pred_embed, target)
                 val_losses.append(loss.item())
         val_loss = self._mean_loss(val_losses)
         self.prior_net.train()
@@ -2418,7 +2480,7 @@ class TrainUnCLIPPrior(nn.Module):
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
-            print(f"Model saved at epoch {epoch} with loss: {loss}")
+            print(f"Model saved at epoch {epoch} with loss: {loss:.4f}")
         except Exception as e:
             print(f"Failed to save model: {e}")
 
