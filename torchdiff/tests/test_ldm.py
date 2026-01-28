@@ -161,15 +161,15 @@ class TestVectorQuantizer:
 
     def test_vq_initialization(self):
         """Test VectorQuantizer initialization."""
-        vq = VectorQuantizer(num_embeddings=64, embedding_dim=32)
+        vq = VectorQuantizer(num_embed=64, embed_dim=32)
 
-        assert vq.num_embeddings == 64
-        assert vq.embedding_dim == 32
-        assert vq.embedding.weight.shape == (64, 32)
+        assert vq.num_embed == 64
+        assert vq.embed_dim == 32
+        assert vq.embed.weight.shape == (64, 32)
 
     def test_vq_forward_pass(self):
         """Test VectorQuantizer forward pass."""
-        vq = VectorQuantizer(num_embeddings=64, embedding_dim=16)
+        vq = VectorQuantizer(num_embed=64, embed_dim=16)
         x = torch.randn(2, 16, 8, 8)
 
         quantized, vq_loss = vq(x)
@@ -474,9 +474,9 @@ class TestTrainLDM:
         setup = ldm_training_setup
 
         trainer = TrainLDM(diff_type="sde", fwd_diff=setup['forward_sde'], rwd_diff=setup['reverse_sde'],
-                           diff_net=setup['noise_predictor'], comp_model=setup['compressor'], optim=setup['optimizer'],
+                           diff_net=setup['noise_predictor'], comp_net=setup['compressor'], optim=setup['optimizer'],
                            loss_fn=nn.MSELoss(), train_loader=setup['train_loader'], val_loader=setup['val_loader'],
-                           cond_model=setup['text_encoder'], max_epochs=2, device='cpu')
+                           cond_net=setup['text_encoder'], max_epochs=2, device='cpu')
 
         assert trainer.diff_type == "sde"
         assert trainer.max_epochs == 2
@@ -487,9 +487,9 @@ class TestTrainLDM:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             trainer = TrainLDM(diff_type="sde", fwd_diff=setup['forward_sde'], rwd_diff=setup['reverse_sde'],
-                               diff_net=setup['noise_predictor'], comp_model=setup['compressor'],
+                               diff_net=setup['noise_predictor'], comp_net=setup['compressor'],
                                optim=setup['optimizer'], loss_fn=nn.MSELoss(), train_loader=setup['train_loader'],
-                               val_loader=setup['val_loader'], cond_model=setup['text_encoder'], metrics_=MockMetrics(),
+                               val_loader=setup['val_loader'], cond_net=setup['text_encoder'], metrics_=MockMetrics(),
                                max_epochs=2, device='cpu', store_path=temp_dir, val_freq=1, log_freq=1)
 
             train_losses, best_val_loss = trainer()
@@ -529,7 +529,7 @@ class TestSampleLDM:
         setup = sampling_setup
 
         sampler = SampleLDM(diff_type="sde", rwd_diff=setup['reverse_sde'], diff_net=setup['noise_predictor'],
-                            comp_model=setup['compressor'], img_size=(32, 32), cond_model=setup['text_encoder'],
+                            comp_net=setup['compressor'], num_steps=, img_size=(32, 32), cond_net=setup['text_encoder'],
                             batch_size=2, device='cpu')
 
         assert sampler.diff_type == "sde"
@@ -541,7 +541,7 @@ class TestSampleLDM:
         setup = sampling_setup
 
         sampler = SampleLDM(diff_type="sde", rwd_diff=setup['reverse_sde'], diff_net=setup['noise_predictor'],
-                            comp_model=setup['compressor'], img_size=(32, 32), cond_model=setup['text_encoder'],
+                            comp_net=setup['compressor'], num_steps=, img_size=(32, 32), cond_net=setup['text_encoder'],
                             batch_size=2, device='cpu')
 
         # Test single prompt
@@ -558,8 +558,8 @@ class TestSampleLDM:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             sampler = SampleLDM(diff_type="sde", rwd_diff=setup['reverse_sde'], diff_net=setup['noise_predictor'],
-                                comp_model=setup['compressor'], img_size=(32, 32), cond_model=setup['text_encoder'],
-                                batch_size=2, device='cpu')
+                                comp_net=setup['compressor'], num_steps=, img_size=(32, 32),
+                                cond_net=setup['text_encoder'], batch_size=2, device='cpu')
 
             # Test unconditional generation
             images = sampler(
@@ -627,16 +627,16 @@ class TestIntegration:
             ], lr=1e-3)
 
             ldm_trainer = TrainLDM(diff_type="sde", fwd_diff=forward_sde, rwd_diff=reverse_sde,
-                                   diff_net=noise_predictor, comp_model=compressor, optim=ldm_optimizer,
-                                   loss_fn=nn.MSELoss(), train_loader=train_loader, cond_model=text_encoder,
-                                   max_epochs=1, device='cpu', store_path=temp_dir)
+                                   diff_net=noise_predictor, comp_net=compressor, optim=ldm_optimizer,
+                                   loss_fn=nn.MSELoss(), train_loader=train_loader, cond_net=text_encoder, max_epochs=1,
+                                   device='cpu', store_path=temp_dir)
 
             ldm_losses, ldm_best_loss = ldm_trainer()
             assert len(ldm_losses) == 1
 
             # 3. Sample from trained model
-            sampler = SampleLDM(diff_type="sde", rwd_diff=reverse_sde, diff_net=noise_predictor, comp_model=compressor,
-                                img_size=(32, 32), cond_model=text_encoder, batch_size=2, device='cpu')
+            sampler = SampleLDM(diff_type="sde", rwd_diff=reverse_sde, diff_net=noise_predictor, comp_net=compressor,
+                                num_steps=, img_size=(32, 32), cond_net=text_encoder, batch_size=2, device='cpu')
 
             generated_images = sampler(
                 conditions=["class_0", "class_1"],

@@ -47,6 +47,7 @@ from torch.optim.lr_scheduler import LambdaLR, ReduceLROnPlateau
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
+from torch.utils.checkpoint import checkpoint
 import torchvision
 from PIL import Image
 from transformers import BertTokenizer, CLIPProcessor, CLIPModel
@@ -593,7 +594,6 @@ class UnClipDecoder(nn.Module):
             except Exception as e:
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
 
-
     def forward(
             self,
             img_embed: torch.Tensor,
@@ -629,7 +629,6 @@ class UnClipDecoder(nn.Module):
         noise : torch.Tensor
             Ground truth noise tensor, shape (batch_size, channels, height, width).
         """
-
         img_embed = self._classifier_free_guidance(img_embed, p_classifier_free)
         text_embed = self._text_dropout(text_embed, p_text_drop)
         # project z_i to 4 tokens
@@ -641,10 +640,11 @@ class UnClipDecoder(nn.Module):
         # sample timestep and noise
         t, noise = self._sample_time_and_noise(imgs.shape[0], imgs.shape)
         # compute noisy image
-        noisy_imgs = self.fwd_unclip(imgs, noise, t)
+        noisy_imgs, target = self.fwd_unclip(imgs, noise, t)
         clip_img_embed = self.clip_time_proj(img_embed)
-        pred_noise = self.diff_net(noisy_imgs, t, context, clip_img_embed)
-        return pred_noise, noise
+        pred = self.diff_net(noisy_imgs, t, context, clip_img_embed)
+        #print(pred.shape, noise.shape, target.shape)
+        return pred, target # noise
 
     def inference_forward(self, img_embed, prompt_embed):
         pass
@@ -787,7 +787,7 @@ class UnClipDecoder(nn.Module):
             Sampled Gaussian noise, shape (batch_size, channels, height, width).
         """
         # sample timestep t ~ Uniform(1, T)
-        t = torch.randint(0, self.fwd_unclip.vs.num_steps, (batch_size,), device=self.device) # TODO: check it later for possible modifications
+        t = torch.randint(0, self.fwd_unclip.vs.train_steps, (batch_size,), device=self.device)
         # sample noise ε ~ N(0, I)
         noise = torch.randn(img_shape, device=self.device)
         return t, noise
@@ -825,17 +825,20 @@ class UnCLIPTransformerPrior(nn.Module):
         Dropout probability for regularization (default: 0.2).
     """
     def __init__(
-        self,
-        fwd_unclip: nn.Module, # will be used during training
-        rwd_unclip: nn.Module, # will be used during training
-        clip_text_proj: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
-        clip_img_proj: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
-        trans_embed_dim: int = 320,
-        num_layers: int = 12,
-        num_att_heads: int = 8,
-        ff_dim: int = 768,
-        max_sequence_length: int = 2,
-        dropout: float = 0.2
+            self,
+            fwd_unclip: nn.Module, # will be used during training
+            rwd_unclip: nn.Module, # will be used during training
+            clip_text_proj: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
+            clip_img_proj: Optional[nn.Module] = None,  # used during training instead of PCA in the main paper
+            trans_embed_dim: int = 320,
+            num_layers: int = 12,
+            num_att_heads: int = 8,
+            ff_dim: int = 768,
+            max_sequence_length: int = 2,
+            dropout: float = 0.2,
+            use_flash: bool = True,
+            grad_check: bool = False,
+            check_every_n_layers: int = 2
     ) -> None:
         super().__init__()
 
@@ -843,28 +846,28 @@ class UnCLIPTransformerPrior(nn.Module):
         self.rwd_unclip = rwd_unclip
         self.clip_text_proj = clip_text_proj
         self.clip_img_proj = clip_img_proj
-
         self.trans_embed_dim = trans_embed_dim
         self.max_sequence_length = max_sequence_length
-
+        self.grad_check = grad_check
+        self.check_every_n_layers = check_every_n_layers
+        self.use_flash = use_flash and self._check_flash_attention()
         # time embedding network
         self.time_embed_net = nn.Sequential(
             nn.Linear(trans_embed_dim, trans_embed_dim),
             nn.GELU(),
             nn.Linear(trans_embed_dim, trans_embed_dim)
         )
-
         # positional embeddings
         self.pos_embed = nn.Parameter(torch.randn(max_sequence_length, trans_embed_dim))
-
         # transformer layers
         self.transformer_blocks = nn.ModuleList([
-            TransformerBlock(trans_embed_dim, num_att_heads, ff_dim, dropout)
+            TransformerBlock(trans_embed_dim, num_att_heads, ff_dim, dropout, self.use_flash)
             for _ in range(num_layers)
         ])
-
         # final output projection
         self.out_proj = nn.Linear(trans_embed_dim, trans_embed_dim)
+        # cache for sinusoidal embeddings (reuse across batches)
+        self._cached_sinusoidal_embeds = {}
 
     def forward(
             self,
@@ -893,7 +896,7 @@ class UnCLIPTransformerPrior(nn.Module):
         """
         device = text_embed.device
         # create sinusoidal time embeddings
-        time_embed = self._sinusoidal_embed(timesteps, self.trans_embed_dim, device)
+        time_embed = self._sinusoidal_embed_cached(timesteps, self.trans_embed_dim, device)
         time_embed = self.time_embed_net(time_embed)
         # add time information to image embeddings
         cond_img_embed = noisy_img_embed + time_embed
@@ -902,14 +905,78 @@ class UnCLIPTransformerPrior(nn.Module):
         # add positional embeddings
         seq = seq + self.pos_embed.unsqueeze(0)
         # pass through transformer blocks
-        for transformer_block in self.transformer_blocks:
-            seq = transformer_block(seq)
+        if self.grad_check and self.training:
+            seq = self._forward_with_check(seq)
+        else:
+            for transformer_block in self.transformer_blocks:
+                seq = transformer_block(seq)
         # extract predicted clean image embedding (second position in sequence)
         pred_clean_embed = seq[:, 1, :]  # [B, D]
         # apply final projection
         pred_clean_embed = self.out_proj(pred_clean_embed)
 
         return pred_clean_embed
+
+    def _forward_with_check(self, seq: torch.Tensor) -> torch.Tensor:
+        """Forward pass with gradient checkpointing every N layers"""
+        for i in range(0, len(self.transformer_blocks), self.check_every_n_layers):
+            end_idx = min(i + self.check_every_n_layers, len(self.transformer_blocks))
+            layers_to_checkpoint = self.transformer_blocks[i:end_idx]
+            def create_forward_func(layers):
+                def forward_func(x):
+                    for layer in layers:
+                        x = layer(x)
+                    return x
+                return forward_func
+            # apply checkpointing
+            seq = checkpoint(
+                create_forward_func(layers_to_checkpoint),
+                seq,
+                use_reentrant=False
+            )
+        return seq
+
+    def _check_flash_attention(self) -> bool:
+        """Check if Flash Attention is available."""
+        try:
+            if hasattr(nn.functional, 'scaled_dot_product_attention'):
+                return True
+        except:
+            pass
+        return False
+    def enable_grad_check(self):
+        """Enable gradient checkpointing for memory savings"""
+        self.use_grad_check = True
+
+    def disable_grad_check(self):
+        """Disable gradient checkpointing"""
+        self.use_grad_check = False
+
+    def _sinusoidal_embed_cached(
+            self,
+            timesteps: torch.Tensor,
+            embed_dim: int,
+            device: Union[torch.device, str]
+    ) -> torch.Tensor:
+        """Generates sinusoidal positional embeddings with caching.
+
+        Caches the sinusoidal embedding computation to avoid recomputation
+        for the same timesteps across different batches.
+        """
+        max_timestep = timesteps.max().item()
+        cache_key = (embed_dim, device, max_timestep)
+        if cache_key not in self._cached_sinusoidal_embeds:
+            half_dim = embed_dim // 2
+            emb = math.log(10000) / (half_dim - 1)
+            emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+            all_timesteps = torch.arange(max_timestep + 1, device=device).float()
+            emb = all_timesteps[:, None] * emb[None, :]
+            emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
+            if embed_dim % 2 == 1:
+                emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=1)
+            self._cached_sinusoidal_embeds[cache_key] = emb
+        cached_emb = self._cached_sinusoidal_embeds[cache_key]
+        return cached_emb[timesteps]
 
     def _sinusoidal_embed(
             self,
@@ -967,25 +1034,37 @@ class TransformerBlock(nn.Module):
     `dropout` : float
         Dropout probability for regularization.
     """
-
     def __init__(
             self,
             embed_dim: int,
             num_heads: int,
             ff_dim: int,
-            dropout: float
+            dropout: float,
+            use_flash: bool = True
     ) -> None:
         super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.use_flash = use_flash
 
-        self.self_att = nn.MultiheadAttention(
-            embed_dim,
-            num_heads,
-            dropout=dropout,
-            batch_first=True
-        )
         self.att_norm = nn.LayerNorm(embed_dim)
         self.ff_norm = nn.LayerNorm(embed_dim)
 
+        # multi-head attention
+        if use_flash and hasattr(nn.functional, 'scaled_dot_product_attention'):
+            # use manual qkv projection for flash attention
+            self.qkv_proj = nn.Linear(embed_dim, 3 * embed_dim, bias=True)
+            self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+            self.dropout_p = dropout
+        else:
+            # fall back to standard MultiheadAttention
+            self.self_att = nn.MultiheadAttention(
+                embed_dim,
+                num_heads,
+                dropout=dropout,
+                batch_first=True
+            )
+        # feed forward net
         self.ff = nn.Sequential(
             nn.Linear(embed_dim, ff_dim),
             nn.GELU(),
@@ -1010,13 +1089,50 @@ class TransformerBlock(nn.Module):
         output : torch.Tensor
             Processed sequence tensor, shape (batch_size, sequence_length, embedding_dim).
         """
-        # self-attention with residual connection
-        att_out, _ = self.self_att(x, x, x)
-        x = self.att_norm(x + att_out)
-        # feedforward with residual connection
-        ff_output = self.ff(x)
-        x = self.ff_norm(x + ff_output)
+        n_x = self.att_norm(x)
+        if self.use_flash and hasattr(nn.functional, 'scaled_dot_product_attention'):
+            att_out = self._flash_attention(n_x)
+        else:
+            att_out, _ = self.self_att(n_x, n_x, n_x)
+        x = x + att_out
+        n_x = self.ff_norm(x)
+        ff_out = self.ff(n_x)
+        x = x + ff_out
         return x
+
+    def _flash_attention(self, x: torch.Tensor) -> torch.Tensor:
+        """Flash Attention
+
+        Parameters
+        ----------
+        `x` : torch.Tensor
+            Input tensor, shape (batch_size, seq_len, embed_dim).
+
+        Returns
+        -------
+        output : torch.Tensor
+            Attention output, shape (batch_size, seq_len, embed_dim).
+        """
+        batch_size, seq_len, _ = x.shape
+        # project to Q, K, V
+        qkv = self.qkv_proj(x)  # [B, S, 3*D]
+        qkv = qkv.reshape(batch_size, seq_len, 3, self.num_heads, self.embed_dim // self.num_heads)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # [3, B, H, S, D//H]
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        att_out = nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout_p if self.training else 0.0,
+            is_causal=False
+        )
+        att_out = att_out.permute(0, 2, 1, 3).reshape(batch_size, seq_len, self.embed_dim)
+        att_out = self.out_proj(att_out)
+        return att_out
+
+class FusedGELU(nn.Module):
+    """Fused GELU activation for better efficiency on some hardware"""
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # use approximate GELU for speed
+        return nn.functional.gelu(x, approximate='tanh')
 
 ###==================================================================================================================###
 
@@ -1078,80 +1194,6 @@ class CLIPEmbeddingProjection(nn.Module):
     `transformer_embedding_dim` : int, optional
         Output dimensionality for forward projection (default: 320).
     `hidden_dim` : int, optionaltrain_loader = DataLoader(train_subset, batch_size=2, shuffle=True, pin_memory=True)
-val_loader = DataLoader(test_subset, batch_size=1, shuffle=False, pin_memory=True)
-
-# prior scheduler, forward and reverse modules
-pvs = SchedulerUnCLIP()
-pfwd = ForwardUnCLIP(pvs)
-prwd = ReverseUnCLIP(pvs)
-
-clip_encoder = CLIPEncoder(model_name="openai/clip-vit-base-patch32")
-
-tp = CLIPEmbeddingProjection(
-    clip_embed_dim=512,
-    trans_embed_dim=320,
-    hidden_dim=480,
-    num_layers=2,
-    dropout=0.1,
-    use_layer_norm=True
-)
-
-ip = CLIPEmbeddingProjection(
-    clip_embed_dim=512,
-    trans_embed_dim=320,
-    hidden_dim=480,
-    num_layers=2,
-    dropout=0.1,
-    use_layer_norm=True
-)
-
-p_net = UnCLIPTransformerPrior(
-    fwd_unclip=pfwd,
-    rwd_unclip=prwd,
-    clip_text_proj=tp,
-    clip_img_proj=ip,
-    trans_embed_dim=320,
-    num_layers=12,
-    num_att_heads=8,
-    ff_dim=512,
-    max_sequence_length=2,
-    dropout=0.3
-)
-
-optim = torch.optim.AdamW([p for p in p_net.parameters() if p.requires_grad], lr=1e-5)
-loss_fn = nn.MSELoss()
-
-p_trainer = TrainUnCLIPPrior(
-    prior_net=p_net,
-    clip_net=clip_encoder,
-    train_loader=train_loader,
-    val_loader=val_loader,
-    optim=optim,
-    loss_fn=loss_fn,
-    max_epochs=10,
-    device="cuda",
-    grad_acc=2,
-    warmup_steps=2,
-    patience=10,
-    val_freq=3,
-    log_freq=1,
-    reduce_clip_embed_dim=True,
-    trans_embed_dim=320,
-    norm_clip_embed=True,
-
-)
-
-num_params = sum(param.numel() for param in p_trainer.parameters())
-print(f"Number of trainable parameters in the Prior model: {num_params:,}")
-
-losses = p_trainer()
-        Hidden layer dimensionality (default: 512).
-    `num_layers` : int, optional
-        Number of layers in the projection network (default: 2).
-    `dropout_rate` : float, optional
-        Dropout probability for regularization (default: 0.2).
-    `use_layer_norm` : bool, optional
-        Whether to apply layer normalization after hidden layers (default: True).
     """
     def __init__(
         self,
@@ -1473,7 +1515,7 @@ class TrainUnClipDecoder(nn.Module):
                     # use decoder model to predict noise
                     p_classifier_free = torch.rand(1).item()
                     p_text_drop = torch.rand(1).item()
-                    pred_noise, noise = self.decoder_net(
+                    pred, target = self.decoder_net(
                         img_embed,
                         text_embed,
                         imgs,
@@ -1481,7 +1523,7 @@ class TrainUnClipDecoder(nn.Module):
                         p_classifier_free,
                         p_text_drop
                     )
-                    loss = self.loss_fn(pred_noise, noise) / self.grad_acc
+                    loss = self.loss_fn(pred, target) / self.grad_acc
 
                 scaler.scale(loss).backward()
                 if (step + 1) % self.grad_acc == 0:
@@ -1971,7 +2013,7 @@ class TrainUnClipDecoder(nn.Module):
                 txt_embed, img_embed = self._dim_reduction(txt_embed, img_embed)
                 p_classifier_free = torch.rand(1).item()
                 p_text_drop = torch.rand(1).item()
-                pred_noise, noise = self.decoder_net(
+                pred, target = self.decoder_net(
                     img_embed,
                     txt_embed,
                     imgs,
@@ -1979,11 +2021,11 @@ class TrainUnClipDecoder(nn.Module):
                     p_classifier_free,
                     p_text_drop
                 )
-                loss = self.loss_fn(pred_noise, noise)
+                loss = self.loss_fn(pred, target)
                 val_losses.append(loss.item())
                 if self.metrics_ is not None and self.decoder_net.rwd_unclip is not None:
                     xt = torch.randn_like(imgs).to(self.device)
-                    for t in reversed(range(self.decoder_net.fwd_unclip.vs.tau_num_steps)):
+                    for t in reversed(range(self.decoder_net.fwd_unclip.vs.sample_steps)):
                         t_ = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
                         t_pre = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
                         img_embed = self.decoder_net._classifier_free_guidance(img_embed, p_classifier_free)
@@ -1992,8 +2034,8 @@ class TrainUnClipDecoder(nn.Module):
                         y = self.decoder_net._encode_text_with_glide(txts if txt_embed is not None else None)
                         context = self.decoder_net._conc_embed(y, c)
                         clip_img_embed = self.decoder_net.clip_time_proj(img_embed)
-                        pred_noise = self.decoder_net.diff_net(xt, t_, context, clip_img_embed)
-                        xt, _ = self.decoder_net.rwd_unclip(xt, pred_noise, t_, t_pre)
+                        pred = self.decoder_net.diff_net(xt, t_, context, clip_img_embed)
+                        xt, _ = self.decoder_net.rwd_unclip(xt, pred, t_, t_pre)
 
                     x_hat = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
                     if self.norm_clip_embed:

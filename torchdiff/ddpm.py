@@ -54,7 +54,7 @@ class ForwardDDPM(nn.Module):
     Also computes the appropriate training target depending on the
     chosen prediction parameterization (x0 or v).
     """
-    def __init__(self, scheduler: nn.Module, pred_type: str = "v") -> None:
+    def __init__(self, scheduler: nn.Module, pred_type: str = "noise") -> None:
         """
         Initialize the forward diffusion process.
 
@@ -125,7 +125,7 @@ class ReverseDDPM(nn.Module):
     def __init__(
             self,
             scheduler: nn.Module,
-            pred_type: str = "v",
+            pred_type: str = "noise",
             var_type: str = "fixed_small",
             clip_out: bool = True
     ) -> None:
@@ -417,10 +417,10 @@ class TrainDDPM(nn.Module):
     val_loader : torch.utils.data.DataLoader, optional
         DataLoader for validation data, default None.
     max_epochs : int, optional
-        Maximum number of training epochs (default: 1000).
-    device : torch.device, optional
-        Device for computation (default: CUDA if available, else CPU).
-    cond_model : nn.Module, optional
+        Maximum number of training epochs (default: 100).
+    device : str
+        Device for computation (default: CUDA).
+    cond_net : nn.Module, optional
         Model for conditional generation (e.g., text embeddings), default None.
     metrics_ : object, optional
         Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
@@ -429,11 +429,11 @@ class TrainDDPM(nn.Module):
     max_token_length : int, optional
         Maximum length for tokenized prompts (default: 77).
     store_path : str, optional
-        Path to save model checkpoints (default: "ddpm_model").
+        Path to save model checkpoints (default: "ddpm_train").
     patience : int, optional
-        Number of epochs to wait for improvement before early stopping (default: 100).
+        Number of epochs to wait for improvement before early stopping (default: 20).
     warmup_steps : int, optional
-        Number of epochs for learning rate warmup (default: 100).
+        Number of epochs for learning rate warmup (default: 1000).
     val_freq : int, optional
         Frequency (in epochs) for validation (default: 10).
     norm_range : tuple, optional
@@ -458,15 +458,15 @@ class TrainDDPM(nn.Module):
             optim: torch.optim.Optimizer,
             loss_fn: Callable,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
-            max_epochs: int = 1000,
+            max_epochs: int = 100,
             device: str = 'cuda',
-            cond_model: Optional[torch.nn.Module] = None,
+            cond_net: Optional[torch.nn.Module] = None,
             metrics_: Optional[Any] = None,
-            bert_tokenizer: Optional[BertTokenizer] = None,
+            tokenizer: Optional[BertTokenizer] = None,
             max_token_length: int = 77,
             store_path: Optional[str] = None,
-            patience: int = 100,
-            warmup_steps: int = 10000,
+            patience: int = 20,
+            warmup_steps: int = 1000,
             val_freq: int = 10,
             norm_range: Tuple[float, float] = (-1.0, 1.0),
             norm_output: bool = True,
@@ -490,12 +490,12 @@ class TrainDDPM(nn.Module):
         self.diff_net = diff_net.to(self.device)
         self.fwd_ddpm = fwd_ddpm.to(self.device)
         self.rwd_ddpm = rwd_ddpm.to(self.device)
-        self.cond_model = cond_model.to(self.device) if cond_model else None
+        self.cond_net = cond_net.to(self.device) if cond_net else None
 
         self.metrics_ = metrics_
         self.optim = optim
         self.loss_fn = loss_fn
-        self.store_path = store_path or "ddpm_model"
+        self.store_path = store_path or "ddpm_train"
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.max_epochs = max_epochs
@@ -516,13 +516,13 @@ class TrainDDPM(nn.Module):
             factor=0.5
         )
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
-        if bert_tokenizer is None:
+        if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
             except Exception as e:
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
         else:
-            self.tokenizer = bert_tokenizer
+            self.tokenizer = tokenizer
 
     def _setup_ddp(self) -> None:
         """Setup Distributed Data Parallel training configuration.
@@ -591,14 +591,14 @@ class TrainDDPM(nn.Module):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         self.diff_net.load_state_dict(state_dict)
 
-        if self.cond_model is not None:
+        if self.cond_net is not None:
             if 'model_state_dict_cond' in checkpoint and checkpoint['model_state_dict_cond'] is not None:
                 cond_state_dict = checkpoint['model_state_dict_cond']
                 if self.use_ddp and not any(key.startswith('module.') for key in cond_state_dict.keys()):
                     cond_state_dict = {f'module.{k}': v for k, v in cond_state_dict.items()}
                 elif not self.use_ddp and any(key.startswith('module.') for key in cond_state_dict.keys()):
                     cond_state_dict = {k.replace('module.', ''): v for k, v in cond_state_dict.items()}
-                self.cond_model.load_state_dict(cond_state_dict)
+                self.cond_net.load_state_dict(cond_state_dict)
             else:
                 warnings.warn(
                     "Checkpoint contains no 'model_state_dict_cond' or it is None, "
@@ -666,9 +666,9 @@ class TrainDDPM(nn.Module):
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
-            if self.cond_model is not None:
-                self.cond_model = DDP(
-                    self.cond_model,
+            if self.cond_net is not None:
+                self.cond_net = DDP(
+                    self.cond_net,
                     device_ids=[self.ddp_local_rank],
                     find_unused_parameters=True
                 )
@@ -682,20 +682,17 @@ class TrainDDPM(nn.Module):
 
         Returns
         -------
-        train_losses : list of float
-             List of mean training losses per epoch.
-        best_val_loss : float
-             Best validation or training loss achieved.
+        losses : a dictionary contains train and validation losses
         """
         self.diff_net.train()
-        if self.cond_model is not None:
-            self.cond_model.train()
+        if self.cond_net is not None:
+            self.cond_net.train()
 
         if self.use_comp:
             try:
                 self.diff_net = torch.compile(self.diff_net)
-                if self.cond_model is not None:
-                    self.cond_model = torch.compile(self.cond_model)
+                if self.cond_net is not None:
+                    self.cond_net = torch.compile(self.cond_net)
             except Exception as e:
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
@@ -710,7 +707,7 @@ class TrainDDPM(nn.Module):
             train_losses_epoch = []
             for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device)
-                if self.cond_model is not None:
+                if self.cond_net is not None:
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
@@ -725,8 +722,8 @@ class TrainDDPM(nn.Module):
                 if (step + 1) % self.grad_acc == 0:
                     scaler.unscale_(self.optim)
                     torch.nn.utils.clip_grad_norm_(self.diff_net.parameters(), max_norm=1.0)
-                    if self.cond_model is not None:
-                        torch.nn.utils.clip_grad_norm_(self.cond_model.parameters(), max_norm=1.0)
+                    if self.cond_net is not None:
+                        torch.nn.utils.clip_grad_norm_(self.cond_net.parameters(), max_norm=1.0)
                     scaler.step(self.optim)
                     scaler.update()
                     self.optim.zero_grad()
@@ -806,7 +803,7 @@ class TrainDDPM(nn.Module):
         ).to(self.device)
         input_ids = y_encoded["input_ids"]
         attention_mask = y_encoded["attention_mask"]
-        y_encoded = self.cond_model(input_ids, attention_mask)
+        y_encoded = self.cond_net(input_ids, attention_mask)
         return y_encoded
 
     def _save_checkpoint(self, epoch: int, loss: float, pref: str = "") -> None:
@@ -827,10 +824,10 @@ class TrainDDPM(nn.Module):
                 else self.diff_net.state_dict()
             )
             cond_state = None
-            if self.cond_model is not None:
+            if self.cond_net is not None:
                 cond_state = (
-                    self.cond_model.module.state_dict() if self.use_ddp
-                    else self.cond_model.state_dict()
+                    self.cond_net.module.state_dict() if self.use_ddp
+                    else self.cond_net.state_dict()
                 )
             checkpoint = {
                 'epoch': epoch,
@@ -846,7 +843,7 @@ class TrainDDPM(nn.Module):
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
-            print(f"Model saved at epoch {epoch} with loss: {loss}")
+            print(f"Model saved at epoch {epoch} with loss: {loss:.4f}")
         except Exception as e:
             print(f"Failed to save model: {e}")
 
@@ -864,8 +861,8 @@ class TrainDDPM(nn.Module):
             (val_loss, fid, mse, psnr, ssim, lpips_score) where metrics may be None if not computed.
         """
         self.diff_net.eval()
-        if self.cond_model is not None:
-            self.cond_model.eval()
+        if self.cond_net is not None:
+            self.cond_net.eval()
 
         val_losses = []
         fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
@@ -873,7 +870,7 @@ class TrainDDPM(nn.Module):
             for x, y in self.val_loader:
                 x = x.to(self.device)
                 x_orig = x.clone()
-                if self.cond_model is not None:
+                if self.cond_net is not None:
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
@@ -918,8 +915,8 @@ class TrainDDPM(nn.Module):
         lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
 
         self.diff_net.train()
-        if self.cond_model is not None:
-            self.cond_model.train()
+        if self.cond_net is not None:
+            self.cond_net.train()
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
 
 
@@ -952,8 +949,8 @@ class SampleDDPM(nn.Module):
         Number of images to generate per batch (default: 1).
     in_channels : int, optional
         Number of input channels for generated images (default: 3).
-    device : torch.device, optional
-        Device for computation (default: CUDA if available, else CPU).
+    device : str, device type
+        Device for computation (default: CUDA).
     norm_range : tuple, optional
         Tuple of (min, max) for clamping generated images (default: (-1, 1)).
     """
@@ -967,7 +964,7 @@ class SampleDDPM(nn.Module):
             max_token_length: int = 77,
             batch_size: int = 1,
             in_channels: int = 3,
-            device: Optional[str] = None,
+            device: str = 'cuda',
             norm_range: Tuple[float, float] = (-1.0, 1.0)
     ) -> None:
         super().__init__()
@@ -1045,7 +1042,7 @@ class SampleDDPM(nn.Module):
         save_imgs : bool, optional
             If True, saves generated images to `save_path` (default: True).
         save_path : str, optional
-            Directory to save generated images (default: "ddpm_generated").
+            Directory to save generated images (default: "ddpm_samples").
 
         Returns
         -------

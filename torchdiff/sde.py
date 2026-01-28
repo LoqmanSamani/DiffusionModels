@@ -45,7 +45,7 @@ import os
 
 class ForwardSDE(nn.Module):
     """
-    Unified forward diffusion process for continuous-time diffusion models.
+    Forward diffusion process for continuous-time diffusion models.
 
     This module implements the marginal forward noising process
     p(x_t | x_0) for several commonly used stochastic differential equation
@@ -187,12 +187,12 @@ class ForwardSDE(nn.Module):
 
         Arguments:
             x0: (batch, ..., dims) clean data
-            noise: (batch, ..., dims) standard Gaussian noise
             t: (batch, ) continuous time in [0, 1]
+            noise: (batch, ..., dims) standard Gaussian noise
 
         Returns:
             xt: (batch, ..., dims) noised data
-            score: (batch, ..., dims) true score ∇_x log p(x_t | x_0)
+            target: (batch, ..., dims) true score/added noise
         """
         mean_coeff, std = self.get_forward_params(t)
         # broadcast to match x0 shape
@@ -211,7 +211,7 @@ class ForwardSDE(nn.Module):
 
 class ReverseSDE(nn.Module):
     """
-    Unified reverse-time diffusion process for continuous-time sde diffusion models
+    Reverse-time diffusion process for continuous-time sde diffusion models
 
     This module implements a single-step numerical solver for the *reverse-time*
     stochastic differential equation (SDE) or probability flow ordinary
@@ -554,20 +554,20 @@ class TrainSDE(nn.Module):
         Maximum number of training epochs (default: 1000).
     device : torch.device, optional
         Device for computation (default: CUDA if available, else CPU).
-    cond_model : nn.Module, optional
+    cond_net : nn.Module, optional
         Model for conditional generation (e.g., text embeddings), default None.
     metrics_ : object, optional
         Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
-    bert_tokenizer : BertTokenizer, optional
+    tokenizer : BertTokenizer, optional
         Tokenizer for processing text prompts, default None (loads "bert-base-uncased").
     max_token_length : int, optional
         Maximum length for tokenized prompts (default: 77).
     store_path : str, optional
-        Path to save model checkpoints (default: "sde_model.pth").
+        Path to save model checkpoints (default: "sde_train").
     patience : int, optional
-        Number of epochs to wait for improvement before early stopping (default: 10).
-    warmup_epochs : int, optional
-        Number of epochs for learning rate warmup (default: 100).
+        Number of epochs to wait for improvement before early stopping (default: 20).
+    warmup_steps : int, optional
+        Number of steps for learning rate warmup (default: 1000).
     val_freq : int, optional
         Frequency (in epochs) for validation (default: 10).
     norm_range : tuple, optional
@@ -582,6 +582,10 @@ class TrainSDE(nn.Module):
         Number of epochs before printing loss.
     use_comp : bool, optional
         whether the model is internally compiled using torch.compile (default: false)
+    time_eps: float, optional
+        lower bound for diffusion time sampling (time_eps, 1.0) (default: 1e-5)
+    num_steps: int, optional
+        number of time staps for sampling during validation (default: 400)
     """
     def __init__(
             self,
@@ -594,13 +598,13 @@ class TrainSDE(nn.Module):
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             max_epochs: int = 1000,
             device: str = 'cuda',
-            cond_model: Optional[torch.nn.Module] = None,
+            cond_net: Optional[torch.nn.Module] = None,
             metrics_: Optional[Any] = None,
-            bert_tokenizer: Optional[BertTokenizer] = None,
+            tokenizer: Optional[BertTokenizer] = None,
             max_token_length: int = 77,
             store_path: Optional[str] = None,
-            patience: int = 100,
-            warmup_steps: int = 10000,
+            patience: int = 20,
+            warmup_steps: int = 1000,
             val_freq: int = 10,
             norm_range: Tuple[float, float] = (-1.0, 1.0),
             norm_output: bool = True,
@@ -627,12 +631,12 @@ class TrainSDE(nn.Module):
         self.score_net = score_net.to(self.device)
         self.fwd_sde = fwd_sde.to(self.device)
         self.rwd_sde = rwd_sde.to(self.device)
-        self.cond_model = cond_model.to(self.device) if cond_model else None
+        self.cond_net = cond_net.to(self.device) if cond_net else None
 
         self.metrics_ = metrics_
         self.optim = optim
         self.loss_fn = loss_fn
-        self.store_path = store_path or "sde_model"
+        self.store_path = store_path or "sde_train"
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.max_epochs = max_epochs
@@ -656,13 +660,13 @@ class TrainSDE(nn.Module):
             factor=0.5
         )
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
-        if bert_tokenizer is None:
+        if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
             except Exception as e:
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
         else:
-            self.tokenizer = bert_tokenizer
+            self.tokenizer = tokenizer
 
     def _setup_ddp(self) -> None:
         """Setup Distributed Data Parallel training configuration.
@@ -730,14 +734,14 @@ class TrainSDE(nn.Module):
         elif not self.use_ddp and any(key.startswith('module.') for key in state_dict.keys()):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         self.score_net.load_state_dict(state_dict)
-        if self.cond_model is not None:
+        if self.cond_net is not None:
             if 'model_state_dict_cond' in checkpoint and checkpoint['model_state_dict_cond'] is not None:
                 cond_state_dict = checkpoint['model_state_dict_cond']
                 if self.use_ddp and not any(key.startswith('module.') for key in cond_state_dict.keys()):
                     cond_state_dict = {f'module.{k}': v for k, v in cond_state_dict.items()}
                 elif not self.use_ddp and any(key.startswith('module.') for key in cond_state_dict.keys()):
                     cond_state_dict = {k.replace('module.', ''): v for k, v in cond_state_dict.items()}
-                self.cond_model.load_state_dict(cond_state_dict)
+                self.cond_net.load_state_dict(cond_state_dict)
             else:
                 warnings.warn(
                     "Checkpoint contains no 'model_state_dict_cond' or it is None, "
@@ -804,9 +808,9 @@ class TrainSDE(nn.Module):
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
-            if self.cond_model is not None:
-                self.cond_model = DDP(
-                    self.cond_model,
+            if self.cond_net is not None:
+                self.cond_net = DDP(
+                    self.cond_net,
                     device_ids=[self.ddp_local_rank],
                     find_unused_parameters=True
                 )
@@ -820,10 +824,7 @@ class TrainSDE(nn.Module):
 
         Returns
         -------
-        train_losses : list of float
-             List of mean training losses per epoch.
-        best_val_loss : float
-             Best validation or training loss achieved.
+        losses : dictionary of train and validation losses.
 
         **Notes**
 
@@ -832,14 +833,14 @@ class TrainSDE(nn.Module):
         - Early stopping is triggered if no improvement occurs for `patience` epochs.
         """
         self.score_net.train()
-        if self.cond_model is not None:
-            self.cond_model.train()
+        if self.cond_net is not None:
+            self.cond_net.train()
 
         if self.use_comp:
             try:
                 self.score_net = torch.compile(self.score_net)
-                if self.cond_model is not None:
-                    self.cond_model = torch.compile(self.cond_model)
+                if self.cond_net is not None:
+                    self.cond_net = torch.compile(self.cond_net)
             except Exception as e:
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
@@ -855,7 +856,7 @@ class TrainSDE(nn.Module):
             train_losses_epoch = []
             for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device)
-                if self.cond_model is not None:
+                if self.cond_net is not None:
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
@@ -875,8 +876,8 @@ class TrainSDE(nn.Module):
                 if (step + 1) % self.grad_acc == 0:
                     scaler.unscale_(self.optim)
                     torch.nn.utils.clip_grad_norm_(self.score_net.parameters(), max_norm=1.0)
-                    if self.cond_model is not None:
-                        torch.nn.utils.clip_grad_norm_(self.cond_model.parameters(), max_norm=1.0)
+                    if self.cond_net is not None:
+                        torch.nn.utils.clip_grad_norm_(self.cond_net.parameters(), max_norm=1.0)
                     scaler.step(self.optim)
                     scaler.update()
                     self.optim.zero_grad()
@@ -958,7 +959,7 @@ class TrainSDE(nn.Module):
         ).to(self.device)
         input_ids = y_encoded["input_ids"]
         attention_mask = y_encoded["attention_mask"]
-        y_encoded = self.cond_model(input_ids, attention_mask)
+        y_encoded = self.cond_net(input_ids, attention_mask)
         return y_encoded
 
 
@@ -980,10 +981,10 @@ class TrainSDE(nn.Module):
                 else self.score_net.state_dict()
             )
             cond_state = None
-            if self.cond_model is not None:
+            if self.cond_net is not None:
                 cond_state = (
-                    self.cond_model.module.state_dict() if self.use_ddp
-                    else self.cond_model.state_dict()
+                    self.cond_net.module.state_dict() if self.use_ddp
+                    else self.cond_net.state_dict()
                 )
             checkpoint = {
                 'epoch': epoch,
@@ -999,8 +1000,7 @@ class TrainSDE(nn.Module):
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
-
-            print(f"Model saved at epoch {epoch} with loss: {loss}")
+            print(f"Model saved at epoch {epoch} with loss: {loss:.4f}")
         except Exception as e:
             print(f"Failed to save model: {e}")
 
@@ -1029,8 +1029,8 @@ class TrainSDE(nn.Module):
             Mean LPIPS score
         """
         self.score_net.eval()
-        if self.cond_model is not None:
-            self.cond_model.eval()
+        if self.cond_net is not None:
+            self.cond_net.eval()
 
         val_losses = []
         fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
@@ -1039,7 +1039,7 @@ class TrainSDE(nn.Module):
                 for x, y in self.val_loader:
                     x = x.to(self.device)
                     x_orig = x.clone()
-                    if self.cond_model is not None:
+                    if self.cond_net is not None:
                         y_encoded = self._process_conditional_input(y)
                     else:
                         y_encoded = None
@@ -1096,8 +1096,8 @@ class TrainSDE(nn.Module):
         lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
 
         self.score_net.train()
-        if self.cond_model is not None:
-            self.cond_model.train()
+        if self.cond_net is not None:
+            self.cond_net.train()
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
 
 
@@ -1118,7 +1118,7 @@ class SampleSDE(nn.Module):
         Model to predict noise added during the forward SDE process.
     img_size : tuple
         Shape of generated images as (height, width).
-    cond_model : nn.Module, optional
+    cond_net : nn.Module, optional
         Model for conditional generation (e.g., TextEncoder), default None.
     tokenizer : str or BertTokenizer, optional
         Tokenizer for processing text prompts, default "bert-base-uncased".
@@ -1128,8 +1128,8 @@ class SampleSDE(nn.Module):
         Number of images to generate per batch (default: 1).
     in_channels : int, optional
         Number of input channels for generated images (default: 3).
-    device : torch.device, optional
-        Device for computation (default: CUDA if available, else CPU).
+    device : srt, optional
+        Device for computation (default: CUDA).
     norm_range : tuple, optional
         Range for clamping generated images (min, max), default (-1, 1).
     """
@@ -1138,8 +1138,7 @@ class SampleSDE(nn.Module):
             rwd_sde: torch.nn.Module,
             score_net: torch.nn.Module,
             img_size: Tuple[int, int],
-            pred_noise: bool,
-            cond_model: Optional[torch.nn.Module] = None,
+            cond_net: Optional[torch.nn.Module] = None,
             tokenizer: str = "bert-base-uncased",
             max_token_length: int = 77,
             batch_size: int = 1,
@@ -1155,8 +1154,7 @@ class SampleSDE(nn.Module):
             self.device = device
         self.rwd_sde = rwd_sde.to(self.device)
         self.score_net = score_net.to(self.device)
-        self.cond_model = cond_model.to(self.device) if cond_model else None
-        self.pred_noise = pred_noise
+        self.cond_net = cond_net.to(self.device) if cond_net else None
         self.tokenizer = BertTokenizer.from_pretrained(tokenizer)
         self.max_token_length = max_token_length
         self.in_channels = in_channels
@@ -1225,28 +1223,28 @@ class SampleSDE(nn.Module):
         save_imgs : bool, optional
             If True, saves generated images to `save_path` (default: True).
         save_path : str, optional
-            Directory to save generated images (default: "sde_generated").
+            Directory to save generated images (default: "sde_samples").
 
         Returns
         -------
         samps (torch.Tensor) - Generated images, shape (batch_size, in_channels, height, width).
         If `norm_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `norm_range`.
         """
-        if conds is not None and self.cond_model is None:
+        if conds is not None and self.cond_net is None:
             raise ValueError("Conditions provided but no conditional model specified")
-        if conds is None and self.cond_model is not None:
+        if conds is None and self.cond_net is not None:
             raise ValueError("Conditions must be provided for conditional model")
 
         init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1], device=self.device)
         self.score_net.eval()
         self.rwd_sde.eval()
-        if self.cond_model:
-            self.cond_model.eval()
+        if self.cond_net:
+            self.cond_net.eval()
 
-        if self.cond_model is not None and conds is not None:
+        if self.cond_net is not None and conds is not None:
             input_ids, attention_masks = self.tokenize(conds)
             key_padding_mask = (attention_masks == 0)
-            y = self.cond_model(input_ids, key_padding_mask)
+            y = self.cond_net(input_ids, key_padding_mask)
         else:
             y = None
         t_schedule = torch.linspace(1.0, self.time_eps, num_steps + 1, device=self.device)
@@ -1296,6 +1294,6 @@ class SampleSDE(nn.Module):
         self.device = device
         self.score_net.to(device)
         self.rwd_sde.to(device)
-        if self.cond_model:
-            self.cond_model.to(device)
+        if self.cond_net:
+            self.cond_net.to(device)
         return super().to(device)

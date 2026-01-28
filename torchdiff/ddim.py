@@ -393,49 +393,49 @@ class TrainDDIM(nn.Module):
 
     Parameters
     ----------
-    `noise_predictor` : nn.Module
-        Model to predict noise added during the forward diffusion process.
+    `diff_net` : nn.Module
+        Main model to predict noise/v/x0
     fwd_ddim : nn.Module
         Forward DDIM diffusion module for adding noise.
     rwd_ddim: nn.Module
         Reverse DDIM diffusion module for denoising.
     `data_loader` : torch.utils.data.DataLoader
         DataLoader for training data.
-    `optimizer` : torch.optim.Optimizer
+    `optim` : torch.optim.Optimizer
         Optimizer for training the noise predictor and conditional model (if applicable).
-    `objective` : callable
+    `loss_fn` : callable
         Loss function to compute the difference between predicted and actual noise.
     `val_loader` : torch.utils.data.DataLoader, optional
         DataLoader for validation data, default None.
     `max_epochs` : int, optional
-        Maximum number of training epochs (default: 1000).
-    `device` : torch.device, optional
-        Device for computation (default: CUDA if available, else CPU).
-    `conditional_model` : nn.Module, optional
+        Maximum number of training epochs (default: 100).
+    `device` : str
+        Device for computation (default: CUDA).
+    `cond_net` : nn.Module, optional
         Model for conditional generation (e.g., text embeddings), default None.
     `metrics_` : object, optional
         Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
-    `bert_tokenizer` : BertTokenizer, optional
+    `tokenizer` : BertTokenizer, optional
         Tokenizer for processing text prompts, default None (loads "bert-base-uncased").
     `max_token_length` : int, optional
         Maximum length for tokenized prompts (default: 77).
     `store_path` : str, optional
-        Path to save model checkpoints (default: "ddim_model.pth").
+        Path to save model checkpoints (default: "ddim_train").
     `patience` : int, optional
-        Number of epochs to wait for improvement before early stopping (default: 100).
-    `warmup_epochs` : int, optional
-        Number of epochs for learning rate warmup (default: 100).
-    `val_frequency` : int, optional
+        Number of epochs to wait for improvement before early stopping (default: 20).
+    `warmup_steps` : int, optional
+        Number of epochs for learning rate warmup (default: 1000).
+    `val_freq` : int, optional
         Frequency (in epochs) for validation (default: 10).
-    `output_range` : tuple, optional
+    `norm_range` : tuple, optional
         Range for clamping generated images (default: (-1, 1)).
-    `normalize_output` : bool, optional
+    `norm_output` : bool, optional
         Whether to normalize generated images to [0, 1] for metrics (default: True).
     `use_ddp` : bool, optional
         Whether to use Distributed Data Parallel training (default: False).
-    `grad_accumulation_steps` : int, optional
+    `grad_acc` : int, optional
         Number of gradient accumulation steps before optimizer update (default: 1).
-    `log_frequency` : int, optional
+    `log_freq` : int, optional
         Number of epochs before printing loss.
     use_comp : bool, optional
         whether the model is internally compiled using torch.compile (default: false)
@@ -449,15 +449,15 @@ class TrainDDIM(nn.Module):
             optim: torch.optim.Optimizer,
             loss_fn: Callable,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
-            max_epochs: int = 1000,
+            max_epochs: int = 100,
             device: str = 'cuda',
-            cond_model: torch.nn.Module = None,
+            cond_net: torch.nn.Module = None,
             metrics_: Optional[Any] = None,
-            bert_tokenizer: Optional[BertTokenizer] = None,
+            tokenizer: Optional[BertTokenizer] = None,
             max_token_length: int = 77,
             store_path: Optional[str] = None,
-            patience: int = 100,
-            warmup_steps: int = 10000,
+            patience: int = 20,
+            warmup_steps: int = 1000,
             val_freq: int = 10,
             norm_range: Tuple[float, float] = (-1, 1),
             norm_output: bool = True,
@@ -481,11 +481,11 @@ class TrainDDIM(nn.Module):
         self.diff_net = diff_net.to(self.device)
         self.fwd_ddim = fwd_ddim.to(self.device)
         self.rwd_ddim = rwd_ddim.to(self.device)
-        self.cond_model = cond_model.to(self.device) if cond_model else None
+        self.cond_net = cond_net.to(self.device) if cond_net else None
         self.metrics_ = metrics_
         self.optim = optim
         self.loss_fn = loss_fn
-        self.store_path = store_path or "ddim_model"
+        self.store_path = store_path or "ddim_train"
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.max_epochs = max_epochs
@@ -506,7 +506,7 @@ class TrainDDIM(nn.Module):
             factor=0.5
         )
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
-        if bert_tokenizer is None:
+        if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
             except Exception as e:
@@ -574,14 +574,14 @@ class TrainDDIM(nn.Module):
         elif not self.use_ddp and any(key.startswith('module.') for key in state_dict.keys()):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         self.diff_net.load_state_dict(state_dict)
-        if self.cond_model is not None:
+        if self.cond_net is not None:
             if 'model_state_dict_cond' in checkpoint and checkpoint['model_state_dict_cond'] is not None:
                 cond_state_dict = checkpoint['model_state_dict_cond']
                 if self.use_ddp and not any(key.startswith('module.') for key in cond_state_dict.keys()):
                     cond_state_dict = {f'module.{k}': v for k, v in cond_state_dict.items()}
                 elif not self.use_ddp and any(key.startswith('module.') for key in cond_state_dict.keys()):
                     cond_state_dict = {k.replace('module.', ''): v for k, v in cond_state_dict.items()}
-                self.cond_model.load_state_dict(cond_state_dict)
+                self.cond_net.load_state_dict(cond_state_dict)
             else:
                 warnings.warn(
                     "Checkpoint contains no 'model_state_dict_cond' or it is None, "
@@ -625,8 +625,8 @@ class TrainDDIM(nn.Module):
         ----------
         `optimizer` : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
-        `warmup_epochs` : int
-            Number of epochs for the warmup phase.
+        `warmup_steps` : int
+            Number of steps for the warmup phase.
 
         Returns
         -------
@@ -646,9 +646,9 @@ class TrainDDIM(nn.Module):
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
-            if self.cond_model is not None:
-                self.cond_model = DDP(
-                    self.cond_model,
+            if self.cond_net is not None:
+                self.cond_net = DDP(
+                    self.cond_net,
                     device_ids=[self.ddp_local_rank],
                     find_unused_parameters=True
                 )
@@ -662,20 +662,17 @@ class TrainDDIM(nn.Module):
 
         Returns
         -------
-        train_losses : list of float
-             List of mean training losses per epoch.
-        best_val_loss : float
-             Best validation or training loss achieved.
+        losses: dictionlary contains train and validation losses
         """
         self.diff_net.train()
-        if self.cond_model is not None:
-            self.cond_model.train()
+        if self.cond_net is not None:
+            self.cond_net.train()
 
         if self.use_comp:
             try:
                 self.diff_net = torch.compile(self.diff_net)
-                if self.cond_model is not None:
-                    self.cond_model = torch.compile(self.cond_model)
+                if self.cond_net is not None:
+                    self.cond_net = torch.compile(self.cond_net)
             except Exception as e:
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
@@ -690,7 +687,7 @@ class TrainDDIM(nn.Module):
             train_losses_epoch = []
             for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device)
-                if self.cond_model is not None:
+                if self.cond_net is not None:
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
@@ -705,8 +702,8 @@ class TrainDDIM(nn.Module):
                 if (step + 1) % self.grad_acc == 0:
                     scaler.unscale_(self.optim)
                     torch.nn.utils.clip_grad_norm_(self.diff_net.parameters(), max_norm=1.0)
-                    if self.cond_model is not None:
-                        torch.nn.utils.clip_grad_norm_(self.cond_model.parameters(), max_norm=1.0)
+                    if self.cond_net is not None:
+                        torch.nn.utils.clip_grad_norm_(self.cond_net.parameters(), max_norm=1.0)
                     scaler.step(self.optim)
                     scaler.update()
                     self.optim.zero_grad()
@@ -786,7 +783,7 @@ class TrainDDIM(nn.Module):
         ).to(self.device)
         input_ids = y_encoded["input_ids"]
         attention_mask = y_encoded["attention_mask"]
-        y_encoded = self.cond_model(input_ids, attention_mask)
+        y_encoded = self.cond_net(input_ids, attention_mask)
         return y_encoded
 
     def _save_checkpoint(self, epoch: int, loss: float, pref: str = "") -> None:
@@ -807,10 +804,10 @@ class TrainDDIM(nn.Module):
                 else self.diff_net.state_dict()
             )
             cond_state = None
-            if self.cond_model is not None:
+            if self.cond_net is not None:
                 cond_state = (
-                    self.cond_model.module.state_dict() if self.use_ddp
-                    else self.cond_model.state_dict()
+                    self.cond_net.module.state_dict() if self.use_ddp
+                    else self.cond_net.state_dict()
                 )
             checkpoint = {
                 'epoch': epoch,
@@ -826,8 +823,7 @@ class TrainDDIM(nn.Module):
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
-
-            print(f"Model saved at epoch {epoch} with loss: {loss}")
+            print(f"Model saved at epoch {epoch} with loss: {loss:.4f}")
         except Exception as e:
             print(f"Failed to save model: {e}")
 
@@ -856,8 +852,8 @@ class TrainDDIM(nn.Module):
         """
 
         self.diff_net.eval()
-        if self.cond_model is not None:
-            self.cond_model.eval()
+        if self.cond_net is not None:
+            self.cond_net.eval()
 
         val_losses = []
         fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
@@ -865,7 +861,7 @@ class TrainDDIM(nn.Module):
             for x, y in self.val_loader:
                 x = x.to(self.device)
                 x_orig = x.clone()
-                if self.cond_model is not None:
+                if self.cond_net is not None:
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
@@ -915,8 +911,8 @@ class TrainDDIM(nn.Module):
         lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
 
         self.diff_net.train()
-        if self.cond_model is not None:
-            self.cond_model.train()
+        if self.cond_net is not None:
+            self.cond_net.train()
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
 
 ###==================================================================================================================###
@@ -931,13 +927,13 @@ class SampleDDIM(nn.Module):
 
     Parameters
     ----------
-    `reverse_diffusion` : nn.Module
+    `rwd_ddim` : nn.Module
         Reverse diffusion module (e.g., ReverseDDIM) for the reverse process.
-    `noise_predictor` : nn.Module
-        Trained model to predict noise at each time step.
-    `image_shape` : tuple
+    `diff_net` : nn.Module
+        Trained model to predict noise/v/x0 at each time step.
+    `img_size` : tuple
         Tuple of (height, width) specifying the generated image dimensions.
-    `conditional_model` : nn.Module, optional
+    `cond_net` : nn.Module, optional
         Model for conditional generation (e.g., text embeddings), default None.
     `tokenizer` : str, optional
         Pretrained tokenizer name from Hugging Face (default: "bert-base-uncased").
@@ -947,9 +943,9 @@ class SampleDDIM(nn.Module):
         Number of images to generate per batch (default: 1).
     `in_channels` : int, optional
         Number of input channels for generated images (default: 3).
-    `device` : torch.device, optional
-        Device for computation (default: CUDA if available, else CPU).
-    `output_range` : tuple, optional
+    `device` : str
+        Device for computation (default: CUDA).
+    `norm_range` : tuple, optional
         Tuple of (min, max) for clamping generated images (default: (-1, 1)).
     """
     def __init__(
@@ -957,7 +953,7 @@ class SampleDDIM(nn.Module):
             rwd_ddim: torch.nn.Module,
             diff_net: torch.nn.Module,
             img_size: Tuple[int, int],
-            cond_model: Optional[torch.nn.Module] = None,
+            cond_net: Optional[torch.nn.Module] = None,
             tokenizer: str = "bert-base-uncased",
             max_token_length: int = 77,
             batch_size: int = 1,
@@ -972,7 +968,7 @@ class SampleDDIM(nn.Module):
             self.device = device
         self.rwd_ddim = rwd_ddim.to(self.device)
         self.diff_net = diff_net.to(self.device)
-        self.cond_model = cond_model.to(self.device) if cond_model else None
+        self.cond_net = cond_net.to(self.device) if cond_net else None
         self.tokenizer = BertTokenizer.from_pretrained(tokenizer)
         self.max_token_length = max_token_length
         self.in_channels = in_channels
@@ -1035,21 +1031,21 @@ class SampleDDIM(nn.Module):
         `save_imgs` : bool, optional
             If True, saves generated images to `save_path` (default: True).
         `save_path` : str, optional
-            Directory to save generated images (default: "ddim_generated").
+            Directory to save generated images (default: "ddim_samples").
 
         Returns
         -------
         samps (torch.Tensor) - Generated images, shape (batch_size, in_channels, height, width).
         """
-        if conds is not None and self.cond_model is None:
+        if conds is not None and self.cond_net is None:
             raise ValueError("Conditions provided but no conditional model specified")
-        if conds is None and self.cond_model is not None:
+        if conds is None and self.cond_net is not None:
             raise ValueError("Conditions must be provided for conditional model")
 
         init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1]).to(self.device)
         self.diff_net.eval()
-        if self.cond_model:
-            self.cond_model.eval()
+        if self.cond_net:
+            self.cond_net.eval()
         timesteps = self.rwd_ddim.vs.inference_timesteps
         timesteps = timesteps.flip(0)
         iterator = tqdm(
@@ -1059,10 +1055,10 @@ class SampleDDIM(nn.Module):
             dynamic_ncols=True,
             leave=True,
         )
-        if self.cond_model is not None and conds is not None:
+        if self.cond_net is not None and conds is not None:
             input_ids, attention_masks = self.tokenize(conds)
             key_padding_mask = (attention_masks == 0)
-            y = self.cond_model(input_ids, key_padding_mask)
+            y = self.cond_net(input_ids, key_padding_mask)
         else:
             y = None
 
@@ -1070,9 +1066,10 @@ class SampleDDIM(nn.Module):
             xt = init_samps
             for i in iterator:
                 t_current = timesteps[i].item()
-                t_next = timesteps[i + 1].item()
+                t_prev = timesteps[i + 1].item()
+                #assert t_current > t_prev or t_prev == 0
                 time = torch.full((self.batch_size,), t_current, device=self.device, dtype=torch.long)
-                prev_time = torch.full((self.batch_size,), t_next, device=self.device, dtype=torch.long)
+                prev_time = torch.full((self.batch_size,), t_prev, device=self.device, dtype=torch.long)
                 pred = self.diff_net(xt, time, y, clip_embeddings=None)
                 xt, _ = self.rwd_ddim(xt, time, prev_time, pred)
             samps = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
@@ -1081,7 +1078,7 @@ class SampleDDIM(nn.Module):
             if save_imgs:
                 os.makedirs(save_path, exist_ok=True)
                 for i in range(samps.size(0)):
-                    img_path = os.path.join(save_path, f"img_{i + 1}.png")
+                    img_path = os.path.join(save_path, f"img_{i+1}.png")
                     save_image(samps[i], img_path)
         return samps
 
@@ -1102,6 +1099,6 @@ class SampleDDIM(nn.Module):
         """
         self.device = device
         self.diff_net.to(device)
-        if self.cond_model:
-            self.cond_model.to(device)
+        if self.cond_net:
+            self.cond_net.to(device)
         return super().to(device)

@@ -24,9 +24,9 @@ conditional generation with text prompts.
 **Notes**
 
 
-- The `varinace_scheduler` parameter expects an external hyperparameter module (e.g.,
-  VarianceSchedulerDDPM, VarianceSchedulerSDE) as an nn.Module for noise schedule management.
-- AutoencoderLDM serves as the `compressor_model` in TrainLDM and SampleLDM, providing
+- The `scheduler` parameter expects an external hyperparameter module (e.g.,
+  SchedulerDDPM, SchedulerSDE) as an nn.Module for noise schedule management.
+- AutoencoderLDM serves as the `comp_net` in TrainLDM and SampleLDM, providing
   `encode` and `decode` methods for latent space conversion. It supports KL-divergence or
   vector quantization (VQ) regularization, using internal components (DownBlock, UpBlock,
   Conv3, DownSampling, UpSampling, Attention, VectorQuantizer).
@@ -76,7 +76,7 @@ import os
 ###==================================================================================================================###
 
 class TrainLDM(nn.Module):
-    """Trainer for the noise predictor in Latent Diffusion Models.
+    """Trainer for the noise/score/v predictor in Latent Diffusion Models.
 
     Optimizes the noise predictor and conditional model (e.g., TextEncoder)
     to predict noise in the latent space of AutoencoderLDM, using a diffusion model (e.g., DDPM, DDIM, SDE).
@@ -93,8 +93,8 @@ class TrainLDM(nn.Module):
     rwd_diff : ReverseDDPM, ReverseDDIM, or ReverseSDE
         Reverse diffusion model for sampling during validation (default: None).
     diff_net : torch.nn.Module
-        Model to predict noise in the latent space (e.g., NoisePredictor).
-    comp_model : torch.nn.Module
+        Model to predict noise/score/v in the latent space (e.g., DiffusionNetwork).
+    comp_net : torch.nn.Module
         Variational autoencoder for encoding/decoding latents.
     optim : torch.optim.Optimizer
         Optimizer for the noise predictor and conditional model (e.g., Adam).
@@ -104,22 +104,22 @@ class TrainLDM(nn.Module):
         DataLoader for training data.
     val_loader : torch.utils.data.DataLoader, optional
         DataLoader for validation data (default: None).
-    cond_model : TextEncoder, optional
+    cond_net : TextEncoder, optional
         Text encoder with projection layers for conditional generation (default: None).
 
     metrics_ : object, optional
         Metrics object for computing MSE, PSNR, SSIM, FID, and LPIPS (default: None).
     max_epochs : int, optional
-        Maximum number of training epochs (default: 1000).
+        Maximum number of training epochs (default: 100).
     device : str, optional
-        Device for computation (e.g., 'cuda', 'cpu') (default: None).
+        Device for computation (e.g., 'cuda', 'cpu') (default: 'cuda').
     store_path : str, optional
-        Path to save model checkpoints (default: None, uses 'ldm_model.pth').
+        Path to save model checkpoints (default: None, uses 'ldm_train').
     patience : int, optional
         Number of epochs to wait for early stopping if validation loss doesn’t improve
-        (default: 100).
+        (default: 20).
     warmup_steps : int, optional
-        Number of epochs for learning rate warmup (default: 100).
+        Number of steps for learning rate warmup (default: 1000).
     tokenizer : BertTokenizer, optional
         Tokenizer for processing text prompts, default None (loads "bert-base-uncased").
     max_token_length : int, optional
@@ -138,6 +138,10 @@ class TrainLDM(nn.Module):
         Number of epochs before printing loss.
     use_comp : bool, optional
         whether the model is internally compiled using torch.compile (default: false)
+    time_eps: float, optional
+        lower bound for diffusion time sampling (time_eps, 1.0) (default: 1e-5)
+    num_steps: int, optional
+        number of time staps for sampling during validation (default: 400)
     """
 
     def __init__(
@@ -146,18 +150,18 @@ class TrainLDM(nn.Module):
             fwd_diff: torch.nn.Module,
             rwd_diff: torch.nn.Module,
             diff_net: torch.nn.Module,
-            comp_model: torch.nn.Module,
+            comp_net: torch.nn.Module,
             optim: torch.optim.Optimizer,
             loss_fn: Callable,
             train_loader: torch.utils.data.DataLoader,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
-            cond_model: Optional[torch.nn.Module] = None,
+            cond_net: Optional[torch.nn.Module] = None,
             metrics_: Optional[Any] = None,
-            max_epochs: int = 1000,
+            max_epochs: int = 100,
             device: str = 'cuda',
             store_path: Optional[str] = None,
-            patience: int = 100,
-            warmup_steps: int = 10000,
+            patience: int = 20,
+            warmup_steps: int = 1000,
             tokenizer: Optional[BertTokenizer] = None,
             max_token_length: int = 77,
             val_freq: int = 10,
@@ -190,12 +194,12 @@ class TrainLDM(nn.Module):
         self.fwd_diff = fwd_diff.to(self.device)
         self.rwd_diff = rwd_diff.to(self.device)
         self.diff_net = diff_net.to(self.device)
-        self.comp_model = comp_model.to(self.device)
-        self.cond_model = cond_model.to(self.device) if cond_model else None
+        self.comp_net = comp_net.to(self.device)
+        self.cond_net = cond_net.to(self.device) if cond_net else None
         self.metrics_ = metrics_
         self.optim = optim
         self.loss_fn = loss_fn
-        self.store_path = store_path or "ldm_model"
+        self.store_path = store_path or "ldm_train"
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.max_epochs = max_epochs
@@ -288,14 +292,14 @@ class TrainLDM(nn.Module):
         elif not self.use_ddp and any(key.startswith('module.') for key in state_dict.keys()):
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         self.diff_net.load_state_dict(state_dict)
-        if self.cond_model is not None:
+        if self.cond_net is not None:
             if 'model_state_dict_cond' in checkpoint and checkpoint['model_state_dict_cond'] is not None:
                 cond_state_dict = checkpoint['model_state_dict_cond']
                 if self.use_ddp and not any(key.startswith('module.') for key in cond_state_dict.keys()):
                     cond_state_dict = {f'module.{k}': v for k, v in cond_state_dict.items()}
                 elif not self.use_ddp and any(key.startswith('module.') for key in cond_state_dict.keys()):
                     cond_state_dict = {k.replace('module.', ''): v for k, v in cond_state_dict.items()}
-                self.cond_model.load_state_dict(cond_state_dict)
+                self.cond_net.load_state_dict(cond_state_dict)
             else:
                 warnings.warn(
                     "Checkpoint contains no 'model_state_dict_cond' or it is None, "
@@ -337,7 +341,7 @@ class TrainLDM(nn.Module):
         optimizer : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
         warmup_steps : int
-            Number of epochs for the warmup phase.
+            Number of steps for the warmup phase.
 
         Returns
         -------
@@ -359,15 +363,15 @@ class TrainLDM(nn.Module):
                 device_ids=[self.ddp_local_rank],
                 find_unused_parameters=True
             )
-            if self.cond_model is not None:
-                self.cond_model = DDP(
-                    self.cond_model,
+            if self.cond_net is not None:
+                self.cond_net = DDP(
+                    self.cond_net,
                     device_ids=[self.ddp_local_rank],
                     find_unused_parameters=True
                 )
 
     def forward(self) -> Dict:
-        """Trains the noise predictor and conditional model with mixed precision and evaluation metrics.
+        """Trains the noise/score/v/x0 predictor and conditional model with mixed precision and evaluation metrics.
 
         Optimizes the noise predictor and conditional model (e.g., TextEncoder with projection layers)
         using the forward diffusion model’s noise schedule, with text conditioning. Performs validation
@@ -376,21 +380,18 @@ class TrainLDM(nn.Module):
 
         Returns
         -------
-        train_losses : List of float
-            List of mean training losses per epoch.
-        best_val_loss : float
-            Best validation loss achieved (or best training loss if no validation).
+        losses : dictionary of train and validation losses
         """
         self.diff_net.train()
-        if self.cond_model is not None:
-            self.cond_model.train()
-        self.comp_model.eval()  # pre-trained compressor model
+        if self.cond_net is not None:
+            self.cond_net.train()
+        self.comp_net.eval()  # pre-trained compressor model
         if self.use_comp:
             try:
                 self.diff_net = torch.compile(self.diff_net)
-                if self.cond_model is not None:
-                    self.cond_model = torch.compile(self.cond_model)
-                self.comp_model = torch.compile(self.comp_model)
+                if self.cond_net is not None:
+                    self.cond_net = torch.compile(self.cond_net)
+                self.comp_net = torch.compile(self.comp_net)
             except Exception as e:
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
@@ -411,8 +412,8 @@ class TrainLDM(nn.Module):
             for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device)
                 with torch.no_grad():
-                    x, _ = self.comp_model.encode(x)
-                if self.cond_model is not None:
+                    x, _ = self.comp_net.encode(x)
+                if self.cond_net is not None:
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
@@ -430,8 +431,8 @@ class TrainLDM(nn.Module):
                 if (step + 1) % self.grad_acc == 0:
                     scaler.unscale_(self.optim)
                     torch.nn.utils.clip_grad_norm_(self.diff_net.parameters(), max_norm=1.0)
-                    if self.cond_model is not None:
-                        torch.nn.utils.clip_grad_norm_(self.cond_model.parameters(), max_norm=1.0)
+                    if self.cond_net is not None:
+                        torch.nn.utils.clip_grad_norm_(self.cond_net.parameters(), max_norm=1.0)
                     scaler.step(self.optim)
                     scaler.update()
                     self.optim.zero_grad()
@@ -516,7 +517,7 @@ class TrainLDM(nn.Module):
         ).to(self.device)
         input_ids = y_encoded["input_ids"]
         attention_mask = y_encoded["attention_mask"]
-        y_encoded = self.cond_model(input_ids, attention_mask)
+        y_encoded = self.cond_net(input_ids, attention_mask)
         return y_encoded
 
     def _save_checkpoint(self, epoch: int, loss: float, pref: str = "") -> None:
@@ -537,10 +538,10 @@ class TrainLDM(nn.Module):
                 else self.diff_net.state_dict()
             )
             cond_state = None
-            if self.cond_model is not None:
+            if self.cond_net is not None:
                 cond_state = (
-                    self.cond_model.module.state_dict() if self.use_ddp
-                    else self.cond_model.state_dict()
+                    self.cond_net.module.state_dict() if self.use_ddp
+                    else self.cond_net.state_dict()
                 )
             checkpoint = {
                 'epoch': epoch,
@@ -557,7 +558,7 @@ class TrainLDM(nn.Module):
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
 
-            print(f"Model saved at epoch {epoch} with loss: {loss}")
+            print(f"Model saved at epoch {epoch} with loss: {loss:.4f}")
         except Exception as e:
             print(f"Failed to save model: {e}")
 
@@ -574,16 +575,16 @@ class TrainLDM(nn.Module):
             (val_loss, fid, mse, psnr, ssim, lpips_score) where metrics may be None if not computed.
         """
         self.diff_net.eval()
-        if self.cond_model is not None:
-            self.cond_model.eval()
+        if self.cond_net is not None:
+            self.cond_net.eval()
         val_losses = []
         fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
         with torch.no_grad():
             for x, y in self.val_loader:
                 x = x.to(self.device)
                 x_orig = x.clone()
-                x, _ = self.comp_model.encode(x)
-                if self.cond_model is not None:
+                x, _ = self.comp_net.encode(x)
+                if self.cond_net is not None:
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
@@ -626,7 +627,7 @@ class TrainLDM(nn.Module):
                             last_step = (t == self.num_steps - 1)
                             xt = self.rwd_diff(xt, pred, t_batch, dt, last_step=last_step)
 
-                    x_hat = self.comp_model.decode(xt)
+                    x_hat = self.comp_net.decode(xt)
                     x_hat = torch.clamp(x_hat, min=self.norm_range[0], max=self.norm_range[1])
                     if self.norm_output:
                         x_hat = (x_hat - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
@@ -654,8 +655,8 @@ class TrainLDM(nn.Module):
         lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
 
         self.diff_net.train()
-        if self.cond_model is not None:
-            self.cond_model.train()
+        if self.cond_net is not None:
+            self.cond_net.train()
         return val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg
 
 ###==================================================================================================================###
@@ -676,11 +677,11 @@ class SampleLDM(nn.Module):
         Reverse diffusion module (e.g., ReverseDDPM, ReverseDDIM, ReverseSDE).
     diff_net : nn.Module
         Model to predict noise added during the forward diffusion process.
-    comp_model : nn.Module
+    comp_net : nn.Module
         Pre-trained model to encode/decode between image and latent spaces (e.g., AutoencoderLDM).
     img_size : tuple
         Shape of generated images as (height, width).
-    cond_model : nn.Module, optional
+    cond_net : nn.Module, optional
         Model for conditional generation (e.g., TextEncoder), default None.
     tokenizer : str or BertTokenizer, optional
         Tokenizer for processing text prompts, default "bert-base-uncased".
@@ -688,8 +689,8 @@ class SampleLDM(nn.Module):
         Number of images to generate per batch (default: 1).
     in_channels : int, optional
         Number of input channels for latent representations (default: 3).
-    device : torch.device, optional
-        Device for computation (default: CUDA if available, else CPU).
+    device : str
+        Device for computation (default: CUDA).
     max_token_length : int, optional
         Maximum length for tokenized prompts (default: 77).
     norm_range : tuple, optional
@@ -700,10 +701,10 @@ class SampleLDM(nn.Module):
             diff_type: str,
             rwd_diff: torch.nn.Module,
             diff_net: torch.nn.Module,
-            comp_model: torch.nn.Module,
+            comp_net: torch.nn.Module,
             num_steps: int,
             img_size: Tuple[float, float],
-            cond_model: Optional[torch.nn.Module] = None,
+            cond_net: Optional[torch.nn.Module] = None,
             tokenizer: str = "bert-base-uncased",
             batch_size: int = 1,
             in_channels: int = 3,
@@ -722,8 +723,8 @@ class SampleLDM(nn.Module):
         self.num_steps = num_steps
         self.diff_net = diff_net.to(self.device)
         self.rwd_diff = rwd_diff.to(self.device)
-        self.comp_model = comp_model.to(self.device)
-        self.cond_model = cond_model.to(self.device) if cond_model else None
+        self.comp_net = comp_net.to(self.device)
+        self.cond_net = cond_net.to(self.device) if cond_net else None
         self.tokenizer = BertTokenizer.from_pretrained(tokenizer)
         self.in_channels = in_channels
         self.img_size = img_size
@@ -794,29 +795,30 @@ class SampleLDM(nn.Module):
         save_imgs : bool, optional
             If True, saves generated images to `save_path` (default: True).
         save_path : str, optional
-            Directory to save generated images (default: "ldm_generated").
+            Directory to save generated images (default: "ldm_samples").
 
         Returns
         -------
-        generated_imgs (torch.Tensor) - Generated images, shape (batch_size, channels, height, width). If `normalize_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `output_range`.
+        samps (torch.Tensor) - Generated images, shape (batch_size, channels, height, width).
+        If `norm_output` is True, images are normalized to [0, 1]; otherwise, they are clamped to `norm_range`.
         """
-        if conds is not None and self.cond_model is None:
+        if conds is not None and self.cond_net is None:
             raise ValueError("Conditions provided but no conditional model specified")
-        if conds is None and self.cond_model is not None:
+        if conds is None and self.cond_net is not None:
             raise ValueError("Conditions must be provided for conditional model")
         init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1]).to(self.device)
         self.diff_net.eval()
-        self.comp_model.eval()
-        if self.cond_model:
-            self.cond_model.eval()
+        self.comp_net.eval()
+        if self.cond_net:
+            self.cond_net.eval()
 
         with torch.no_grad():
             xt = init_samps
-            xt, _ = self.comp_model.encode(xt)
-            if self.cond_model is not None and conds is not None:
+            xt, _ = self.comp_net.encode(xt)
+            if self.cond_net is not None and conds is not None:
                 input_ids, attention_masks = self.tokenize(conds)
                 key_padding_mask = (attention_masks == 0)
-                y = self.cond_model(input_ids, key_padding_mask)
+                y = self.cond_net(input_ids, key_padding_mask)
             else:
                 y = None
             if self.diff_type == 'ddpm':
@@ -864,7 +866,7 @@ class SampleLDM(nn.Module):
                     last_step = (t == self.num_steps - 1)
                     xt = self.rwd_diff(xt, pred, t_batch, dt, last_step=last_step)
 
-            x = self.comp_model.decode(xt)
+            x = self.comp_net.decode(xt)
             samps = torch.clamp(x, min=self.norm_range[0], max=self.norm_range[1])
             if norm_output:
                 samps = (samps - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
@@ -890,9 +892,9 @@ class SampleLDM(nn.Module):
         self.device = device
         self.diff_net.to(device)
         self.rwd_diff.to(device)
-        self.comp_model.to(device)
-        if self.cond_model:
-            self.cond_model.to(device)
+        self.comp_net.to(device)
+        if self.cond_net:
+            self.cond_net.to(device)
         return super().to(device)
 
 ###==================================================================================================================###
@@ -933,6 +935,10 @@ class AutoencoderLDM(nn.Module):
         KL-divergence (default: False).
     beta : float, optional
         Weight for KL-divergence loss (if `use_vq=False`) (default: 1.0).
+    use_flash: bool, optional
+        if true and available flash attention is used to improve training efficiency (default: True)
+    use_grad_check: bool, optional
+        if true, gradient checkpoint is used (default: False)
     """
     def __init__(
             self,
@@ -1137,11 +1143,11 @@ class VectorQuantizer(nn.Module):
 
     Parameters
     ----------
-    num_embeddings : int
+    num_embed : int
         Number of discrete embeddings in the codebook.
-    embedding_dim : int
+    embed_dim : int
         Dimensionality of each embedding vector (matches input channel dimension).
-    commitment_cost : float, optional
+    commit_cost : float, optional
         Weight for the commitment loss, encouraging inputs to be close to quantized values (default: 0.25).
 
     **Notes**
@@ -1151,13 +1157,13 @@ class VectorQuantizer(nn.Module):
     - The commitment loss encourages input latents to be close to their quantized versions, while the codebook loss updates embeddings to match inputs.
     - A straight-through estimator is used to pass gradients from the quantized output to the input.
     """
-    def __init__(self, num_embeddings: int, embedding_dim: int, commitment_cost: float = 0.25) -> None:
+    def __init__(self, num_embed: int, embed_dim: int, commit_cost: float = 0.25) -> None:
         super().__init__()
-        self.embedding_dim = embedding_dim
-        self.num_embeddings = num_embeddings
-        self.commitment_cost = commitment_cost
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        self.embedding.weight.data.uniform_(-1.0 / num_embeddings, 1.0 / num_embeddings)
+        self.embed_dim = embed_dim
+        self.num_embed = num_embed
+        self.commit_cost = commit_cost
+        self.embed = nn.Embedding(num_embed, embed_dim)
+        self.embed.weight.data.uniform_(-1.0 / num_embed, 1.0 / num_embed)
 
     def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Quantizes latent representations to the nearest codebook embedding.
@@ -1185,17 +1191,17 @@ class VectorQuantizer(nn.Module):
         - The commitment loss is scaled by `commitment_cost`, and the total VQ loss combines commitment and codebook losses.
         """
         batch_size, channels, height, width = z.shape
-        assert channels == self.embedding_dim, f"Expected channel dim {self.embedding_dim}, got {channels}"
-        z_flattened = z.permute(0, 2, 3, 1).reshape(-1, self.embedding_dim)
-        z_sq = torch.sum(z_flattened ** 2, dim=1, keepdim=True)
-        e_sq = torch.sum(self.embedding.weight ** 2, dim=1)
-        distances = z_sq + e_sq - 2 * torch.matmul(z_flattened, self.embedding.weight.t())
-        encoding_indices = torch.argmin(distances, dim=1)
-        quantized = self.embedding(encoding_indices).view(batch_size, height, width, channels).permute(0, 3, 1, 2)
-        commitment_loss = self.commitment_cost * F.mse_loss(z.detach(), quantized)
+        assert channels == self.embed_dim, f"Expected channel dim {self.embed_dim}, got {channels}"
+        z_flat = z.permute(0, 2, 3, 1).reshape(-1, self.embed_dim)
+        z_sq = torch.sum(z_flat ** 2, dim=1, keepdim=True)
+        e_sq = torch.sum(self.embed.weight ** 2, dim=1)
+        dist = z_sq + e_sq - 2 * torch.matmul(z_flat, self.embed.weight.t())
+        encode_idx = torch.argmin(dist, dim=1)
+        quantized = self.embed(encode_idx).view(batch_size, height, width, channels).permute(0, 3, 1, 2)
+        commit_loss = self.commit_cost * F.mse_loss(z.detach(), quantized)
         codebook_loss = F.mse_loss(z, quantized.detach())
         quantized = z + (quantized - z).detach()
-        return quantized, commitment_loss + codebook_loss
+        return quantized, commit_loss + codebook_loss
 
 class DownBlock(nn.Module):
     """Downsampling block for the encoder in AutoencoderLDM.
@@ -1216,6 +1222,8 @@ class DownBlock(nn.Module):
         Factor by which to downsample spatial dimensions.
     dropout_rate : float
         Dropout rate for Conv3 layers.
+    use_grad_check: bool, optional
+        if true, gradient checkpoint is used (default: False)
 
     **Notes**
 
@@ -1310,7 +1318,7 @@ class Conv3(nn.Module):
         x (torch.Tensor) - Output tensor, shape (batch_size, out_channels, height, width).
         """
         x = self.group_norm(x)
-        x = F.silu(x)  # In-place SiLU
+        x = F.silu(x)
         x = self.dropout(x)
         x = self.conv(x)
         return x
@@ -1377,6 +1385,8 @@ class Attention(nn.Module):
         Number of groups for group normalization.
     dropout_rate : float
         Dropout rate for attention outputs.
+    use_flash: bool, optional
+        if true and available flash attention is used to improve training efficiency (default: True)
 
     **Notes**
 
@@ -1454,6 +1464,8 @@ class UpBlock(nn.Module):
         Factor by which to upsample spatial dimensions.
     dropout_rate : float
         Dropout rate for Conv3 layers.
+    use_grad_check: bool, optional
+        if true, gradient checkpoint is used (default: False)
 
     **Notes**
 
@@ -1579,12 +1591,16 @@ class TrainAE(nn.Module):
         (default: 10).
     val_freq : int, optional
         Frequency (in epochs) for validation and metric computation (default: 5).
+    warmup_steps: int, optional
+        learinig rate warmup steps (default: 1000)
     use_ddp : bool, optional
         Whether to use Distributed Data Parallel training (default: False).
     grad_acc : int, optional
         Number of gradient accumulation steps before optimizer update (default: 1).
     log_freq : int, optional
         Number of epochs before printing loss.
+    use_comp: bool, optional
+        if true, model is compiled (default: False)
     """
 
     def __init__(
@@ -1601,7 +1617,7 @@ class TrainAE(nn.Module):
             kl_warmup_epochs: int = 10,
             patience: int = 10,
             val_freq: int = 5,
-            warmup_steps: int = 10000,
+            warmup_steps: int = 1000,
             use_ddp: bool = False,
             grad_acc: int = 1,
             log_freq: int = 1,
@@ -1732,7 +1748,7 @@ class TrainAE(nn.Module):
         optimizer : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
         warmup_steps : int
-            Number of epochs for the warmup phase.
+            Number of steps for the warm phase.
 
         Returns
         -------
@@ -1764,10 +1780,7 @@ class TrainAE(nn.Module):
 
         Returns
         -------
-        train_losses : list
-            List of mean training losses per epoch.
-        best_val_loss :  float
-            Best validation loss achieved (or best training loss if no validation).
+        losses : dictionlary contains train and validation losses
         """
         if self.use_comp:
             try:
@@ -1864,7 +1877,7 @@ class TrainAE(nn.Module):
         loss : float
             Current loss value.
         pref : str, optional
-            Suffix to add to checkpoint filename.
+            Prefix to add to checkpoint filename.
         """
         try:
             model_state = (
@@ -1882,7 +1895,7 @@ class TrainAE(nn.Module):
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
-            print(f"Model saved at epoch {epoch}")
+            print(f"Model saved at epoch {epoch} with loss: {loss:.4f}")
         except Exception as e:
             print(f"Failed to save model: {e}")
 

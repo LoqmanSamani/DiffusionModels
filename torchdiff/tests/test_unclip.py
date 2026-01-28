@@ -253,9 +253,7 @@ class TestUnCLIP(unittest.TestCase):
 
     def test_upsampler_unclip(self):
         # Initialize UpsamplerUnCLIP
-        upsampler = UpsamplerUnCLIP(fwd_diff=self.forward_diffusion, rwd_diff=self.reverse_diffusion, in_channels=3,
-                                    out_channels=3, model_channels=64, num_res_blocks=2, low_res_size=64,
-                                    high_res_size=256).to(self.device)
+        upsampler = UpsamplerUnCLIP(,.to(self.device)
 
         # Test forward pass
         x_high = torch.randn(self.batch_size, 3, 256, 256).to(self.device)
@@ -266,8 +264,7 @@ class TestUnCLIP(unittest.TestCase):
 
     def test_train_upsampler_unclip(self):
         # Initialize TrainUpsamplerUnCLIP
-        upsampler = UpsamplerUnCLIP(fwd_diff=self.forward_diffusion, rwd_diff=self.reverse_diffusion, in_channels=3,
-                                    out_channels=3, model_channels=64, num_res_blocks=2).to(self.device)
+        upsampler = UpsamplerUnCLIP(,.to(self.device)
         train_loader = MockDataLoader(batch_size=self.batch_size)
         optimizer = torch.optim.Adam(upsampler.parameters(), lr=1e-3)
         trainer = TrainUpsamplerUnCLIP(up_net=upsampler, train_loader=train_loader, optim=optimizer,
@@ -286,8 +283,7 @@ class TestUnCLIP(unittest.TestCase):
         clip_encoder = CLIPEncoder(model_name="mock", device=self.device)
         clip_encoder.model = MockCLIPModel().to(self.device)
         clip_encoder.processor = MockCLIPProcessor()
-        upsampler = UpsamplerUnCLIP(fwd_diff=self.forward_diffusion, rwd_diff=self.reverse_diffusion, in_channels=3,
-                                    out_channels=3, model_channels=64).to(self.device)
+        upsampler = UpsamplerUnCLIP(,.to(self.device)
 
         sample_unclip = SampleUnCLIP(,
 
