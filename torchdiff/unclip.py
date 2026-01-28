@@ -9,7 +9,7 @@ with classifier-free guidance and text dropout for robust generation.
 
 **Components**
 
-- **VarianceSchedulerUnCLIP**: Manages noise schedules with support for linear, sigmoid, quadratic, constant, inverse_time,
+- **SchedulerUnCLIP**: Manages noise schedules with support for linear, sigmoid, quadratic, constant, inverse_time,
                                and cosine beta schedules, including subsampled (tau) schedules for efficient sampling.
 - **ForwardUnCLIP**: Forward diffusion process to add noise to image or latent embeddings.
 - **ReverseUnCLIP**: Reverse diffusion process for denoising, supporting noise or clean image predictions with subsampled steps.
@@ -68,7 +68,6 @@ class SchedulerUnCLIP(nn.Module):
     Manages noise schedule parameters with support for both full training schedule
     and subsampled inference schedule (tau schedule) for faster sampling.
     """
-
     def __init__(
             self,
             schedule_type: str = "linear",
@@ -2576,160 +2575,122 @@ class SampleUnCLIP(nn.Module):
             Generated images, shape (batch_size, channels, height, width), either 256x256
             or 1024x1024 depending on use_second_upsampler.
         """
-        # TODO: until here everything is reviewed!!!
         # initialize noise for prior sampling (image embedding space)
-        embedding_noise = torch.randn((self.batch_size, self.clip_embed_dim), device=self.device)
-
+        embed_noise = torch.randn((self.batch_size, self.clip_embed_dim), device=self.device)
         with torch.no_grad():
-
             # ====== PRIOR STAGE: generate image embeddings from text ======
             # encode text prompt using CLIP
-            text_embeddings = self.clip_net(data=prompts, data_type="text", normalize=self.norm_clip_embed)
-            current_embeddings = embedding_noise.clone()
-
-            # optionally reduce dimensionality for prior model
+            txt_embed = self.clip_net(data=prompts, data_type="text", normalize=self.norm_clip_embed)
+            curr_embed = embed_noise.clone()
             if self.prior_dim_reduction:
-                text_embeddings_reduced = self.prior_model.clip_text_projection(text_embeddings)
-                current_embeddings_reduced = self.prior_model.clip_image_projection(current_embeddings)
+                txt_embed_reduced = self.prior_model.clip_text_proj(txt_embed)
+                curr_embed_reduced = self.prior_model.clip_image_proj(curr_embed)
             else:
-                text_embeddings_reduced = text_embeddings
-                current_embeddings_reduced = current_embeddings
-
+                txt_embed_reduced = txt_embed
+                curr_embed_reduced = curr_embed
             # prior diffusion sampling loop
-            for t in reversed(range(self.prior_model.forward_diffusion.variance_scheduler.tau_num_steps)):
-                timesteps = torch.full((self.batch_size,), t, device=self.device)
-                prev_timesteps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
-
+            for t in reversed(range(self.prior_model.fwd_unclip.vs.tau_num_steps)):
+                t_ = torch.full((self.batch_size,), t, device=self.device)
+                t_pre = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
                 # predict embeddings
-                predicted_embeddings = self.prior_model(text_embeddings_reduced, current_embeddings_reduced, timesteps)
-
+                pred_embed = self.prior_model(txt_embed_reduced, curr_embed_reduced, t_)
                 # apply guidance
-                guided_embeddings = self.compute_prior_guided_prediction(
-                    predicted_embeddings, text_embeddings_reduced, current_embeddings_reduced, timesteps
-                )
-
+                guided_embed = self.prior_guided_pred(pred_embed, txt_embed_reduced, curr_embed_reduced, t_)
                 # update embeddings using reverse diffusion
-                current_embeddings_reduced, _ = self.prior_model.reverse_diffusion(
-                    current_embeddings_reduced, guided_embeddings, timesteps, prev_timesteps
+                curr_embed_reduced, _ = self.prior_model.rwd_unclip(
+                    curr_embed_reduced, guided_embed, t_, t_pre
                 )
-
             # convert back to full embedding dimension if needed
             if self.prior_dim_reduction:
-                final_image_embeddings = self.prior_model.clip_image_projection.inverse_transform(current_embeddings_reduced)
+                f_img_embed = self.prior_model.clip_image_proj.inverse_transform(curr_embed_reduced)
             else:
-                final_image_embeddings = current_embeddings_reduced
+                f_img_embed = curr_embed_reduced
 
             # ====== DECODER STAGE: generate 64x64 images from embeddings ======
             # initialize noise for decoder sampling
             decoder_noise = torch.randn((self.batch_size, self.init_img_size[0], self.init_img_size[1], self.init_img_size[2]), device=self.device)
-
             # project image embeddings to 4 tokens
-            projected_embeddings = self.decoder_net.clip_decoder_projection(final_image_embeddings)
-
+            proj_embed = self.decoder_net.clip_decoder_projection(f_img_embed)
             # encode text with GLIDE/decoder's text encoder
-            glide_text_embeddings = self.decoder_net._encode_text_with_glide(prompts)
-
+            glide_txt_embed = self.decoder_net._encode_text_with_glide(prompts)
             # concatenate embeddings for context
-            context = self.decoder_net._concatenate_embeddings(glide_text_embeddings, projected_embeddings)
+            context = self.decoder_net._conc_embed(glide_txt_embed, proj_embed)
+            curr_imgs = decoder_noise
 
-            current_images = decoder_noise
-
-            for t in reversed(range(self.decoder_net.forward_diffusion.variance_scheduler.tau_num_steps)):
-
-                timesteps = torch.full((self.batch_size,), t, device=self.device)
-                prev_timesteps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
-
+            for t in reversed(range(self.decoder_net.fwd_unclip.vs.tau_num_steps)):
+                t_ = torch.full((self.batch_size,), t, device=self.device)
+                t_pre = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
                 # predict noise
-                predicted_noise = self.decoder_net.noise_predictor(current_images, timesteps, context, None)
-
+                pred_noise = self.decoder_net.diff_net(curr_imgs, t_, context, None)
                 # apply guidance
-                guided_noise = self.compute_decoder_guided_prediction(
-                    predicted_noise, current_images, timesteps, context
-                )
-
+                guided_noise = self.decoder_guided_pred(pred_noise, curr_imgs, t_, context)
                 # update images using reverse diffusion
-                current_images, _ = self.decoder_net.reverse_diffusion(
-                    current_images, guided_noise, timesteps, prev_timesteps
+                curr_imgs, _ = self.decoder_net.rwd_unclip(
+                    curr_imgs, guided_noise, t_, t_pre
                 )
-
-            generated_64x64 = current_images
-
+            samps_64x64 = curr_imgs
             # ====== FIRST UPSAMPLER: 64x64 -> 256x256 ======
-            upsampled_256_noise = torch.randn((self.batch_size, self.init_img_size[0], 256, 256), device=self.device)
-            current_256_images = upsampled_256_noise
-
-            for t in reversed(range(self.low_res_upsampler.forward_diffusion.variance_scheduler.tau_num_steps)):
-                timesteps = torch.full((self.batch_size,), t, device=self.device)
-                prev_timesteps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
-
+            up_256_noise = torch.randn((self.batch_size, self.init_img_size[0], 256, 256), device=self.device)
+            curr_256_imgs = up_256_noise
+            for t in reversed(range(self.low_res_upsampler.fwd_unclip.vs.tau_num_steps)):
+                t_ = torch.full((self.batch_size,), t, device=self.device)
+                t_pre = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
                 # predict noise for upsampling (conditioned on low-res image)
-                predicted_noise = self.low_res_upsampler(current_256_images, timesteps, generated_64x64)
-
+                pred_noise = self.low_res_upsampler(curr_256_imgs, t_, samps_64x64)
                 # update using reverse diffusion
-                current_256_images, _ = self.low_res_upsampler.reverse_diffusion(
-                    current_256_images, predicted_noise, timesteps, prev_timesteps
+                curr_256_imgs, _ = self.low_res_upsampler.rwd_unclip(
+                    curr_256_imgs, pred_noise, t_, t_pre
                 )
-
-            self.imgs_256 = current_256_images
+            self.imgs_256 = curr_256_imgs
 
             # ====== SECOND UPSAMPLER: 256x256 -> 1024x1024 (if enabled) ======
             if self.use_high_res_upsampler and self.high_res_upsampler:
-                upsampled_1024_noise = torch.randn((self.batch_size, self.init_img_size[0], 1024, 1024), device=self.device)
-                current_1024_images = upsampled_1024_noise
-
-                for t in reversed(range(self.high_res_upsampler.forward_diffusion.variance_scheduler.tau_num_steps)):
-                    timesteps = torch.full((self.batch_size,), t, device=self.device)
-                    prev_timesteps = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
-
+                up_1024_noise = torch.randn((self.batch_size, self.init_img_size[0], 1024, 1024), device=self.device)
+                curr_1024_imgs = up_1024_noise
+                for t in reversed(range(self.high_res_upsampler.fwd_unclip.vs.tau_num_steps)):
+                    t_ = torch.full((self.batch_size,), t, device=self.device)
+                    t_pre = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
                     # predict noise for upsampling (conditioned on 256x256 image)
-                    predicted_noise = self.high_res_upsampler(current_1024_images, timesteps, self.imgs_256)
-
+                    pred_noise = self.high_res_upsampler(curr_1024_imgs, t_, self.imgs_256)
                     # update using reverse diffusion
-                    current_1024_images, _ = self.high_res_upsampler.reverse_diffusion(
-                        current_1024_images, predicted_noise, timesteps, prev_timesteps
+                    curr_1024_imgs, _ = self.high_res_upsampler.rwd_unclip(
+                        curr_1024_imgs, pred_noise, t_, t_pre
                     )
-
-                self.imgs_1024 = current_1024_images
+                self.imgs_1024 = curr_1024_imgs
 
             # ====== POST-PROCESSING ======
             # normalize output to [0, 1] range if requested
             if norm_output:
-                final_256 = (self.imgs_256 - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
-                final_1024 = None
+                f_256 = (self.imgs_256 - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
+                f_1024 = None
                 if self.imgs_1024 is not None:
-                    final_1024 = (self.imgs_1024 - self.norm_range[0]) / (
-                            self.norm_range[1] - self.norm_range[0])
+                    f_1024 = (self.imgs_1024 - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
             else:
-                final_256 = self.imgs_256
-                final_1024 = self.imgs_1024
+                f_256 = self.imgs_256
+                f_1024 = self.imgs_1024
 
-            # save images if requested
             if save_imgs:
                 os.makedirs(save_path, exist_ok=True)
-                os.makedirs(os.path.join(save_path, "images_256"), exist_ok=True)
-                if final_1024 is not None:
-                    os.makedirs(os.path.join(save_path, "images_1024"), exist_ok=True)
-
+                os.makedirs(os.path.join(save_path, "imgs_256"), exist_ok=True)
+                if f_1024 is not None:
+                    os.makedirs(os.path.join(save_path, "imgs_1024"), exist_ok=True)
                 for i in range(self.batch_size):
-                    img_path_256 = os.path.join(save_path, "images_256", f"image_{i+1}.png")
-                    torchvision.utils.save_image(final_256[i], img_path_256)
-
-                    if final_1024 is not None:
-                        img_path_1024 = os.path.join(save_path, "images_1024", f"image_{i+1}.png")
-                        torchvision.utils.save_image(final_1024[i], img_path_1024)
-
-        # return final images
-        if final_1024 is not None:
-            return final_1024
+                    img_path_256 = os.path.join(save_path, "imgs_256", f"img_{i+1}.png")
+                    torchvision.utils.save_image(f_256[i], img_path_256)
+                    if f_1024 is not None:
+                        img_path_1024 = os.path.join(save_path, "imgs_1024", f"img_{i+1}.png")
+                        torchvision.utils.save_image(f_1024[i], img_path_1024)
+        if f_1024 is not None:
+            return f_1024
         else:
-            return final_256
+            return f_256
 
-    def compute_prior_guided_prediction(
+    def prior_guided_pred(
             self,
-            predicted_embeddings: torch.Tensor,
-            text_embeddings: torch.Tensor,
-            current_embeddings: torch.Tensor,
-            timesteps: torch.Tensor
+            pred_embed: torch.Tensor,
+            txt_embed: torch.Tensor,
+            curr_embed: torch.Tensor,
+            t: torch.Tensor
     ) -> torch.Tensor:
         """Computes classifier-free guidance for the prior model.
 
@@ -2753,17 +2714,16 @@ class SampleUnCLIP(nn.Module):
             Guided embeddings, shape (batch_size, embedding_dim).
         """
         # use zero embeddings for unconditional generation
-        zero_text_embeddings = torch.zeros_like(text_embeddings)
-        unconditioned_pred = self.prior_model(zero_text_embeddings, current_embeddings, timesteps)
-
+        zero_txt_embed = torch.zeros_like(txt_embed)
+        uncond_pred = self.prior_model(zero_txt_embed, curr_embed, t)
         # CFG formula: (1 + guidance_scale) * conditioned - guidance_scale * unconditioned
-        return (1.0 + self.prior_guidance_scale) * predicted_embeddings - self.prior_guidance_scale * unconditioned_pred
+        return (1.0 + self.prior_guidance_scale) * pred_embed - self.prior_guidance_scale * uncond_pred
 
-    def compute_decoder_guided_prediction(
+    def decoder_guided_pred(
             self,
-            predicted_noise: torch.Tensor,
-            current_images: torch.Tensor,
-            timesteps: torch.Tensor,
+            pred_noise: torch.Tensor,
+            curr_imgs: torch.Tensor,
+            t: torch.Tensor,
             context: torch.Tensor
     ) -> torch.Tensor:
         """Computes classifier-free guidance for the decoder model.
@@ -2789,10 +2749,9 @@ class SampleUnCLIP(nn.Module):
             Guided noise prediction, shape (batch_size, channels, height, width).
         """
         zero_context = torch.zeros_like(context)
-        unconditioned_noise = self.decoder_net.noise_predictor(current_images, timesteps, zero_context, None)
-
+        uncond_noise = self.decoder_net.diff_net(curr_imgs, t, zero_context, None)
         # CFG formula: (1 + guidance_scale) * conditioned - guidance_scale * unconditioned
-        return (1.0 + self.decoder_guidance_scale) * predicted_noise - self.decoder_guidance_scale * unconditioned_noise
+        return (1.0 + self.decoder_guidance_scale) * pred_noise - self.decoder_guidance_scale * uncond_noise
 
     def to(self, device: Union[torch.device, str]) -> Self:
         """Moves the module and all its components to the specified device.
@@ -2812,18 +2771,13 @@ class SampleUnCLIP(nn.Module):
         """
         if isinstance(device, str):
             device = torch.device(device)
-
         self.device = device
-
-        # move all sub-models to the specified device
-        self.prior_model.to(device)
+        self.prior_net.to(device)
         self.decoder_net.to(device)
         self.clip_net.to(device)
         self.low_res_upsampler.to(device)
-
-        if self.second_upsampler_model is not None:
-            self.second_upsampler_model.to(device)
-
+        if self.high_res_upsampler is not None:
+            self.high_res_upsampler.to(device)
         return super().to(device)
 
 ###==================================================================================================================###
@@ -3637,7 +3591,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
             print(f"Model saved at epoch {epoch} with loss: {loss}")
         except Exception as e:
             print(f"Failed to save model: {e}")
-    # TODO: we are here
+
     def load_checkpoint(self, check_path: str) -> Tuple[int, float]:
         """Loads model checkpoint.
 
@@ -3660,16 +3614,13 @@ class TrainUpsamplerUnCLIP(nn.Module):
             checkpoint = torch.load(check_path, map_location=self.device)
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint not found: {check_path}")
-
         def _load_model_state_dict(model: nn.Module, state_dict: dict, model_name: str) -> None:
             """Helper function to load state dict with DDP compatibility."""
             try:
-                # handle DDP state dict compatibility
                 if self.use_ddp and not any(key.startswith('module.') for key in state_dict.keys()):
                     state_dict = {f'module.{k}': v for k, v in state_dict.items()}
                 elif not self.use_ddp and any(key.startswith('module.') for key in state_dict.keys()):
                     state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-
                 model.load_state_dict(state_dict)
                 if self.master_process:
                     print(f"✓ Loaded {model_name}")
@@ -3677,27 +3628,16 @@ class TrainUpsamplerUnCLIP(nn.Module):
                 warnings.warn(f"Failed to load {model_name}: {e}")
 
         # load core upsampler model
-        if 'upsampler_model_state_dict' in checkpoint:
-            _load_model_state_dict(self.up_net, checkpoint['upsampler_model_state_dict'],
-                                   'upsampler_model')
-
-        # load variance scheduler (submodule of forward_diffusion)
-        if 'variance_scheduler_state_dict' in checkpoint or 'hyper_params_state_dict' in checkpoint:
-            state_dict = checkpoint.get('variance_scheduler_state_dict', checkpoint.get('hyper_params_state_dict'))
-            try:
-                _load_model_state_dict(self.up_net.forward_diffusion.variance_scheduler, state_dict, 'variance_scheduler')
-            except Exception as e:
-                warnings.warn(f"Failed to load variance scheduler: {e}")
-
+        if 'up_net_state_dict' in checkpoint:
+            _load_model_state_dict(self.up_net, checkpoint['up_net_state_dict'],'up_net')
         # load optimizer
-        if 'optimizer_state_dict' in checkpoint:
+        if 'optim_state_dict' in checkpoint:
             try:
-                self.optim.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.optim.load_state_dict(checkpoint['optim_state_dict'])
                 if self.master_process:
                     print("✓ Loaded optimizer")
             except Exception as e:
                 warnings.warn(f"Failed to load optimizer state: {e}")
-
         # load schedulers
         if 'scheduler_state_dict' in checkpoint:
             try:
@@ -3706,7 +3646,6 @@ class TrainUpsamplerUnCLIP(nn.Module):
                     print("✓ Loaded main scheduler")
             except Exception as e:
                 warnings.warn(f"Failed to load scheduler state: {e}")
-
         if 'warmup_scheduler_state_dict' in checkpoint:
             try:
                 self.warmup_lr_scheduler.load_state_dict(checkpoint['warmup_scheduler_state_dict'])
