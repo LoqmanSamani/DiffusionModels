@@ -118,7 +118,7 @@ trainer = TrainDDPM(
     device = device,
     grad_acc = 2
 )
-#trainer()
+trainer()
 
 # Sampling
 sampler = SampleDDPM(
