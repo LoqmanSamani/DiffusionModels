@@ -52,8 +52,6 @@ import torchvision
 from PIL import Image
 from transformers import BertTokenizer, CLIPProcessor, CLIPModel
 from typing import Optional, List, Tuple, Union, Callable, Any, Dict
-from typing_extensions import Self
-#from tqdm import tqdm
 from tqdm.auto import tqdm
 import os
 import warnings
@@ -65,10 +63,10 @@ import math
 
 
 class SchedulerUnCLIP(nn.Module):
-    """Unified noise scheduler for UnCLIP supporting multiple schedule types
+    """Variance scheduler for UnCLIP supporting multiple schedule types
 
     Manages noise schedule parameters with support for both full training schedule
-    and subsampled inference schedule (tau schedule) for faster sampling.
+    and subsampled inference schedule  for faster sampling.
     """
     def __init__(
             self,
@@ -525,23 +523,23 @@ class UnClipDecoder(nn.Module):
 
     Parameters
     ----------
-    `clip_embedding_dim` : int
+    `clip_embed_dim` : int
         Dimensionality of the input embeddings.
-    `noise_predictor` : nn.Module
-        Model to predict noise during the denoising process.
-    `forward_diffusion` : nn.Module
+    `diff_net` : nn.Module
+        Model to predict noise/x0 during the denoising process.
+    `fwd_unclip` : nn.Module
         Forward diffusion module (e.g., ForwardUnCLIP) for adding noise.
-    `reverse_diffusion` : nn.Module
+    `rwd_unclip` : nn.Module
         Reverse diffusion module (e.g., ReverseUnCLIP) for denoising.
     `glide_text_encoder` : nn.Module, optional
         GLIDE text encoder for processing text prompts, default None.
-    `bert_tokenizer` : BertTokenizer, optional
+    `tokenizer` : BertTokenizer, optional
         Tokenizer for processing text prompts, default None (loads "bert-base-uncased").
-    `device` : Union[str, torch.device], optional
-        Device for computation (default: CUDA if available, else CPU).
-    `image_output_range` : Tuple[float, float], optional
+    `device` : str, optional
+        Device for computation (default: CUDA).
+    `norm_range` : Tuple[float, float], optional
         Range for clamping output images (default: (-1.0, 1.0)).
-    `normalize_clip_embeddings` : bool, optional
+    `norm_clip_embed` : bool, optional
         Whether to normalize outputs (default: True).
     `classifier_free_prop` : float, optional
         Probability for classifier-free guidance (default: 0.1, per paper).
@@ -609,25 +607,21 @@ class UnClipDecoder(nn.Module):
 
         Parameters
         ----------
-        `image_embeddings` : torch.Tensor
-            CLIP image embeddings, shape (batch_size, embedding_dim).
-        `text_embeddings` : torch.Tensor
-            CLIP text embeddings, shape (batch_size, embedding_dim).
-        `images` : torch.Tensor
+        `img_embed` : torch.Tensor
+            CLIP image embeddings, shape (batch_size, embed_dim).
+        `text_embed` : torch.Tensor
+            CLIP text embeddings, shape (batch_size, embed_dim).
+        `imgs` : torch.Tensor
             Input images, shape (batch_size, channels, height, width).
         `texts` : torch.Tensor
             Text prompts for conditional generation.
-        `p_classifier_free` : float
-            Probability for applying classifier-free guidance.
-        `p_text_drop` : float
-            Probability for applying text caption dropout.
 
         Returns
         -------
-        predicted_noise : torch.Tensor
-            Predicted noise tensor, shape (batch_size, channels, height, width).
-        noise : torch.Tensor
-            Ground truth noise tensor, shape (batch_size, channels, height, width).
+        pred : torch.Tensor
+            Predicted noise/x0 tensor, shape (batch_size, channels, height, width).
+        target : torch.Tensor
+            Ground truth noise/x0 tensor, shape (batch_size, channels, height, width).
         """
         if self.norm_clip_embed:
             img_embed = F.normalize(img_embed, dim=-1)
@@ -658,15 +652,13 @@ class UnClipDecoder(nn.Module):
 
         Parameters
         ----------
-        `image_embeddings` : torch.Tensor
-            CLIP image embeddings, shape (batch_size, embedding_dim).
-        `p_value` : float
-            Probability for applying classifier-free guidance.
+        `img_embed` : torch.Tensor
+            CLIP image embeddings, shape (batch_size, embed_dim).
 
         Returns
         -------
-        image_embeddings : torch.Tensor
-            Modified image embeddings, shape (batch_size, embedding_dim).
+        img_embed : torch.Tensor
+            Modified image embeddings, shape (batch_size, embed_dim).
         """
         batch_size = img_embed.shape[0]
         mask = torch.rand(batch_size, 1, device=self.device) < self.classifier_free_prop
@@ -680,15 +672,13 @@ class UnClipDecoder(nn.Module):
 
         Parameters
         ----------
-        `text_embeddings` : torch.Tensor
-            CLIP text embeddings, shape (batch_size, embedding_dim).
-        `p_value` : float
-            Probability for applying text caption dropout.
+        `text_embed` : torch.Tensor
+            CLIP text embeddings, shape (batch_size, embed_dim).
 
         Returns
         -------
-        text_embeddings : torch.Tensor or None
-            Modified text embeddings or None if dropped, shape (batch_size, embedding_dim).
+        text_embed : torch.Tensor or None
+            Modified text embeddings or None if dropped, shape (batch_size, embed_dim).
         """
         if text_embed is None:
             return None
@@ -747,15 +737,15 @@ class UnClipDecoder(nn.Module):
 
         Parameters
         ----------
-        `y_encoded` : torch.Tensor or None
-            Encoded text embeddings from GLIDE, shape (batch_size, seq_len, embedding_dim).
+        `y` : torch.Tensor or None
+            Encoded text embeddings from GLIDE, shape (batch_size, seq_len, embed_dim).
         `c` : torch.Tensor
-            Projected context tokens, shape (batch_size, num_tokens, embedding_dim).
+            Projected context tokens, shape (batch_size, num_tokens, embed_dim).
 
         Returns
         -------
         s : torch.Tensor
-            Concatenated embeddings, shape (batch_size, seq_len + num_tokens, embedding_dim).
+            Concatenated embeddings, shape (batch_size, seq_len + num_tokens, embed_dim).
         """
         if y is not None:
             if len(y.shape) == 2:  # [batch_size, embed_dim]
@@ -775,7 +765,7 @@ class UnClipDecoder(nn.Module):
         ----------
         `batch_size` : int
             Number of samples in the batch.
-        `image_shape` : torch.Size
+        `img_size` : torch.Size
             Shape of the images, typically (batch_size, channels, height, width).
 
         Returns
@@ -802,26 +792,32 @@ class UnCLIPTransformerPrior(nn.Module):
 
     Parameters
     ----------
-    `forward_diffusion` : nn.Module
+    `fwd_unclip` : nn.Module
         Forward diffusion module (e.g., ForwardUnCLIP) for adding noise during training.
-    `reverse_diffusion` : nn.Module
+    `rwd_unclip` : nn.Module
         Reverse diffusion module (e.g., ReverseUnCLIP) for denoising during training.
-    `clip_text_projection` : nn.Module, optional
+    `clip_text_proj` : nn.Module, optional
         Projection module for text embeddings, default None.
-    `clip_image_projection` : nn.Module, optional
+    `clip_img_proj` : nn.Module, optional
         Projection module for image embeddings, default None.
-    `transformer_embedding_dim` : int, optional
+    `trans_embed_dim` : int, optional
         Dimensionality of embeddings (default: 320).
     `num_layers` : int, optional
         Number of Transformer layers (default: 12).
-    `num_attention_heads` : int, optional
+    `num_att_heads` : int, optional
         Number of attention heads in each Transformer layer (default: 8).
-    `feedforward_dim` : int, optional
+    `ff_dim` : int, optional
         Dimensionality of the feedforward network in Transformer layers (default: 768).
     `max_sequence_length` : int, optional
         Maximum sequence length for input embeddings (default: 2).
-    `dropout_rate` : float, optional
+    `dropoute` : float, optional
         Dropout probability for regularization (default: 0.2).
+    `use_flash`: bool, optional
+        Enable flash attention if available (default: True).
+    `grad_check`: bool, optional
+        Apply gradinet checkpointing (default: False).
+    `check_every_n_layers`: int, optional
+        Frequency of applying gradient checkpoint (default: 2 layers)
     """
     def __init__(
             self,
@@ -881,17 +877,17 @@ class UnCLIPTransformerPrior(nn.Module):
 
         Parameters
         ----------
-        `text_embeddings` : torch.Tensor
-            Text embeddings, shape (batch_size, embedding_dim).
-        `noisy_image_embeddings` : torch.Tensor
-            Noisy image embeddings, shape (batch_size, embedding_dim).
+        `text_embed` : torch.Tensor
+            Text embeddings, shape (batch_size, embed_dim).
+        `noisy_img_embed` : torch.Tensor
+            Noisy image embeddings, shape (batch_size, embed_dim).
         `timesteps` : torch.Tensor
             Tensor of time step indices (long), shape (batch_size,).
 
         Returns
         -------
-        predicted_clean_embeddings : torch.Tensor
-            Predicted clean image embeddings, shape (batch_size, embedding_dim).
+        pred_clean_embed : torch.Tensor
+            Predicted clean image embeddings, shape (batch_size, embed_dim).
         """
         device = text_embed.device
         # create sinusoidal time embeddings
@@ -992,15 +988,15 @@ class UnCLIPTransformerPrior(nn.Module):
         ----------
         `timesteps` : torch.Tensor
             Tensor of time step indices (long), shape (batch_size,).
-        `embedding_dim` : int
+        `embed_dim` : int
             Dimensionality of the embeddings.
         `device` : Union[torch.device, str]
             Device to place the embeddings on.
 
         Returns
         -------
-        embeddings : torch.Tensor
-            Sinusoidal time embeddings, shape (batch_size, embedding_dim).
+        emb : torch.Tensor
+            Sinusoidal time embeddings, shape (batch_size, embed_dim).
         """
         half_dim = embed_dim // 2
         emb = math.log(10000) / (half_dim - 1)
@@ -1024,14 +1020,16 @@ class TransformerBlock(nn.Module):
 
     Parameters
     ----------
-    `embedding_dim` : int
+    `embed_dim` : int
         Dimensionality of input and output embeddings.
     `num_heads` : int
         Number of attention heads in the multi-head attention layer.
-    `feedforward_dim` : int
+    `ff_dim` : int
         Dimensionality of the feedforward network.
     `dropout` : float
         Dropout probability for regularization.
+    `use_falsh`: bool
+        Whethere use flash attention (default: True)
     """
     def __init__(
             self,
@@ -1081,12 +1079,12 @@ class TransformerBlock(nn.Module):
         Parameters
         ----------
         `x` : torch.Tensor
-            Input sequence tensor, shape (batch_size, sequence_length, embedding_dim).
+            Input sequence tensor, shape (batch_size, sequence_length, embed_dim).
 
         Returns
         -------
-        output : torch.Tensor
-            Processed sequence tensor, shape (batch_size, sequence_length, embedding_dim).
+        `x` : torch.Tensor
+            Processed sequence tensor, shape (batch_size, sequence_length, embed_dim).
         """
         n_x = self.att_norm(x)
         if self.use_flash and hasattr(nn.functional, 'scaled_dot_product_attention'):
@@ -1109,7 +1107,7 @@ class TransformerBlock(nn.Module):
 
         Returns
         -------
-        output : torch.Tensor
+        att_out : torch.Tensor
             Attention output, shape (batch_size, seq_len, embed_dim).
         """
         batch_size, seq_len, _ = x.shape
@@ -1143,7 +1141,7 @@ class CLIPContextProjection(nn.Module):
 
     Parameters
     ----------
-    `clip_embedding_dim` : int
+    `clip_embed_dim` : int
         Dimensionality of the input CLIP embedding (e.g., 319 or 512).
     `num_tokens` : int, optional
         Number of context tokens to generate (default: 4).
@@ -1188,11 +1186,16 @@ class CLIPEmbeddingProjection(nn.Module):
 
     Parameters
     ----------
-    `clip_embedding_dim` : int, optional
+    `clip_embed_dim` : int, optional
         Input dimensionality (default: 1024).
-    `transformer_embedding_dim` : int, optional
+    `trans_embed_dim` : int, optional
         Output dimensionality for forward projection (default: 320).
-    `hidden_dim` : int, optionaltrain_loader = DataLoader(train_subset, batch_size=2, shuffle=True, pin_memory=True)
+    `hidden_dim` : int, optional
+        Inner dimension of projection (default: 512).
+    `dropout`: float
+        Dropout rate (default: 0.2)
+    `use_layer_norm`: bool
+        If normalize output (default: True)
     """
     def __init__(
         self,
@@ -1331,56 +1334,58 @@ class TrainUnClipDecoder(nn.Module):
 
     Parameters
     ----------
-    `clip_embedding_dim` : int
+    `clip_embed_dim` : int
         Dimensionality of the input embeddings.
-    `decoder_model` : nn.Module
+    `decoder_net` : nn.Module
         The UnCLIP decoder model (e.g., UnClipDecoder) to be trained.
-    `clip_model` : nn.Module
+    `clip_net` : nn.Module
         CLIP model for generating text and image embeddings.
     `train_loader` : torch.utils.data.DataLoader
         DataLoader for training data.
-    `optimizer` : torch.optim.Optimizer
+    `optim` : torch.optim.Optimizer
         Optimizer for training the decoder model.
-    `objective` : Callable
+    `loss_fn` : Callable
         Loss function to compute the difference between predicted and target noise.
-    `clip_text_projection` : nn.Module, optional
+    `clip_text_proj` : nn.Module, optional
         Projection module for text embeddings, default None.
-    `clip_image_projection` : nn.Module, optional
+    `clip_img_proj` : nn.Module, optional
         Projection module for image embeddings, default None.
     `val_loader` : torch.utils.data.DataLoader, optional
         DataLoader for validation data, default None.
     `metrics_` : Any, optional
         Object providing evaluation metrics (e.g., FID, MSE, PSNR, SSIM, LPIPS), default None.
     `max_epochs` : int, optional
-        Maximum number of training epochs (default: 1000).
-    `device` : Union[str, torch.device], optional
-        Device for computation (default: CUDA if available, else CPU).
+        Maximum number of training epochs (default: 100).
+    `device` : str, optional
+        Device for computation (default: CUDA).
     `store_path` : str, optional
         Directory to save model checkpoints (default: "unclip_decoder").
     `patience` : int, optional
-        Number of epochs to wait for improvement before early stopping (default: 100).
-    `warmup_epochs` : int, optional
-        Number of epochs for learning rate warmup (default: 100).
-    `val_frequency` : int, optional
+        Number of epochs to wait for improvement before early stopping (default: 20).
+    `warmup_steps` : int, optional
+        Number of epochs for learning rate warmup (default: 10000).
+    `val_freq` : int, optional
         Frequency (in epochs) for validation (default: 10).
     `use_ddp` : bool, optional
         Whether to use Distributed Data Parallel training (default: False).
-    `grad_accumulation_steps` : int, optional
+    `grad_acc` : int, optional
         Number of gradient accumulation steps before optimizer update (default: 1).
-    `log_frequency` : int, optional
+    `log_freq` : int, optional
         Frequency (in epochs) for printing progress (default: 1).
-    `use_compilation` : bool, optional
+    `use_comp` : bool, optional
         Whether to compile the model using torch.compile (default: False).
-    `image_output_range` : Tuple[float, float], optional
+    `norm_range` : Tuple[float, float], optional
         Range for clamping output images (default: (-1.0, 1.0)).
-    `reduce_clip_embedding_dim` : bool, optional
+    `reduce_clip_embed_dim` : bool, optional
         Whether to apply dimensionality reduction to embeddings (default: True).
-    `transformer_embedding_dim` : int, optional
+    `trans_embed_dim` : int, optional
         Output dimensionality for reduced embeddings (default: 312).
-    `normalize_clip_embeddings` : bool, optional
+    `norm_clip_embed` : bool, optional
         Whether to normalize CLIP embeddings (default: True).
-    `finetune_clip_projections` : bool, optional
+    `finetune_clip_proj` : bool, optional
         Whether to fine-tune projection layers (default: False).
+    `use_autocast`: bool
+        Whether use mix percision for efficienty (default: True)
     """
     def __init__(
             self,
@@ -1394,10 +1399,10 @@ class TrainUnClipDecoder(nn.Module):
             clip_img_proj: Optional[nn.Module] = None,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
             metrics_: Optional[Any] = None,
-            max_epochs: int = 1000,
+            max_epochs: int = 100,
             device: str = 'cuda',
             store_path: str = "unclip_decoder",
-            patience: int = 100,
+            patience: int = 20,
             warmup_steps: int = 10000,
             val_freq: int = 10,
             use_ddp: bool = False,
@@ -1409,7 +1414,7 @@ class TrainUnClipDecoder(nn.Module):
             trans_embed_dim: int = 312,
             norm_clip_embed: bool = True,
             finetune_clip_proj: bool = False, # if text_projection and image_projection model should be finetune
-            use_autocast: bool =  False
+            use_autocast: bool =  True
     ):
         super().__init__()
         # training configuration
@@ -1479,10 +1484,7 @@ class TrainUnClipDecoder(nn.Module):
 
         Returns
         -------
-        train_losses : List[float]
-            List of mean training losses per epoch.
-        best_val_loss : float
-            Best validation or training loss achieved.
+        loses: a ductionlaty of losses (train and validation losses)
         """
         self.decoder_net.train()
         # set text_projection and image_projection to train mode if fine-tuning
@@ -1630,8 +1632,8 @@ class TrainUnClipDecoder(nn.Module):
         ----------
         `optimizer` : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
-        `warmup_epochs` : int
-            Number of epochs for the warmup phase.
+        `warmup_steps` : int
+            Number of steps for the warmup phase.
 
         Returns
         -------
@@ -1695,17 +1697,17 @@ class TrainUnClipDecoder(nn.Module):
 
         Parameters
         ----------
-        `images` : torch.Tensor
+        `imge` : torch.Tensor
             Input images, shape (batch_size, channels, height, width).
-        `texts` : Union[List, torch.Tensor]
+        `txts` : Union[List, torch.Tensor]
             Text prompts for conditional generation.
 
         Returns
         -------
-        text_embeddings : torch.Tensor
-            CLIP text embeddings, shape (batch_size, embedding_dim).
-        image_embeddings : torch.Tensor
-            CLIP image embeddings, shape (batch_size, embedding_dim).
+        txt_embed : torch.Tensor
+            CLIP text embeddings, shape (batch_size, embed_dim).
+        img_embed : torch.Tensor
+            CLIP image embeddings, shape (batch_size, embed_dim).
         """
         with torch.no_grad():
             # z_t ← CLIP_text(y)
@@ -1726,16 +1728,16 @@ class TrainUnClipDecoder(nn.Module):
 
         Parameters
         ----------
-        `text_embeddings` : torch.Tensor
-            CLIP text embeddings, shape (batch_size, embedding_dim).
-        `image_embeddings` : torch.Tensor
-            CLIP image embeddings, shape (batch_size, embedding_dim).
+        `txt_embed` : torch.Tensor
+            CLIP text embeddings, shape (batch_size, embed_dim).
+        `img_embed` : torch.Tensor
+            CLIP image embeddings, shape (batch_size, embed_dim).
 
         Returns
         -------
-        text_embeddings : torch.Tensor
+        txt_embed : torch.Tensor
             Projected text embeddings, shape (batch_size, output_dim) if reduced, else unchanged.
-        image_embeddings : torch.Tensor
+        img_embed : torch.Tensor
             Projected image embeddings, shape (batch_size, output_dim) if reduced, else unchanged.
         """
         if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None:
@@ -1787,10 +1789,9 @@ class TrainUnClipDecoder(nn.Module):
             Current epoch number.
         `loss` : float
             Current loss value.
-        `is_best` : bool, optional
-            Whether to save as the best model checkpoint (default: False).
-        `suffix` : str, optional
-            Suffix to add to checkpoint filename, default "".
+
+        `pref` : str, optional
+            Prefix to add to checkpoint filename, default "".
         """
         if not self.master_process:
             return
@@ -1863,7 +1864,7 @@ class TrainUnClipDecoder(nn.Module):
 
         Parameters
         ----------
-        `checkpoint_path` : str
+        `check_path` : str
             Path to the checkpoint file.
 
         Returns
@@ -2101,46 +2102,48 @@ class TrainUnCLIPPrior(nn.Module):
 
     Parameters
     ----------
-    `prior_model` : nn.Module
+    `prior_net` : nn.Module
         The UnCLIP prior model to be trained (e.g., UnCLIPTransformerPrior).
-    `clip_model` : nn.Module
+    `clip_net` : nn.Module
         CLIP model for encoding text and images.
     `train_loader` : torch.utils.data.DataLoader
         DataLoader for training data.
-    `optimizer` : torch.optim.Optimizer
+    `optim` : torch.optim.Optimizer
         Optimizer for training the prior model.
-    `objective` : Callable
+    `loss_fn` : Callable
         Loss function to compute the difference between predicted and target embeddings.
     `val_loader` : torch.utils.data.DataLoader, optional
         DataLoader for validation data, default None.
     `max_epochs` : int, optional
-        Maximum number of training epochs (default: 1000).
-    `device` : Union[str, torch.device], optional
-        Device for computation (default: CUDA if available, else CPU).
+        Maximum number of training epochs (default: 100).
+    `device` : str, optional
+        Device for computation (default: CUDA).
     `store_path` : str, optional
         Directory path to save model checkpoints, default 'unclip_prior_train'".
     `patience` : int, optional
-        Number of epochs to wait for improvement before early stopping (default: 100).
-    `warmup_epochs` : int, optional
-        Number of epochs for learning rate warmup (default: 100).
-    `val_frequency` : int, optional
+        Number of epochs to wait for improvement before early stopping (default: 20).
+    `warmup_steps` : int, optional
+        Number of epochs for learning rate warmup (default: 10000).
+    `val_freq` : int, optional
         Frequency (in epochs) for validation (default: 10).
     `use_ddp` : bool, optional
         Whether to use Distributed Data Parallel training (default: False).
-    `num_grad_accumulation` : int, optional
+    `grad_acc` : int, optional
         Number of gradient accumulation steps before optimizer update (default: 1).
-    `log_frequency` : int, optional
+    `log_freq` : int, optional
         Frequency (in epochs) for printing training progress (default: 1).
-    `use_compilation` : bool, optional
+    `use_comp` : bool, optional
         Whether to compile models for optimization (default: False).
-    `embedding_output_range` : Tuple[float, float], optional
+    `nor_range` : Tuple[float, float], optional
         Range for clamping output embeddings (default: (-1.0, 1.0)).
-    `reduce_clip_embedding_dim` : bool, optional
+    `reduce_clip_embed_dim` : bool, optional
         Whether to apply dimension reduction to embeddings (default: True).
-    `transformer_embedding_dim` : int, optional
+    `trans_embed_dim` : int, optional
         Target dimensionality for reduced embeddings (default: 319).
-    `normalize` : bool, optional
-        Whether to normalize CLIP embeddings (default: True).
+    `norm_clip_embed`: bool
+        Whether clip embedding are normalized (default: True)
+    `use_autocast`: bool
+        Whether mix percision is applied (default: True)
     """
 
     def __init__(
@@ -2151,10 +2154,10 @@ class TrainUnCLIPPrior(nn.Module):
             optim: torch.optim.Optimizer,
             loss_fn: Callable,
             val_loader: Optional[torch.utils.data.DataLoader] = None,
-            max_epochs: int = 1000,
+            max_epochs: int = 100,
             device: str = 'cuda',
             store_path: str = 'unclip_prier_train',
-            patience: int = 100,
+            patience: int = 20,
             warmup_steps: int = 10000,
             val_freq: int = 10,
             use_ddp: bool = False,
@@ -2259,8 +2262,8 @@ class TrainUnCLIPPrior(nn.Module):
         ----------
         `optimizer` : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
-        `warmup_epochs` : int
-            Number of epochs for the warmup phase.
+        `warmup_steps` : int
+            Number of steps for the warmup phase.
 
         Returns
         -------
@@ -2309,10 +2312,7 @@ class TrainUnCLIPPrior(nn.Module):
 
         Returns
         -------
-        train_losses : List[float]
-            List of mean training losses per epoch.
-        best_val_loss : float
-            Best validation or training loss achieved.
+        losses: dictionlaty contains train and validation losses
         """
         self.prior_net.train()
         self._compile_models()
@@ -2384,9 +2384,9 @@ class TrainUnCLIPPrior(nn.Module):
 
         Parameters
         ----------
-        `images` : torch.Tensor
+        `imgs` : torch.Tensor
             Input images, shape (batch_size, channels, height, width).
-        `texts` : List[str]
+        `txts` : List[str]
             List of text prompts for conditioning.
 
         Returns
@@ -2588,19 +2588,21 @@ class SampleUnCLIP(nn.Module):
 
     Parameters
     ----------
-    `prior_model` : nn.Module
+    `prior_net` : nn.Module
         The UnCLIP prior model for generating image embeddings from text.
-    `decoder_model` : nn.Module
+    `decoder_net` : nn.Module
         The UnCLIP decoder model for generating low-resolution images from embeddings.
-    `clip_model` : nn.Module
+    `clip_net` : nn.Module
         CLIP model for encoding text prompts into embeddings.
     `low_res_upsampler` : nn.Module
         First upsampler model for scaling images from 64x64 to 256x256.
     `high_res_upsampler` : nn.Module, optional
         Second upsampler model for scaling images from 256x256 to 1024x1024, default None.
-    `device` : Union[torch.device, str], optional
-        Device for computation (default: CUDA if available, else CPU).
-    `clip_embedding_dim` : int, optional
+    `device` : str, optional
+        Device for computation (default: CUDA).
+    `offload_device`: str
+        Device for offloading (default: CPU)
+    `clip_embed_dim` : int, optional
         Dimensionality of CLIP embeddings (default: 512).
     `prior_guidance_scale` : float, optional
         Classifier-free guidance scale for the prior model (default: 4.0).
@@ -2608,16 +2610,18 @@ class SampleUnCLIP(nn.Module):
         Classifier-free guidance scale for the decoder model (default: 8.0).
     `batch_size` : int, optional
         Number of images to generate per batch (default: 1).
-    `normalize` : bool, optional
+    `norm_clip_embed` : bool, optional
         Whether to normalize CLIP embeddings (default: True).
     `prior_dim_reduction` : bool, optional
         Whether to apply dimensionality reduction in the prior model (default: True).
-    `image_size` : Tuple[int, int, int], optional
+    `init_img_size` : Tuple[int, int, int], optional
         Size of the initial generated images (default: (3, 64, 64) for RGB 64x64).
     `use_high_res_upsampler` : bool, optional
         Whether to use the second upsampler for 1024x1024 output (default: True).
-    `image_output_range` : Tuple[float, float], optional
+    `norm_range` : Tuple[float, float], optional
         Range for clamping output images (default: (-1.0, 1.0)).
+    `use_model_offloading`: bool
+        Whether model offloading is used (default: True)
     """
     def __init__(
             self,
@@ -2627,7 +2631,8 @@ class SampleUnCLIP(nn.Module):
             low_res_upsampler: nn.Module,
             high_res_upsampler: Optional[nn.Module] = None,
             device: str = 'cuda',
-            clip_embed_dim: int = 512,  # clip embedding dimension
+            offload_device: str = 'cpu',
+            clip_embed_dim: int = 512,
             prior_guidance_scale: float = 4.0,
             decoder_guidance_scale: float = 8.0,
             batch_size: int = 1,
@@ -2635,18 +2640,25 @@ class SampleUnCLIP(nn.Module):
             prior_dim_reduction: bool = True,
             init_img_size: Tuple[int, int, int] = (3, 64, 64),
             use_high_res_upsampler: bool = True,
-            norm_range: Tuple[float, float] = (-1.0, 1.0)
+            norm_range: Tuple[float, float] = (-1.0, 1.0),
+            use_model_offloading: bool = True,
+            *args
     ) -> None:
         super().__init__()
-        if isinstance(device, str):
-            self.device = torch.device(device)
-        else:
-            self.device = device
-        self.prior_net = prior_net.to(self.device).eval()
-        self.decoder_net = decoder_net.to(self.device).eval()
-        self.clip_net = clip_net.to(self.device).eval()
-        self.low_res_upsampler = low_res_upsampler.to(self.device).eval()
-        self.high_res_upsampler = high_res_upsampler.to(self.device).eval() if high_res_upsampler else None
+
+        self.device = torch.device(device) if isinstance(device, str) else device
+        self.offload_device = torch.device(offload_device)
+        self.use_model_offloading = use_model_offloading
+
+        # keep models on CPU initially if offloading is enabled
+        init_device = self.offload_device if use_model_offloading else self.device
+
+        self.prior_net = prior_net.to(init_device).eval()
+        self.decoder_net = decoder_net.to(init_device).eval()
+        self.clip_net = clip_net.to(init_device).eval()
+        self.low_res_upsampler = low_res_upsampler.to(init_device).eval()
+        self.high_res_upsampler = high_res_upsampler.to(init_device).eval() if high_res_upsampler else None
+
         self.prior_guidance_scale = prior_guidance_scale
         self.decoder_guidance_scale = decoder_guidance_scale
         self.batch_size = batch_size
@@ -2659,11 +2671,19 @@ class SampleUnCLIP(nn.Module):
         self.imgs_256 = None
         self.imgs_1024 = None
 
+    def _move_model_to_device(self, model: nn.Module, target_device: torch.device):
+        """Helper to move model to device if offloading is enabled."""
+        if self.use_model_offloading:
+            model.to(target_device)
+            if target_device == self.device:
+                torch.cuda.empty_cache()
+
+    @torch.no_grad()
     def forward(
             self,
             prompts: Optional[Union[str, List]] = None,
             norm_output: bool = True,
-                save_imgs: bool = True,
+            save_imgs: bool = True,
             save_path: str = "unclip_samples"
     ):
         """Generates images from text prompts or noise using the UnCLIP pipeline.
@@ -2677,7 +2697,7 @@ class SampleUnCLIP(nn.Module):
         ----------
         `prompts` : Union[str, List], optional
             Text prompt(s) for conditional generation, default None (unconditional).
-        `normalize_output` : bool, optional
+        `norm_output` : bool, optional
             Whether to normalize output images to [0, 1] range (default: True).
         `save_images` : bool, optional
             Whether to save generated images to disk (default: True).
@@ -2690,265 +2710,173 @@ class SampleUnCLIP(nn.Module):
             Generated images, shape (batch_size, channels, height, width), either 256x256
             or 1024x1024 depending on use_second_upsampler.
         """
-        # initialize noise for prior sampling (image embedding space)
+        # ====== PRIOR STAGE: generate image embeddings from text ======
+        self._move_model_to_device(self.clip_net, self.device)
+        self._move_model_to_device(self.prior_net, self.device)
+        # encode text prompt using CLIP
+        txt_embed = self.clip_net(data=prompts, data_type="text", normalize=self.norm_clip_embed)
+        # free CLIP immediately after use
+        self._move_model_to_device(self.clip_net, self.offload_device)
+        # initialize noise for prior sampling
         embed_noise = torch.randn((self.batch_size, self.clip_embed_dim), device=self.device)
-        with torch.inference_mode():
-            # ====== PRIOR STAGE: generate image embeddings from text ======
-            # encode text prompt using CLIP
-            txt_embed = self.clip_net(data=prompts, data_type="text", normalize=self.norm_clip_embed)
-            curr_embed = embed_noise.clone()
-            if self.prior_dim_reduction:
-                txt_embed_reduced = self.prior_net.clip_text_proj(txt_embed)
-                curr_embed_reduced = self.prior_net.clip_img_proj(curr_embed)
-            else:
-                txt_embed_reduced = txt_embed
-                curr_embed_reduced = curr_embed
-            # prior diffusion sampling loop
-            timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
-            for t in tqdm(range(len(timesteps) - 1), desc="Prior diffusion", leave=True):
-            #for t in range(len(timesteps) - 1):
-                t_ = timesteps[t].item()
-                t_pre = timesteps[t + 1].item()
-                time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
-                prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
-
-                pred_embed = self.prior_net(txt_embed_reduced, curr_embed_reduced, time)
-                guided_embed = self.prior_guided_pred(pred_embed, txt_embed_reduced, curr_embed_reduced, time)
-                curr_embed_reduced, _ = self.prior_net.rwd_unclip(
-                    curr_embed_reduced, time, prev_time, guided_embed
-                )
-            # convert back to full embedding dimension if needed
-            if self.prior_dim_reduction:
-                f_img_embed = self.prior_net.clip_img_proj.inverse_transform(curr_embed_reduced)
-            else:
-                f_img_embed = curr_embed_reduced
-
-            # ---- FREE PRIOR + CLIP MEMORY ----
-            del embed_noise
-            del curr_embed
-            del curr_embed_reduced
-            del txt_embed
-            if self.prior_dim_reduction:
-                del txt_embed_reduced
-            # move unused models off GPU
-            #self.prior_net.to("cpu")
-            #self.clip_net.to("cpu")
-            torch.cuda.empty_cache()
-
-            # ====== DECODER STAGE: generate 64x64 images from embeddings ======
-            # initialize noise for decoder sampling
-            decoder_noise = torch.randn((self.batch_size, self.init_img_size[0], self.init_img_size[1], self.init_img_size[2]), device=self.device)
-            # project image embeddings to 4 tokens
-            proj_embed = self.decoder_net.clip_decoder_proj(f_img_embed)
-            # encode text with GLIDE/decoder's text encoder
-            glide_txt_embed = self.decoder_net._encode_text_with_glide(prompts)
-            # concatenate embeddings for context
-            context = self.decoder_net._conc_embed(glide_txt_embed, proj_embed)
-            curr_imgs = decoder_noise
-
-            timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
-            for t in tqdm(range(len(timesteps) - 1), desc="Decoder 64x64", leave=True):
-            #for t in range(len(timesteps) - 1):
-                t_ = timesteps[t].item()
-                t_pre = timesteps[t + 1].item()
-                time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
-                prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
-                pred = self.decoder_net.diff_net(curr_imgs, time, context, None)
-                # apply guidance
-                guided_pred = self.decoder_guided_pred(pred, curr_imgs, time, context)
-                # update images using reverse diffusion
-                curr_imgs, _ = self.decoder_net.rwd_unclip(
-                    curr_imgs, time, prev_time, guided_pred
-                )
-            samps_64x64 = curr_imgs
-
-            # ---- FREE DECODER MEMORY ----
-            del decoder_noise
-            del curr_imgs
-            del context
-            del glide_txt_embed
-            del proj_embed
-            torch.cuda.empty_cache()
-
-            # ====== FIRST UPSAMPLER: 64x64 -> 256x256 ======
-            up_256_noise = torch.randn((self.batch_size, self.init_img_size[0], 256, 256), device=self.device)
-            curr_256_imgs = up_256_noise
-
-            timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
-            for t in tqdm(range(len(timesteps) - 1), desc="Upsampler 256x256", leave=True):
-            #for t in range(len(timesteps) - 1):
-                t_ = timesteps[t].item()
-                t_pre = timesteps[t + 1].item()
-                time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
-                prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
-                # predict noise for upsampling (conditioned on low-res image)
-                pred = self.low_res_upsampler(curr_256_imgs, time, samps_64x64)
-                # update using reverse diffusion
-                curr_256_imgs, _ = self.low_res_upsampler.rwd_unclip(
-                    curr_256_imgs, time, prev_time, pred
-                )
-            self.imgs_256 = curr_256_imgs
-
-            # ---- FREE 64x64 + LOW-RES UPSAMPLER MEMORY ----
-            del up_256_noise
-            del curr_256_imgs
-            del samps_64x64
-            # move unused models off GPU
-            #self.low_res_upsampler.to("cpu")
-            #self.decoder_net.to("cpu")
-            torch.cuda.empty_cache()
-
-            # ====== SECOND UPSAMPLER: 256x256 -> 1024x1024 (if enabled) ======
-            if self.use_high_res_upsampler and self.high_res_upsampler:
-
-                # ---- FINAL GPU CLEAN SLATE BEFORE 1024x1024 ----
-                torch.cuda.empty_cache()
-                # ensure only high-res upsampler is on GPU
-                self.high_res_upsampler.to(self.device)
-                up_1024_noise = torch.randn((self.batch_size, self.init_img_size[0], 1024, 1024), device=self.device)
-                curr_1024_imgs = up_1024_noise
-
-                timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
-                for t in tqdm(range(len(timesteps) - 1), desc="Upsampler 1024x1024", leave=True):
-                #for t in range(len(timesteps) - 1):
-                    t_ = timesteps[t].item()
-                    t_pre = timesteps[t + 1].item()
-                    time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
-                    prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
-                    # predict noise for upsampling (conditioned on low-res image)
-                    pred = self.high_res_upsampler(curr_1024_imgs, time, self.imgs_256)
-                    # update using reverse diffusion
-                    curr_1024_imgs, _ = self.high_res_upsampler.rwd_unclip(
-                        curr_1024_imgs, time, prev_time, pred
-                    )
-                self.imgs_1024 = curr_1024_imgs
-
-                # ---- FREE HIGH-RES NOISE ----
-                del up_1024_noise
-                del curr_1024_imgs
-                torch.cuda.empty_cache()
-
-            # ====== POST-PROCESSING ======
-            # normalize output to [0, 1] range if requested
-            if norm_output:
-                f_256 = (self.imgs_256 - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
-                f_1024 = None
-                if self.imgs_1024 is not None:
-                    f_1024 = (self.imgs_1024 - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
-            else:
-                f_256 = self.imgs_256
-                f_1024 = self.imgs_1024
-
-            if save_imgs:
-                os.makedirs(save_path, exist_ok=True)
-                os.makedirs(os.path.join(save_path, "imgs_256"), exist_ok=True)
-                if f_1024 is not None:
-                    os.makedirs(os.path.join(save_path, "imgs_1024"), exist_ok=True)
-                for i in range(self.batch_size):
-                    img_path_256 = os.path.join(save_path, "imgs_256", f"img_{i+1}.png")
-                    torchvision.utils.save_image(f_256[i], img_path_256)
-                    if f_1024 is not None:
-                        img_path_1024 = os.path.join(save_path, "imgs_1024", f"img_{i+1}.png")
-                        torchvision.utils.save_image(f_1024[i], img_path_1024)
-        if f_1024 is not None:
-            return f_1024
+        curr_embed = embed_noise
+        if self.prior_dim_reduction:
+            txt_embed_reduced = self.prior_net.clip_text_proj(txt_embed)
+            curr_embed_reduced = self.prior_net.clip_img_proj(curr_embed)
         else:
-            return f_256
+            txt_embed_reduced = txt_embed
+            curr_embed_reduced = curr_embed
+        # prior diffusion sampling with batched CFG
+        timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
+        for t in tqdm(range(len(timesteps) - 1), desc="Prior diffusion", leave=True):
+            t_ = timesteps[t].item()
+            t_pre = timesteps[t + 1].item()
+            time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
+            prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+            guided_embed = self._prior_guided_pred(
+                txt_embed_reduced, curr_embed_reduced, time
+            )
+            curr_embed_reduced, _ = self.prior_net.rwd_unclip(
+                curr_embed_reduced, time, prev_time, guided_embed
+            )
+        # convert back to full embedding dimension
+        if self.prior_dim_reduction:
+            f_img_embed = self.prior_net.clip_img_proj.inverse_transform(curr_embed_reduced)
+        else:
+            f_img_embed = curr_embed_reduced
+        # free prior model and intermediate tensors
+        self._move_model_to_device(self.prior_net, self.offload_device)
+        del embed_noise, curr_embed, curr_embed_reduced, txt_embed
+        if self.prior_dim_reduction:
+            del txt_embed_reduced
+        torch.cuda.empty_cache()
 
-    def prior_guided_pred(
+        # ====== DECODER STAGE: generate 64x64 images from embeddings ======
+        self._move_model_to_device(self.decoder_net, self.device)
+        decoder_noise = torch.randn(
+            (self.batch_size, *self.init_img_size), device=self.device
+        )
+        proj_embed = self.decoder_net.clip_decoder_proj(f_img_embed)
+        glide_txt_embed = self.decoder_net._encode_text_with_glide(prompts)
+        context = self.decoder_net._conc_embed(glide_txt_embed, proj_embed)
+        curr_imgs = decoder_noise
+        # decoder diffusion with batched CFG
+        timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
+        for t in tqdm(range(len(timesteps) - 1), desc="Decoder 64x64", leave=True):
+            t_ = timesteps[t].item()
+            t_pre = timesteps[t + 1].item()
+            time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
+            prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+            guided_pred = self._decoder_guided_pred(curr_imgs, time, context)
+            curr_imgs, _ = self.decoder_net.rwd_unclip(
+                curr_imgs, time, prev_time, guided_pred
+            )
+        samps_64x64 = curr_imgs
+        # free decoder
+        self._move_model_to_device(self.decoder_net, self.offload_device)
+        del decoder_noise, curr_imgs, context, glide_txt_embed, proj_embed, f_img_embed
+        torch.cuda.empty_cache()
+
+        # ====== FIRST UPSAMPLER: 64x64 -> 256x256 ======
+        self._move_model_to_device(self.low_res_upsampler, self.device)
+        up_256_noise = torch.randn(
+            (self.batch_size, self.init_img_size[0], 256, 256), device=self.device
+        )
+        curr_256_imgs = up_256_noise
+        timesteps = self.low_res_upsampler.rwd_unclip.vs.inference_timesteps.flip(0)
+        for t in tqdm(range(len(timesteps) - 1), desc="Upsampler 256x256", leave=True):
+            t_ = timesteps[t].item()
+            t_pre = timesteps[t + 1].item()
+            time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
+            prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+            pred = self.low_res_upsampler(curr_256_imgs, time, samps_64x64)
+            curr_256_imgs, _ = self.low_res_upsampler.rwd_unclip(
+                curr_256_imgs, time, prev_time, pred
+            )
+        self.imgs_256 = curr_256_imgs
+        # free low-res upsampler
+        self._move_model_to_device(self.low_res_upsampler, self.offload_device)
+        del up_256_noise, curr_256_imgs, samps_64x64
+        torch.cuda.empty_cache()
+
+        # ====== SECOND UPSAMPLER: 256x256 -> 1024x1024 ======
+        if self.use_high_res_upsampler and self.high_res_upsampler:
+            self._move_model_to_device(self.high_res_upsampler, self.device)
+            up_1024_noise = torch.randn(
+                (self.batch_size, self.init_img_size[0], 1024, 1024), device=self.device
+            )
+            curr_1024_imgs = up_1024_noise
+            timesteps = self.high_res_upsampler.rwd_unclip.vs.inference_timesteps.flip(0)
+            for t in tqdm(range(len(timesteps) - 1), desc="Upsampler 1024x1024", leave=True):
+                t_ = timesteps[t].item()
+                t_pre = timesteps[t + 1].item()
+                time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
+                prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+                pred = self.high_res_upsampler(curr_1024_imgs, time, self.imgs_256)
+                curr_1024_imgs, _ = self.high_res_upsampler.rwd_unclip(
+                    curr_1024_imgs, time, prev_time, pred
+                )
+            self.imgs_1024 = curr_1024_imgs
+            # free high-res upsampler
+            self._move_model_to_device(self.high_res_upsampler, self.offload_device)
+            del up_1024_noise, curr_1024_imgs
+            torch.cuda.empty_cache()
+
+        # ====== POST-PROCESSING ======
+        if norm_output:
+            f_256 = (self.imgs_256 - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
+            f_1024 = None
+            if self.imgs_1024 is not None:
+                f_1024 = (self.imgs_1024 - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
+        else:
+            f_256 = self.imgs_256
+            f_1024 = self.imgs_1024
+
+        if save_imgs:
+            self._save_images(f_256, f_1024, save_path)
+        return f_1024 if f_1024 is not None else f_256
+
+    def _prior_guided_pred(
             self,
-            pred_embed: torch.Tensor,
             txt_embed: torch.Tensor,
             curr_embed: torch.Tensor,
             t: torch.Tensor
     ) -> torch.Tensor:
-        """Computes classifier-free guidance for the prior model.
+        """Batched CFG for prior"""
+        batch_size = txt_embed.shape[0]
+        txt_embed_batched = torch.cat([txt_embed, torch.zeros_like(txt_embed)], dim=0)
+        curr_embed_batched = torch.cat([curr_embed, curr_embed], dim=0)
+        t_batched = torch.cat([t, t], dim=0)
+        pred_batched = self.prior_net(txt_embed_batched, curr_embed_batched, t_batched)
+        pred_cond, pred_uncond = pred_batched.chunk(2, dim=0)
+        return pred_uncond + self.prior_guidance_scale * (pred_cond - pred_uncond)
 
-        Combines conditioned and unconditioned predictions using the classifier-free guidance
-        formula to enhance the quality of generated image embeddings.
-
-        Parameters
-        ----------
-        `predicted_embeddings` : torch.Tensor
-            Conditioned predicted embeddings, shape (batch_size, embedding_dim).
-        `text_embeddings` : torch.Tensor
-            Text embeddings from CLIP, shape (batch_size, embedding_dim).
-        `current_embeddings` : torch.Tensor
-            Current noisy embeddings, shape (batch_size, embedding_dim).
-        `timesteps` : torch.Tensor
-            Timestep indices, shape (batch_size,).
-
-        Returns
-        -------
-        guided_embeddings : torch.Tensor
-            Guided embeddings, shape (batch_size, embedding_dim).
-        """
-        # use zero embeddings for unconditional generation
-        zero_txt_embed = torch.zeros_like(txt_embed)
-        uncond_pred = self.prior_net(zero_txt_embed, curr_embed, t)
-        # CFG formula: (1 + guidance_scale) * conditioned - guidance_scale * unconditioned
-        return (1.0 + self.prior_guidance_scale) * pred_embed - self.prior_guidance_scale * uncond_pred
-
-    def decoder_guided_pred(
+    def _decoder_guided_pred(
             self,
-            pred_noise: torch.Tensor,
             curr_imgs: torch.Tensor,
             t: torch.Tensor,
             context: torch.Tensor
     ) -> torch.Tensor:
-        """Computes classifier-free guidance for the decoder model.
+        """Batched CFG for decoder"""
+        curr_imgs_batched = torch.cat([curr_imgs, curr_imgs], dim=0)
+        t_batched = torch.cat([t, t], dim=0)
+        context_batched = torch.cat([context, torch.zeros_like(context)], dim=0)
+        pred_batched = self.decoder_net.diff_net(curr_imgs_batched, t_batched, context_batched, None)
+        pred_cond, pred_uncond = pred_batched.chunk(2, dim=0)
+        return pred_uncond + self.decoder_guidance_scale * (pred_cond - pred_uncond)
 
-        Combines conditioned and unconditioned noise predictions using the classifier-free
-        guidance formula to enhance the quality of generated images.
-
-        Parameters
-        ----------
-        `predicted_noise` : torch.Tensor
-            Conditioned predicted noise, shape (batch_size, channels, height, width).
-        `current_images` : torch.Tensor
-            Current noisy images, shape (batch_size, channels, height, width).
-        `timesteps` : torch.Tensor
-            Timestep indices, shape (batch_size,).
-        `context` : torch.Tensor
-            Context embeddings (concatenated GLIDE text and projected image embeddings),
-            shape (batch_size, seq_len, embedding_dim).
-
-        Returns
-        -------
-        guided_noise : torch.Tensor
-            Guided noise prediction, shape (batch_size, channels, height, width).
-        """
-        zero_context = torch.zeros_like(context)
-        uncond_noise = self.decoder_net.diff_net(curr_imgs, t, zero_context, None)
-        # CFG formula: (1 + guidance_scale) * conditioned - guidance_scale * unconditioned
-        return (1.0 + self.decoder_guidance_scale) * pred_noise - self.decoder_guidance_scale * uncond_noise
-
-    def to(self, device: Union[torch.device, str]) -> Self:
-        """Moves the module and all its components to the specified device.
-
-        Updates the device attribute and moves all sub-models (prior, decoder, CLIP,
-        and upsamplers) to the specified device.
-
-        Parameters
-        ----------
-        device : Union[torch.device, str]
-            Target device for the module and its components.
-
-        Returns
-        -------
-        SampleUnCLIP
-            The module moved to the specified device.
-        """
-        if isinstance(device, str):
-            device = torch.device(device)
-        self.device = device
-        self.prior_net.to(device)
-        self.decoder_net.to(device)
-        self.clip_net.to(device)
-        self.low_res_upsampler.to(device)
-        if self.high_res_upsampler is not None:
-            self.high_res_upsampler.to(device)
-        return super().to(device)
+    def _save_images(self, f_256, f_1024, save_path):
+        """Helper method for saving images."""
+        os.makedirs(save_path, exist_ok=True)
+        os.makedirs(os.path.join(save_path, "imgs_256"), exist_ok=True)
+        if f_1024 is not None:
+            os.makedirs(os.path.join(save_path, "imgs_1024"), exist_ok=True)
+        for i in range(self.batch_size):
+            img_path_256 = os.path.join(save_path, "imgs_256", f"img_{i + 1}.png")
+            torchvision.utils.save_image(f_256[i], img_path_256)
+            if f_1024 is not None:
+                img_path_1024 = os.path.join(save_path, "imgs_1024", f"img_{i + 1}.png")
+                torchvision.utils.save_image(f_1024[i], img_path_1024)
 
 ###==================================================================================================================###
 
@@ -2961,8 +2889,10 @@ class UpsamplerUnCLIP(nn.Module):
 
     Parameters
     ----------
-    `forward_diffusion` : nn.Module
+    `fwd_unclip` : nn.Module
         Forward diffusion module (e.g., ForwardUnCLIP) for adding noise during training.
+    `rwd_unclip` : nn.Module
+        Reverse diffusion module (e.g., ReverseUnCLIP) for removing noise during sampling.
     `in_channels` : int, optional
         Number of input channels (default: 3, for RGB images).
     `out_channels` : int, optional
@@ -3016,7 +2946,7 @@ class UpsamplerUnCLIP(nn.Module):
             nn.Linear(time_embed_dim, time_embed_dim),
         )
         # input projection
-        # cocatenate noisy high-res and upsampled low-res
+        # concatenate noisy high-res and upsampled low-res
         self.input_proj = nn.Conv2d(in_channels * 2, model_channels, 3, padding=1)
 
         # encoder (downsampling path)
@@ -3310,39 +3240,39 @@ class TrainUpsamplerUnCLIP(nn.Module):
 
     Parameters
     ----------
-    `upsampler_model` : nn.Module
+    `up_net` : nn.Module
         The UnCLIP upsampler model (e.g., UpsamplerUnCLIP) to be trained.
     `train_loader` : torch.utils.data.DataLoader
         DataLoader for training data, providing low- and high-resolution image pairs.
-    `optimizer` : torch.optim.Optimizer
+    `optim` : torch.optim.Optimizer
         Optimizer for training the upsampler model.
-    `objective` : Callable
+    `loss_fn` : Callable
         Loss function to compute the difference between predicted and target noise.
     `val_loader` : torch.utils.data.DataLoader, optional
         DataLoader for validation data, default None.
     `max_epochs` : int, optional
-        Maximum number of training epochs (default: 1000).
-    `device` : Union[str, torch.device], optional
-        Device for computation (default: CUDA if available, else CPU).
+        Maximum number of training epochs (default: 100).
+    `device` : str, optional
+        Device for computation (default: CUDA).
     `store_path` : str, optional
         Directory to save model checkpoints (default: "unclip_upsampler").
     `patience` : int, optional
-        Number of epochs to wait for improvement before early stopping (default: 100).
-    `warmup_epochs` : int, optional
-        Number of epochs for learning rate warmup (default: 100).
-    `val_frequency` : int, optional
+        Number of epochs to wait for improvement before early stopping (default: 20).
+    `warmup_steps` : int, optional
+        Number of epochs for learning rate warmup (default: 10000).
+    `val_freq` : int, optional
         Frequency (in epochs) for validation (default: 10).
     `use_ddp` : bool, optional
         Whether to use Distributed Data Parallel training (default: False).
-    `grad_accumulation_steps` : int, optional
+    `grad_acc` : int, optional
         Number of gradient accumulation steps before optimizer update (default: 1).
-    `log_frequency` : int, optional
+    `log_freq` : int, optional
         Frequency (in epochs) for printing progress (default: 1).
-    `use_compilation` : bool, optional
+    `use_comp` : bool, optional
         Whether to compile the model using torch.compile (default: False).
-    `image_output_range` : Tuple[float, float], optional
+    `norm_range` : Tuple[float, float], optional
         Range for clamping output images (default: (-1.0, 1.0)).
-    `normalize_image_outputs` : bool, optional
+    `norm_out` : bool, optional
         Whether to normalize inputs/outputs (default: True).
     `use_autocast` : bool, optional
         Whether to use automatic mixed precision training (default: True).
@@ -3418,10 +3348,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
 
         Returns
         -------
-        train_losses : List[float]
-            List of mean training losses per epoch.
-        best_val_loss : float
-            Best validation or training loss achieved.
+        losses: dictionary contaions train and validation losses.
         """
         self.up_net.train()
         scaler = torch.GradScaler() if self.use_autocast else None
@@ -3562,8 +3489,8 @@ class TrainUpsamplerUnCLIP(nn.Module):
         ----------
         `optimizer` : torch.optim.Optimizer
             Optimizer to apply the scheduler to.
-        `warmup_epochs` : int
-            Number of epochs for the warmup phase.
+        `warmup_steps` : int
+            Number of steps for the warmup phase.
 
         Returns
         -------
@@ -3599,7 +3526,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
         ----------
         `x_low` : torch.Tensor
             Low-resolution input image, shape (batch_size, channels, low_res_size, low_res_size).
-        `corruption_type` : str, optional
+        `corr_type` : str, optional
             Type of corruption to apply: "gaussian_blur" or "bsr_degradation" (default: "gaussian_blur").
 
         Returns
@@ -3733,10 +3660,8 @@ class TrainUpsamplerUnCLIP(nn.Module):
             Current epoch number.
         `loss` : float
             Current loss value.
-        `is_best` : bool, optional
-            Whether to save as the best model checkpoint (default: False).
-        `suffix` : str, optional
-            Suffix to add to checkpoint filename, default "".
+        `prefix` : str, optional
+            prefix to add to checkpoint filename, default "".
         """
         if not self.master_process:
             return
