@@ -724,11 +724,20 @@ class DiffusionNetwork(nn.Module):
             h = self._apply_block(block, h, t_emb, y)
         num_decoder_stages = len(self.decoder)
         skips_for_decoder = list(reversed(encoder_features[-num_decoder_stages:]))
+
         for stage, skip in zip(self.decoder, skips_for_decoder):
             h = stage['upsample'](h)
+            if h.shape[2:] != skip.shape[2:]:
+                h = torch.nn.functional.interpolate(
+                    h,
+                    size=skip.shape[2:],
+                    mode='bilinear' if h.dim() == 4 else 'trilinear',
+                    align_corners=False
+                )
             h = torch.cat([h, skip], dim=1)
             h = self._apply_block(stage['block'], h, t_emb, y)
         return self.conv_out(h)
+
 
     def _apply_block(self, block, x, t_emb, y):
         """Apply a residual block with optional gradient checkpointing.
