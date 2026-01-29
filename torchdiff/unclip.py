@@ -53,7 +53,8 @@ from PIL import Image
 from transformers import BertTokenizer, CLIPProcessor, CLIPModel
 from typing import Optional, List, Tuple, Union, Callable, Any, Dict
 from typing_extensions import Self
-from tqdm import tqdm
+#from tqdm import tqdm
+from tqdm.auto import tqdm
 import os
 import warnings
 import random
@@ -599,9 +600,8 @@ class UnClipDecoder(nn.Module):
             img_embed: torch.Tensor,
             text_embed: torch.Tensor,
             imgs: torch.Tensor,
-            texts: torch.Tensor,
-            p_classifier_free: float,
-            p_text_drop: float) -> Tuple[torch.Tensor, torch.Tensor]:
+            texts: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Processes embeddings and images to predict noise for training.
 
         Applies classifier-free guidance and text dropout, projects CLIP image embeddings
@@ -629,8 +629,10 @@ class UnClipDecoder(nn.Module):
         noise : torch.Tensor
             Ground truth noise tensor, shape (batch_size, channels, height, width).
         """
-        img_embed = self._classifier_free_guidance(img_embed, p_classifier_free)
-        text_embed = self._text_dropout(text_embed, p_text_drop)
+        if self.norm_clip_embed:
+            img_embed = F.normalize(img_embed, dim=-1)
+        img_embed = self._classifier_free_guidance(img_embed)
+        text_embed = self._text_dropout(text_embed)
         # project z_i to 4 tokens
         c = self.clip_decoder_proj(img_embed)
         # encode text with GLIDE
@@ -643,13 +645,12 @@ class UnClipDecoder(nn.Module):
         noisy_imgs, target = self.fwd_unclip(imgs, noise, t)
         clip_img_embed = self.clip_time_proj(img_embed)
         pred = self.diff_net(noisy_imgs, t, context, clip_img_embed)
-        #print(pred.shape, noise.shape, target.shape)
-        return pred, target # noise
+        return pred, target
 
     def inference_forward(self, img_embed, prompt_embed):
         pass
 
-    def _classifier_free_guidance(self, img_embed: torch.Tensor, p_val: float) -> torch.Tensor:
+    def _classifier_free_guidance(self, img_embed: torch.Tensor) -> torch.Tensor:
         """Applies classifier-free guidance to image embeddings.
 
         Sets image embeddings to zero with a specified probability to implement
@@ -667,13 +668,11 @@ class UnClipDecoder(nn.Module):
         image_embeddings : torch.Tensor
             Modified image embeddings, shape (batch_size, embedding_dim).
         """
-        if p_val < self.classifier_free_prop:
-            # set z_i ← 0 {classifier-free guidance}
-            img_embed = torch.zeros_like(img_embed)
+        batch_size = img_embed.shape[0]
+        mask = torch.rand(batch_size, 1, device=self.device) < self.classifier_free_prop
+        return img_embed * (~mask).float()
 
-        return img_embed
-
-    def _text_dropout(self, text_embed: torch.Tensor, p_val: float) -> Optional[torch.Tensor]:
+    def _text_dropout(self, text_embed: torch.Tensor) -> torch.Tensor:
         """Applies text caption dropout to text embeddings.
 
         Drops text embeddings with a specified probability to implement text dropout,
@@ -691,11 +690,11 @@ class UnClipDecoder(nn.Module):
         text_embeddings : torch.Tensor or None
             Modified text embeddings or None if dropped, shape (batch_size, embedding_dim).
         """
-        if p_val < self.drop_caption:
-            # set y ← ∅ {drop text caption}
+        if text_embed is None:
             return None
-
-        return text_embed
+        batch_size = text_embed.shape[0]
+        mask = torch.rand(batch_size, 1, device=self.device) < self.drop_caption
+        return text_embed * (~mask).float()
 
 
     def _encode_text_with_glide(self, texts: Union[List, torch.Tensor]) -> Optional[torch.Tensor]:
@@ -1409,7 +1408,8 @@ class TrainUnClipDecoder(nn.Module):
             reduce_clip_embed_dim: bool = True,
             trans_embed_dim: int = 312,
             norm_clip_embed: bool = True,
-            finetune_clip_proj: bool = False # if text_projection and image_projection model should be finetune
+            finetune_clip_proj: bool = False, # if text_projection and image_projection model should be finetune
+            use_autocast: bool =  False
     ):
         super().__init__()
         # training configuration
@@ -1455,6 +1455,7 @@ class TrainUnClipDecoder(nn.Module):
         self.norm_clip_embed = norm_clip_embed
         self.trans_embed_dim = trans_embed_dim
         self.finetune_clip_proj = finetune_clip_proj
+        self.use_autocast = use_autocast
         # checkpoint management
         self.store_path = store_path
         self.global_step = 0
@@ -1496,8 +1497,7 @@ class TrainUnClipDecoder(nn.Module):
         if self.clip_net is not None:
             self.clip_net.eval()
 
-        self._wrap_models_for_ddp()
-        scaler = torch.GradScaler()
+        scaler = torch.GradScaler() if self.use_autocast else None
         wait = 0
         for epoch in range(self.max_epochs):
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
@@ -1507,38 +1507,40 @@ class TrainUnClipDecoder(nn.Module):
             train_losses_epoch = []
             for step, (imgs, texts) in enumerate(pbar):
                 imgs = imgs.to(self.device, non_blocking=True)
-                with torch.autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
+                with torch.autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu', dtype=torch.bfloat16, enabled=self.use_autocast):
                     # encode text and image with clip
                     text_embed, img_embed = self._clip_embed(imgs, texts)
                     # reduce dimensionality (pca equivalent)
                     text_embed, img_embed = self._dim_reduction(text_embed, img_embed)
                     # use decoder model to predict noise
-                    p_classifier_free = torch.rand(1).item()
-                    p_text_drop = torch.rand(1).item()
                     pred, target = self.decoder_net(
                         img_embed,
                         text_embed,
                         imgs,
-                        texts,
-                        p_classifier_free,
-                        p_text_drop
+                        texts
                     )
                     loss = self.loss_fn(pred, target) / self.grad_acc
-
-                scaler.scale(loss).backward()
+                if self.use_autocast:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
                 if (step + 1) % self.grad_acc == 0:
-                    scaler.unscale_(self.optim)
+                    if self.use_autocast:
+                        scaler.unscale_(self.optim)
                     torch.nn.utils.clip_grad_norm_(self.decoder_net.parameters(), max_norm=1.0)  # covers all submodules
                     if self.reduce_clip_embed_dim and self.clip_text_proj is not None and self.clip_img_proj is not None and self.finetune_clip_proj:
                         torch.nn.utils.clip_grad_norm_(self.clip_text_proj.parameters(), max_norm=1.0)
                         torch.nn.utils.clip_grad_norm_(self.clip_img_proj.parameters(), max_norm=1.0)
-                    scaler.step(self.optim)
-                    scaler.update()
+                    if self.use_autocast:
+                        scaler.step(self.optim)
+                        scaler.update()
+                    else:
+                        self.optim.step()
                     self.optim.zero_grad()
                     if self.global_step > 0 and self.global_step < self.warmup_steps:
                         self.warmup_lr_scheduler.step()
                     self.global_step += 1
-                    # torch.cuda.empty_cache()  # clear memory after optimizer step
+                    #torch.cuda.empty_cache()  # clear memory after optimizer step
                 pbar.set_postfix({'Loss': f'{loss.item() * self.grad_acc:.4f}'})
                 train_losses_epoch.append(loss.item() * self.grad_acc)
             mean_train_loss = self._mean_loss(train_losses_epoch)
@@ -1706,9 +1708,9 @@ class TrainUnClipDecoder(nn.Module):
             CLIP image embeddings, shape (batch_size, embedding_dim).
         """
         with torch.no_grad():
-            # encode text y with clip text encoder: z_t ← CLIP_text(y)
+            # z_t ← CLIP_text(y)
             txt_embed = self.clip_net(data=txts, data_type="text", normalize=self.norm_clip_embed)
-            # encode image x with CLIP image encoder: z_i ← CLIP_image(x)
+            # z_i ← CLIP_image(x)
             img_embed = self.clip_net(data=imgs, data_type="img", normalize=self.norm_clip_embed)
         return txt_embed, img_embed
 
@@ -1849,7 +1851,7 @@ class TrainUnClipDecoder(nn.Module):
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
-            print(f"Model saved at epoch {epoch} with loss: {loss}")
+            print(f"Model saved at epoch {epoch} with loss: {loss:.4f}")
         except Exception as e:
             print(f"Failed to save model: {e}")
 
@@ -2017,25 +2019,26 @@ class TrainUnClipDecoder(nn.Module):
                     img_embed,
                     txt_embed,
                     imgs,
-                    txts,
-                    p_classifier_free,
-                    p_text_drop
+                    txts
                 )
                 loss = self.loss_fn(pred, target)
                 val_losses.append(loss.item())
                 if self.metrics_ is not None and self.decoder_net.rwd_unclip is not None:
                     xt = torch.randn_like(imgs).to(self.device)
-                    for t in reversed(range(self.decoder_net.fwd_unclip.vs.sample_steps)):
-                        t_ = torch.full((xt.shape[0],), t, device=self.device, dtype=torch.long)
-                        t_pre = torch.full((xt.shape[0],), max(t - 1, 0), device=self.device, dtype=torch.long)
-                        img_embed = self.decoder_net._classifier_free_guidance(img_embed, p_classifier_free)
-                        txt_embed = self.decoder_net._text_dropout(txt_embed, p_text_drop)
+                    timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
+                    for t in range(len(timesteps) - 1):
+                        t_ = timesteps[t].item()
+                        t_pre = timesteps[t+1].item()
+                        time = torch.full((xt.shape[0],), t_, device=self.device, dtype=torch.long)
+                        prev_time = torch.full((xt.shape[0],), t_pre, device=self.device, dtype=torch.long)
+                        img_embed = self.decoder_net._classifier_free_guidance(img_embed)
+                        txt_embed = self.decoder_net._text_dropout(txt_embed)
                         c = self.decoder_net.clip_decoder_proj(img_embed)
                         y = self.decoder_net._encode_text_with_glide(txts if txt_embed is not None else None)
                         context = self.decoder_net._conc_embed(y, c)
                         clip_img_embed = self.decoder_net.clip_time_proj(img_embed)
-                        pred = self.decoder_net.diff_net(xt, t_, context, clip_img_embed)
-                        xt, _ = self.decoder_net.rwd_unclip(xt, pred, t_, t_pre)
+                        pred = self.decoder_net.diff_net(xt, time, context, clip_img_embed)
+                        xt, _ = self.decoder_net.rwd_unclip(xt, time, prev_time, pred)
 
                     x_hat = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
                     if self.norm_clip_embed:
@@ -2060,7 +2063,6 @@ class TrainUnClipDecoder(nn.Module):
                     if lpips_score is not None:
                         lpips_scores.append(lpips_score)
 
-        # compute averages
         val_loss = torch.tensor(val_losses).mean().item()
         fid_avg = torch.tensor(fid_scores).mean().item() if fid_scores else float('inf')
         mse_avg = torch.tensor(mse_scores).mean().item() if mse_scores else None
@@ -2068,7 +2070,6 @@ class TrainUnClipDecoder(nn.Module):
         ssim_avg = torch.tensor(ssim_scores).mean().item() if ssim_scores else None
         lpips_avg = torch.tensor(lpips_scores).mean().item() if lpips_scores else None
 
-        # synchronize metrics across GPUs in DDP mode
         if self.use_ddp:
             metrics = [val_loss, fid_avg, mse_avg, psnr_avg, ssim_avg, lpips_avg]
             metrics_tensors = [torch.tensor(m, device=self.device) if m is not None else torch.tensor(float('inf'), device=self.device) for m in metrics]
@@ -2163,7 +2164,8 @@ class TrainUnCLIPPrior(nn.Module):
             norm_range: Tuple[float, float] = (-1.0, 1.0),
             reduce_clip_embed_dim: bool = True,
             trans_embed_dim: int = 319,
-            norm_clip_embed: bool = True
+            norm_clip_embed: bool = True,
+            use_autocast: bool = True
     ) -> None:
         super().__init__()
         self.use_ddp = use_ddp
@@ -2192,6 +2194,7 @@ class TrainUnCLIPPrior(nn.Module):
         self.norm_clip_embed = norm_clip_embed
         self.trans_embed_dim = trans_embed_dim
         self.store_path = store_path
+        self.use_autocast = use_autocast
         self.global_step = 0
         self.warmup_steps = warmup_steps
         self.best_loss = float('inf')
@@ -2314,7 +2317,7 @@ class TrainUnCLIPPrior(nn.Module):
         self.prior_net.train()
         self._compile_models()
         self._wrap_models_for_ddp()
-        scaler = torch.GradScaler()
+        scaler = torch.GradScaler() if self.use_autocast else None
         wait = 0
         for epoch in range(self.max_epochs):
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
@@ -2323,12 +2326,16 @@ class TrainUnCLIPPrior(nn.Module):
             train_losses_epoch = []
             for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device, non_blocking=True)
-                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu', enabled=self.use_autocast):
                     loss = self._train_loss(x, y)
                     loss = loss / self.grad_acc
-                scaler.scale(loss).backward()
+                if self.use_autocast:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
                 if (step + 1) % self.grad_acc == 0:
-                    self._optim_step(scaler)
+                    if self.use_autocast:
+                        self._optim_step(scaler)
                     if self.global_step > 0 and self.global_step < self.warmup_steps:
                         self.warmup_lr_scheduler.step()
                     self.global_step += 1
@@ -2423,10 +2430,14 @@ class TrainUnCLIPPrior(nn.Module):
         `scaler` : torch.GradScaler
             Gradient scaler for mixed precision training.
         """
-        scaler.unscale_(self.optim)
+        if self.use_autocast:
+            scaler.unscale_(self.optim)
         torch.nn.utils.clip_grad_norm_(self.prior_net.parameters(), max_norm=1.0)
-        scaler.step(self.optim)
-        scaler.update()
+        if self.use_autocast:
+            scaler.step(self.optim)
+            scaler.update()
+        else:
+            self.optim.step()
         self.optim.zero_grad()
 
     def _mean_loss(self, losses: List[float]) -> float:
@@ -2681,86 +2692,141 @@ class SampleUnCLIP(nn.Module):
         """
         # initialize noise for prior sampling (image embedding space)
         embed_noise = torch.randn((self.batch_size, self.clip_embed_dim), device=self.device)
-        with torch.no_grad():
+        with torch.inference_mode():
             # ====== PRIOR STAGE: generate image embeddings from text ======
             # encode text prompt using CLIP
             txt_embed = self.clip_net(data=prompts, data_type="text", normalize=self.norm_clip_embed)
             curr_embed = embed_noise.clone()
             if self.prior_dim_reduction:
-                txt_embed_reduced = self.prior_model.clip_text_proj(txt_embed)
-                curr_embed_reduced = self.prior_model.clip_image_proj(curr_embed)
+                txt_embed_reduced = self.prior_net.clip_text_proj(txt_embed)
+                curr_embed_reduced = self.prior_net.clip_img_proj(curr_embed)
             else:
                 txt_embed_reduced = txt_embed
                 curr_embed_reduced = curr_embed
             # prior diffusion sampling loop
-            for t in reversed(range(self.prior_model.fwd_unclip.vs.tau_num_steps)):
-                t_ = torch.full((self.batch_size,), t, device=self.device)
-                t_pre = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
-                # predict embeddings
-                pred_embed = self.prior_model(txt_embed_reduced, curr_embed_reduced, t_)
-                # apply guidance
-                guided_embed = self.prior_guided_pred(pred_embed, txt_embed_reduced, curr_embed_reduced, t_)
-                # update embeddings using reverse diffusion
-                curr_embed_reduced, _ = self.prior_model.rwd_unclip(
-                    curr_embed_reduced, guided_embed, t_, t_pre
+            timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
+            for t in tqdm(range(len(timesteps) - 1), desc="Prior diffusion", leave=True):
+            #for t in range(len(timesteps) - 1):
+                t_ = timesteps[t].item()
+                t_pre = timesteps[t + 1].item()
+                time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
+                prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+
+                pred_embed = self.prior_net(txt_embed_reduced, curr_embed_reduced, time)
+                guided_embed = self.prior_guided_pred(pred_embed, txt_embed_reduced, curr_embed_reduced, time)
+                curr_embed_reduced, _ = self.prior_net.rwd_unclip(
+                    curr_embed_reduced, time, prev_time, guided_embed
                 )
             # convert back to full embedding dimension if needed
             if self.prior_dim_reduction:
-                f_img_embed = self.prior_model.clip_image_proj.inverse_transform(curr_embed_reduced)
+                f_img_embed = self.prior_net.clip_img_proj.inverse_transform(curr_embed_reduced)
             else:
                 f_img_embed = curr_embed_reduced
+
+            # ---- FREE PRIOR + CLIP MEMORY ----
+            del embed_noise
+            del curr_embed
+            del curr_embed_reduced
+            del txt_embed
+            if self.prior_dim_reduction:
+                del txt_embed_reduced
+            # move unused models off GPU
+            #self.prior_net.to("cpu")
+            #self.clip_net.to("cpu")
+            torch.cuda.empty_cache()
 
             # ====== DECODER STAGE: generate 64x64 images from embeddings ======
             # initialize noise for decoder sampling
             decoder_noise = torch.randn((self.batch_size, self.init_img_size[0], self.init_img_size[1], self.init_img_size[2]), device=self.device)
             # project image embeddings to 4 tokens
-            proj_embed = self.decoder_net.clip_decoder_projection(f_img_embed)
+            proj_embed = self.decoder_net.clip_decoder_proj(f_img_embed)
             # encode text with GLIDE/decoder's text encoder
             glide_txt_embed = self.decoder_net._encode_text_with_glide(prompts)
             # concatenate embeddings for context
             context = self.decoder_net._conc_embed(glide_txt_embed, proj_embed)
             curr_imgs = decoder_noise
 
-            for t in reversed(range(self.decoder_net.fwd_unclip.vs.tau_num_steps)):
-                t_ = torch.full((self.batch_size,), t, device=self.device)
-                t_pre = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
-                # predict noise
-                pred_noise = self.decoder_net.diff_net(curr_imgs, t_, context, None)
+            timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
+            for t in tqdm(range(len(timesteps) - 1), desc="Decoder 64x64", leave=True):
+            #for t in range(len(timesteps) - 1):
+                t_ = timesteps[t].item()
+                t_pre = timesteps[t + 1].item()
+                time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
+                prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+                pred = self.decoder_net.diff_net(curr_imgs, time, context, None)
                 # apply guidance
-                guided_noise = self.decoder_guided_pred(pred_noise, curr_imgs, t_, context)
+                guided_pred = self.decoder_guided_pred(pred, curr_imgs, time, context)
                 # update images using reverse diffusion
                 curr_imgs, _ = self.decoder_net.rwd_unclip(
-                    curr_imgs, guided_noise, t_, t_pre
+                    curr_imgs, time, prev_time, guided_pred
                 )
             samps_64x64 = curr_imgs
+
+            # ---- FREE DECODER MEMORY ----
+            del decoder_noise
+            del curr_imgs
+            del context
+            del glide_txt_embed
+            del proj_embed
+            torch.cuda.empty_cache()
+
             # ====== FIRST UPSAMPLER: 64x64 -> 256x256 ======
             up_256_noise = torch.randn((self.batch_size, self.init_img_size[0], 256, 256), device=self.device)
             curr_256_imgs = up_256_noise
-            for t in reversed(range(self.low_res_upsampler.fwd_unclip.vs.tau_num_steps)):
-                t_ = torch.full((self.batch_size,), t, device=self.device)
-                t_pre = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
+
+            timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
+            for t in tqdm(range(len(timesteps) - 1), desc="Upsampler 256x256", leave=True):
+            #for t in range(len(timesteps) - 1):
+                t_ = timesteps[t].item()
+                t_pre = timesteps[t + 1].item()
+                time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
+                prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
                 # predict noise for upsampling (conditioned on low-res image)
-                pred_noise = self.low_res_upsampler(curr_256_imgs, t_, samps_64x64)
+                pred = self.low_res_upsampler(curr_256_imgs, time, samps_64x64)
                 # update using reverse diffusion
                 curr_256_imgs, _ = self.low_res_upsampler.rwd_unclip(
-                    curr_256_imgs, pred_noise, t_, t_pre
+                    curr_256_imgs, time, prev_time, pred
                 )
             self.imgs_256 = curr_256_imgs
 
+            # ---- FREE 64x64 + LOW-RES UPSAMPLER MEMORY ----
+            del up_256_noise
+            del curr_256_imgs
+            del samps_64x64
+            # move unused models off GPU
+            #self.low_res_upsampler.to("cpu")
+            #self.decoder_net.to("cpu")
+            torch.cuda.empty_cache()
+
             # ====== SECOND UPSAMPLER: 256x256 -> 1024x1024 (if enabled) ======
             if self.use_high_res_upsampler and self.high_res_upsampler:
+
+                # ---- FINAL GPU CLEAN SLATE BEFORE 1024x1024 ----
+                torch.cuda.empty_cache()
+                # ensure only high-res upsampler is on GPU
+                self.high_res_upsampler.to(self.device)
                 up_1024_noise = torch.randn((self.batch_size, self.init_img_size[0], 1024, 1024), device=self.device)
                 curr_1024_imgs = up_1024_noise
-                for t in reversed(range(self.high_res_upsampler.fwd_unclip.vs.tau_num_steps)):
-                    t_ = torch.full((self.batch_size,), t, device=self.device)
-                    t_pre = torch.full((self.batch_size,), max(t - 1, 0), device=self.device)
-                    # predict noise for upsampling (conditioned on 256x256 image)
-                    pred_noise = self.high_res_upsampler(curr_1024_imgs, t_, self.imgs_256)
+
+                timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
+                for t in tqdm(range(len(timesteps) - 1), desc="Upsampler 1024x1024", leave=True):
+                #for t in range(len(timesteps) - 1):
+                    t_ = timesteps[t].item()
+                    t_pre = timesteps[t + 1].item()
+                    time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
+                    prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+                    # predict noise for upsampling (conditioned on low-res image)
+                    pred = self.high_res_upsampler(curr_1024_imgs, time, self.imgs_256)
                     # update using reverse diffusion
                     curr_1024_imgs, _ = self.high_res_upsampler.rwd_unclip(
-                        curr_1024_imgs, pred_noise, t_, t_pre
+                        curr_1024_imgs, time, prev_time, pred
                     )
                 self.imgs_1024 = curr_1024_imgs
+
+                # ---- FREE HIGH-RES NOISE ----
+                del up_1024_noise
+                del curr_1024_imgs
+                torch.cuda.empty_cache()
 
             # ====== POST-PROCESSING ======
             # normalize output to [0, 1] range if requested
@@ -2819,7 +2885,7 @@ class SampleUnCLIP(nn.Module):
         """
         # use zero embeddings for unconditional generation
         zero_txt_embed = torch.zeros_like(txt_embed)
-        uncond_pred = self.prior_model(zero_txt_embed, curr_embed, t)
+        uncond_pred = self.prior_net(zero_txt_embed, curr_embed, t)
         # CFG formula: (1 + guidance_scale) * conditioned - guidance_scale * unconditioned
         return (1.0 + self.prior_guidance_scale) * pred_embed - self.prior_guidance_scale * uncond_pred
 
@@ -3320,7 +3386,6 @@ class TrainUpsamplerUnCLIP(nn.Module):
         self._wrap_models_for_ddp()
 
         self.up_net = up_net.to(self.device)
-        self.num_steps = self.up_net.fwd_unclip.vs.num_steps
         self.optim = optim
         self.loss_fn = loss_fn
         self.train_loader = train_loader
@@ -3342,7 +3407,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
             patience=self.patience,
             factor=0.5
         )
-        self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_epochs)
+        self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
 
     def forward(self) -> Dict:
         """Trains the UnCLIP upsampler model to predict noise for denoising.
@@ -3359,7 +3424,6 @@ class TrainUpsamplerUnCLIP(nn.Module):
             Best validation or training loss achieved.
         """
         self.up_net.train()
-        self._wrap_models_for_ddp()
         scaler = torch.GradScaler() if self.use_autocast else None
         wait = 0
         for epoch in range(self.max_epochs):
@@ -3370,27 +3434,15 @@ class TrainUpsamplerUnCLIP(nn.Module):
             for step, (low_imgs, high_imgs) in enumerate(pbar):
                 low_imgs = low_imgs.to(self.device, non_blocking=True)
                 high_imgs = high_imgs.to(self.device, non_blocking=True)
-                if self.use_autocast:
-                    with torch.autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu'):
-                        batch_size = high_imgs.shape[0]
-                        timesteps = torch.randint(0, self.num_steps, (batch_size,), device=self.device)
-                        noise = torch.randn_like(high_imgs)
-                        with torch.autocast(device_type='cuda', enabled=False):
-                            high_imgs_noisy = self.up_net.fwd_unclip(high_imgs, noise, timesteps)
-                        corr_type = "gaussian_blur" if self.up_net.low_res_size == 64 else "bsr_degradation"
-                        low_imgs_corr = self.corrupt_cond_img(low_imgs, corr_type)
-                        pred_noise = self.up_net(high_imgs_noisy, timesteps, low_imgs_corr)
-                        loss = self.loss_fn(pred_noise, noise) / self.grad_acc
-                else:
+                with torch.autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu', enabled=self.use_autocast):
                     batch_size = high_imgs.shape[0]
-                    timesteps = torch.randint(0, self.num_steps, (batch_size,), device=self.device)
+                    timesteps = torch.randint(0, self.up_net.fwd_unclip.vs.train_steps, (batch_size,), device=self.device)
                     noise = torch.randn_like(high_imgs)
-                    high_imgs_noisy = self.up_net.forward_diffusion(high_imgs, noise, timesteps)
+                    high_imgs_noisy, target = self.up_net.fwd_unclip(high_imgs, noise, timesteps)
                     corr_type = "gaussian_blur" if self.up_net.low_res_size == 64 else "bsr_degradation"
                     low_imgs_corr = self.corrupt_cond_img(low_imgs, corr_type)
-                    pred_noise = self.up_net(high_imgs_noisy, timesteps, low_imgs_corr)
-                    loss = self.loss_fn(pred_noise, noise) / self.grad_acc
-
+                    pred = self.up_net(high_imgs_noisy, timesteps, low_imgs_corr)
+                    loss = self.loss_fn(pred, target) / self.grad_acc
                 if self.use_autocast:
                     scaler.scale(loss).backward()
                 else:
@@ -3449,6 +3501,21 @@ class TrainUpsamplerUnCLIP(nn.Module):
         if self.use_ddp:
             destroy_process_group()
         return self.losses
+
+    def _compile_models(self) -> None:
+        """Compiles models for optimization if supported.
+
+        Attempts to compile the prior model using torch.compile for performance optimization,
+        with fallback to uncompiled models if compilation fails.
+        """
+        if self.use_comp:
+            try:
+                self.prior_net = torch.compile(self.prior_net)
+                if self.master_process:
+                    print("Models compiled successfully")
+            except Exception as e:
+                if self.master_process:
+                    print(f"Model compilation failed: {e}. Continuing without compilation.")
 
     def _setup_ddp(self) -> None:
         """Sets up Distributed Data Parallel training configuration.
@@ -3638,13 +3705,13 @@ class TrainUpsamplerUnCLIP(nn.Module):
                 low_imgs = low_imgs.to(self.device, non_blocking=True)
                 high_imgs = high_imgs.to(self.device, non_blocking=True)
                 batch_size = high_imgs.shape[0]
-                timesteps = torch.randint(0, self.num_steps, (batch_size,), device=self.device)
+                timesteps = torch.randint(0, self.up_net.fwd_unclip.vs.train_steps, (batch_size,), device=self.device)
                 noise = torch.randn_like(high_imgs)
-                high_imgs_noisy = self.up_net.fwd_unclip(high_imgs, noise, timesteps)
+                high_imgs_noisy, target = self.up_net.fwd_unclip(high_imgs, noise, timesteps)
                 corr_type = "gaussian_blur" if self.up_net.low_res_size == 64 else "bsr_degradation"
                 low_imgs_corr = self.corrupt_cond_img(low_imgs, corr_type)
-                pred_noise = self.up_net(high_imgs_noisy, timesteps, low_imgs_corr)
-                loss = self.loss_fn(pred_noise, noise)
+                pred = self.up_net(high_imgs_noisy, timesteps, low_imgs_corr)
+                loss = self.loss_fn(pred, target)
                 val_losses.append(loss.item())
         val_loss = torch.tensor(val_losses).mean().item()
         if self.use_ddp:
@@ -3692,7 +3759,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
             filepath = os.path.join(self.store_path, filename)
             os.makedirs(self.store_path, exist_ok=True)
             torch.save(checkpoint, filepath)
-            print(f"Model saved at epoch {epoch} with loss: {loss}")
+            print(f"Model saved at epoch {epoch} with loss: {loss: .4f}")
         except Exception as e:
             print(f"Failed to save model: {e}")
 

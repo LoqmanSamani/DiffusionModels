@@ -345,7 +345,6 @@ class SchedulerDDIM(nn.Module):
         """
         step_ratio = self.train_steps // self.sample_steps
         inference_timesteps = torch.arange(0, self.train_steps, step_ratio)
-
         self.register_buffer('inference_timesteps', inference_timesteps)
 
     def set_inference_timesteps(self, num_inference_timesteps: int):
@@ -876,10 +875,10 @@ class TrainDDIM(nn.Module):
                     xt = torch.randn_like(x)
                     timesteps = self.fwd_ddim.vs.inference_timesteps.flip(0)
                     for i in range(len(timesteps) - 1):
-                        t_current = timesteps[i].item()
-                        t_next = timesteps[i + 1].item()
-                        time = torch.full((xt.shape[0],), t_current, device=self.device, dtype=torch.long)
-                        prev_time = torch.full((xt.shape[0],), t_next, device=self.device, dtype=torch.long)
+                        t_ = timesteps[i].item()
+                        t_pre = timesteps[i + 1].item()
+                        time = torch.full((xt.shape[0],), t_, device=self.device, dtype=torch.long)
+                        prev_time = torch.full((xt.shape[0],), t_pre, device=self.device, dtype=torch.long)
                         pred = self.diff_net(xt, time, y_encoded, clip_embeddings=None)
                         xt, _ = self.rwd_ddim(xt, time, prev_time, pred)
                     x_hat = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
