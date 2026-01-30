@@ -38,6 +38,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
+from torchdiff.utils import LossAdapter
 import os
 
 
@@ -382,7 +383,11 @@ class ReverseSDE(nn.Module):
             score = pred
         # [-½β(t)x - β(t)∇log p_t(x)]dt + √β(t)dw̄
         # reverse drift: f(x,t) - g²(t)·score
-        drift = drift_coeff * xt - g_squared * score
+        if self.method == 'ode':
+            drift = drift_coeff * xt - 0.5 * g_squared * score
+        else:
+            drift = drift_coeff * xt - g_squared * score
+
         if last_step or self.method == "ode":
             noise = torch.zeros_like(xt)
         else:
@@ -480,10 +485,11 @@ class SchedulerSDE(nn.Module):
             return self.beta_min + t * (self.beta_max - self.beta_min)
 
         elif self.schedule_type == "cosine":
-            # approximated β(t) from ᾱ(t)
-            alpha_sq = self.alpha_squared(t)
-            alpha_sq_prev = self.alpha_squared(torch.clamp(t - 0.001, min=0))
-            return torch.clamp(1 - alpha_sq / (alpha_sq_prev + 1e-8), min=0, max=0.999)
+            # β(t) = -d/dt log ᾱ(t) = tan(x) * π / (1+s)
+            t_mapped = (t + self.cosine_s) / (1 + self.cosine_s) * torch.pi / 2
+            beta_t = torch.tan(t_mapped) * (torch.pi / (1 + self.cosine_s))
+            return torch.clamp(beta_t, min=0.0, max=200.0)
+
 
     def integral_beta(self, t: torch.Tensor) -> torch.Tensor:
         """∫₀ᵗ β(s) ds"""
@@ -635,7 +641,7 @@ class TrainSDE(nn.Module):
 
         self.metrics_ = metrics_
         self.optim = optim
-        self.loss_fn = loss_fn
+        self.loss_fn = LossAdapter(loss_fn) # wrap the loss in loss adapter to accept extra variables if it does not
         self.store_path = store_path or "sde_train"
         self.train_loader = train_loader
         self.val_loader = val_loader

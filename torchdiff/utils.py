@@ -929,6 +929,34 @@ def get_timestep_embedding(timesteps: torch.Tensor, dim: int, continuous: bool =
 ###==================================================================================================================###
 
 
+class LossAdapter:
+    """Adapter to make any loss function compatible with extra arguments."""
+
+    def __init__(self, loss_fn):
+        self.loss_fn = loss_fn
+        self._accepts_extra_args = self._check_signature()
+
+    def _check_signature(self):
+        """Check if loss function accepts *args or **kwargs."""
+        import inspect
+        try:
+            sig = inspect.signature(self.loss_fn)
+            for param in sig.parameters.values():
+                if param.kind in (inspect.Parameter.VAR_POSITIONAL,
+                                  inspect.Parameter.VAR_KEYWORD):
+                    return True
+            params = [p for p in sig.parameters.values() if p.name != 'self']
+            return len(params) > 2
+        except (ValueError, TypeError):
+            return False
+
+    def __call__(self, predictions, targets, *args, **kwargs):
+        if self._accepts_extra_args:
+            return self.loss_fn(predictions, targets, *args, **kwargs)
+        else:
+            return self.loss_fn(predictions, targets)
+
+
 def mse_loss(pred: torch.Tensor, target: torch.Tensor, *args) -> torch.Tensor:
     """
     Standard mean squared error (MSE) loss.

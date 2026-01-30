@@ -10,4 +10,7 @@ from .unclip import (
     CLIPContextProjection, CLIPEmbeddingProjection, TrainUnClipDecoder,
     SampleUnCLIP, UpsamplerUnCLIP, TrainUpsamplerUnCLIP
 )
-from .utils import DiffusionNetwork, TextEncoder, Metrics, mse_loss, snr_capped_loss, ve_sigma_weighted_score_loss
+from .utils import (
+    DiffusionNetwork, TextEncoder, Metrics, LossAdapter,
+    mse_loss, snr_capped_loss, ve_sigma_weighted_score_loss
+)
