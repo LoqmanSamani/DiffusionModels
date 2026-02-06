@@ -70,6 +70,7 @@ import torch.utils.checkpoint as checkpoint
 import warnings
 from tqdm import tqdm
 from torchvision.utils import save_image
+from .utils import LossAdapter
 import os
 
 
@@ -198,7 +199,7 @@ class TrainLDM(nn.Module):
         self.cond_net = cond_net.to(self.device) if cond_net else None
         self.metrics_ = metrics_
         self.optim = optim
-        self.loss_fn = loss_fn
+        self.loss_fn = LossAdapter(loss_fn)
         self.store_path = store_path or "ldm_train"
         self.train_loader = train_loader
         self.val_loader = val_loader
