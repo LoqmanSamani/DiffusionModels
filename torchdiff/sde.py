@@ -38,7 +38,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
-from torchdiff.utils import LossAdapter
+from .utils import LossAdapter
 import os
 
 
