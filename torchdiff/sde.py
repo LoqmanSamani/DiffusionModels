@@ -488,7 +488,7 @@ class SchedulerSDE(nn.Module):
             # β(t) = -d/dt log ᾱ(t) = tan(x) * π / (1+s)
             t_mapped = (t + self.cosine_s) / (1 + self.cosine_s) * torch.pi / 2
             beta_t = torch.tan(t_mapped) * (torch.pi / (1 + self.cosine_s))
-            return torch.clamp(beta_t, min=0.0, max=200.0)
+            return torch.clamp(beta_t, min=0.0, max=1000.0)
 
 
     def integral_beta(self, t: torch.Tensor) -> torch.Tensor:
