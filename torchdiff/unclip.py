@@ -52,6 +52,7 @@ import torchvision
 from PIL import Image
 from transformers import BertTokenizer, CLIPProcessor, CLIPModel
 from typing import Optional, List, Tuple, Union, Callable, Any, Dict
+from .utils import LossAdapter
 from tqdm.auto import tqdm
 import os
 import warnings
@@ -1448,7 +1449,7 @@ class TrainUnClipDecoder(nn.Module):
         self.clip_embed_dim = trans_embed_dim if self.reduce_clip_embed_dim else clip_embed_dim
         self.metrics_ = metrics_
         self.optim = optim
-        self.loss_fn = loss_fn
+        self.loss_fn = LossAdapter(loss_fn)
         self.train_loader = train_loader
         self.val_loader = val_loader
         # training parameters
@@ -2184,7 +2185,7 @@ class TrainUnCLIPPrior(nn.Module):
         self.prior_net = prior_net.to(self.device)
         self.clip_net = clip_net.to(self.device)
         self.optim = optim
-        self.loss_fn = loss_fn
+        self.loss_fn = LossAdapter(loss_fn)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.max_epochs = max_epochs
@@ -3317,7 +3318,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
 
         self.up_net = up_net.to(self.device)
         self.optim = optim
-        self.loss_fn = loss_fn
+        self.loss_fn = LossAdapter(loss_fn)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.max_epochs = max_epochs
