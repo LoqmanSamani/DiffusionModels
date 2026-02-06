@@ -43,6 +43,7 @@ import warnings
 from torchvision.utils import save_image
 from typing import Optional, Tuple, Callable, List, Any, Union, Dict
 from typing_extensions import Self
+from .utils import LossAdapter
 import os
 
 
@@ -483,7 +484,7 @@ class TrainDDIM(nn.Module):
         self.cond_net = cond_net.to(self.device) if cond_net else None
         self.metrics_ = metrics_
         self.optim = optim
-        self.loss_fn = loss_fn
+        self.loss_fn = LossAdapter(loss_fn)
         self.store_path = store_path or "ddim_train"
         self.train_loader = train_loader
         self.val_loader = val_loader
