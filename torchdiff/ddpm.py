@@ -38,6 +38,7 @@ from tqdm import tqdm
 from transformers import BertTokenizer
 import warnings
 from torchvision.utils import save_image
+from .utils import LossAdapter
 import os
 
 
@@ -494,7 +495,7 @@ class TrainDDPM(nn.Module):
 
         self.metrics_ = metrics_
         self.optim = optim
-        self.loss_fn = loss_fn
+        self.loss_fn = LossAdapter(loss_fn)
         self.store_path = store_path or "ddpm_train"
         self.train_loader = train_loader
         self.val_loader = val_loader
