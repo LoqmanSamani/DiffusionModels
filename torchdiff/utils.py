@@ -987,6 +987,20 @@ def snr_capped_loss(pred_noise: torch.Tensor, target_noise: torch.Tensor, varian
         weight = weight.unsqueeze(-1)
     return ((pred_noise - target_noise) ** 2 * weight).mean()
 
+def min_snr_loss(pred: torch.Tensor, target: torch.Tensor, snr: torch.Tensor, gamma: float = 5.0, *args) -> torch.Tensor:
+    """
+    Min-SNR weighting strategy for stable diffusion training.
+    Normalizes the loss by min(snr, gamma) / snr.
+    """
+    # weighting formula from 'efficient diffusion training via min-snr weighting strategy'
+    weight = torch.clamp(snr, max=gamma) / snr
+    
+    while weight.dim() < pred.dim():
+        weight = weight.unsqueeze(-1)
+        
+    loss = (pred - target) ** 2
+    return (loss * weight).mean()
+
 
 def ve_sigma_weighted_score_loss(pred_score: torch.Tensor, target_score: torch.Tensor, sigma: torch.Tensor, *args) -> torch.Tensor:
     """
