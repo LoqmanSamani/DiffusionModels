@@ -151,7 +151,7 @@ DDPM (Ho et al., 2020) frames generation as learning to reverse a Markov chain t
 The implementation supports both unconditional generation and conditional variants where generation is guided by auxiliary information like class labels or text embeddings.
 
 **Paper:** [Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239)  
-**Example:** [DDPM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddpm.ipynb)
+**Example:** [DDPM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddim/ddpm.ipynb)
 
 ---
 
@@ -162,7 +162,7 @@ DDIM (Song et al., 2021a) reformulates the generative process as a non-Markovian
 Like DDPM, both conditional and unconditional generation modes are supported.
 
 **Paper:** [Denoising Diffusion Implicit Models](https://arxiv.org/abs/2010.02502)  
-**Example:** [DDIM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddim.ipynb)
+**Example:** [DDIM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddim/ddim.ipynb)
 
 ---
 
@@ -173,7 +173,7 @@ The SDE framework (Song et al., 2021b) generalizes diffusion models as continuou
 We implement variance-exploding (VE), variance-preserving (VP), and sub-VP formulations. The reverse process can be simulated using either stochastic differential equations or their deterministic probability flow ODE counterparts. This unifies score matching with denoising diffusion and enables more flexible sampling strategies.
 
 **Paper:** [Score-Based Generative Modeling through Stochastic Differential Equations](https://arxiv.org/abs/2011.13456)  
-**Example:** [SDE Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/sde.ipynb)
+**Example:** [SDE Notebooks](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/sde/)
 
 ---
 
@@ -184,7 +184,7 @@ LDM (Rombach et al., 2022) addresses the computational cost of pixel-space diffu
 Any of the diffusion backends (DDPM, DDIM, SDE) can operate in this latent space. The architecture enables high-resolution synthesis that would be impractical in pixel space.
 
 **Paper:** [High-Resolution Image Synthesis with Latent Diffusion Models](https://arxiv.org/abs/2112.10752)  
-**Example:** [LDM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ldm.ipynb)
+**Example:** [LDM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ldm/ldm.ipynb)
 
 ---
 
@@ -197,7 +197,7 @@ This hierarchical approach leverages CLIP's multimodal embedding space where tex
 Given the complexity, UnCLIP training requires more extensive setup than other models in this library.
 
 **Paper:** [Hierarchical Text-Conditional Image Generation with CLIP Latents](https://arxiv.org/abs/2204.06125)  
-**Example:** [UnCLIP Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/unclip.ipynb)
+**Example:** [UnCLIP Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/unclip/unclip.ipynb)
 
 ---
 
