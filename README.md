@@ -151,7 +151,7 @@ DDPM (Ho et al., 2020) frames generation as learning to reverse a Markov chain t
 The implementation supports both unconditional generation and conditional variants where generation is guided by auxiliary information like class labels or text embeddings.
 
 **Paper:** [Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239)  
-**Example:** [DDPM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddim/ddpm.ipynb)
+**Example:** [DDPM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddpm/ddpm.ipynb)
 
 ---
 
