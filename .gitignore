@@ -1,3 +1,8 @@
+# Unclip weight files (too large)
+examples/unclip/decoder_model/*.pth
+examples/unclip/prior_model/*.pth
+examples/unclip/upsampler_one/*.pth
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
