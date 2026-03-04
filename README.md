@@ -203,6 +203,7 @@ This hierarchical approach leverages CLIP's multimodal embedding space where tex
 Given the complexity, UnCLIP training requires more extensive setup than other models in this library.
 
 **Paper:** [Hierarchical Text-Conditional Image Generation with CLIP Latents](https://arxiv.org/abs/2204.06125)
+
 **Example:** [UnCLIP Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/unclip/unclip.ipynb)
 
 ---
