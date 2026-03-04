@@ -40,17 +40,9 @@ We also provide evaluation utilities including standard metrics (MSE, PSNR, SSIM
 
 ---
 
-## What's New in v2.5.0
 
-- **UnCLIP improvements**: Fixed CLIPContextProjection output dimension handling, corrected sampling loop index arithmetic, resolved NaN loss in upsampler/prior training via bfloat16 autocast, and fixed CLIPEmbeddingProjection reconstruction loss bug.
-- **Expanded test coverage**: Added test suites for LDM (AutoencoderLDM), UnCLIP (Scheduler, Forward/Reverse, Projections, TransformerPrior), and Utils (DiffusionNetwork, loss functions, Metrics).
-- **API completeness**: `TrainUnCLIPPrior` now properly exported; removed duplicate `SampleUnCLIP` import.
-- **Documentation**: Aligned all RST titles, added `torchmetrics` to mock imports for ReadTheDocs builds.
-- **Build fixes**: Corrected ReadTheDocs URL in setup.py, removed trailing commas from requirements.txt, unified README for both GitHub and PyPI.
 
----
-
-## Installation
+### Installation
 
 Install the stable release from PyPI.
 
@@ -160,7 +152,7 @@ DDPM (Ho et al., 2020) frames generation as learning to reverse a Markov chain t
 
 The implementation supports both unconditional generation and conditional variants where generation is guided by auxiliary information like class labels or text embeddings.
 
-**Paper:** [Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239)  
+**Paper:** [Denoising Diffusion Probabilistic Models](https://arxiv.org/abs/2006.11239)
 **Example:** [DDPM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddpm/ddpm.ipynb)
 
 ---
@@ -171,7 +163,7 @@ DDIM (Song et al., 2021a) reformulates the generative process as a non-Markovian
 
 Like DDPM, both conditional and unconditional generation modes are supported.
 
-**Paper:** [Denoising Diffusion Implicit Models](https://arxiv.org/abs/2010.02502)  
+**Paper:** [Denoising Diffusion Implicit Models](https://arxiv.org/abs/2010.02502)
 **Example:** [DDIM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ddim/ddim.ipynb)
 
 ---
@@ -182,7 +174,7 @@ The SDE framework (Song et al., 2021b) generalizes diffusion models as continuou
 
 We implement variance-exploding (VE), variance-preserving (VP), and sub-VP formulations. The reverse process can be simulated using either stochastic differential equations or their deterministic probability flow ODE counterparts. This unifies score matching with denoising diffusion and enables more flexible sampling strategies.
 
-**Paper:** [Score-Based Generative Modeling through Stochastic Differential Equations](https://arxiv.org/abs/2011.13456)  
+**Paper:** [Score-Based Generative Modeling through Stochastic Differential Equations](https://arxiv.org/abs/2011.13456)
 **Example:** [SDE Notebooks](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/sde/)
 
 ---
@@ -193,7 +185,7 @@ LDM (Rombach et al., 2022) addresses the computational cost of pixel-space diffu
 
 Any of the diffusion backends (DDPM, DDIM, SDE) can operate in this latent space. The architecture enables high-resolution synthesis that would be impractical in pixel space.
 
-**Paper:** [High-Resolution Image Synthesis with Latent Diffusion Models](https://arxiv.org/abs/2112.10752)  
+**Paper:** [High-Resolution Image Synthesis with Latent Diffusion Models](https://arxiv.org/abs/2112.10752)
 **Example:** [LDM Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/ldm/ldm.ipynb)
 
 ---
@@ -206,7 +198,7 @@ This hierarchical approach leverages CLIP's multimodal embedding space where tex
 
 Given the complexity, UnCLIP training requires more extensive setup than other models in this library.
 
-**Paper:** [Hierarchical Text-Conditional Image Generation with CLIP Latents](https://arxiv.org/abs/2204.06125)  
+**Paper:** [Hierarchical Text-Conditional Image Generation with CLIP Latents](https://arxiv.org/abs/2204.06125)
 **Example:** [UnCLIP Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/unclip/unclip.ipynb)
 
 ---
@@ -215,15 +207,16 @@ Given the complexity, UnCLIP training requires more extensive setup than other m
 
 TorchDiff breaks each model into reusable components:
 
-| Component | Description |
-|-----------|-------------|
-| **Forward Diffusion** | Adds noise to data following model-specific schedules |
-| **Reverse Diffusion** | Removes noise to recover data via learned denoising |
-| **Scheduler** | Controls variance/noise schedules across timesteps |
-| **Training** | Complete training pipelines with mixed precision, gradient accumulation |
-| **Sampling** | Efficient inference and image generation routines |
+| Component                   | Description                                                             |
+| --------------------------- | ----------------------------------------------------------------------- |
+| **Forward Diffusion** | Adds noise to data following model-specific schedules                   |
+| **Reverse Diffusion** | Removes noise to recover data via learned denoising                     |
+| **Scheduler**         | Controls variance/noise schedules across timesteps                      |
+| **Training**          | Complete training pipelines with mixed precision, gradient accumulation |
+| **Sampling**          | Efficient inference and image generation routines                       |
 
 Additional utilities:
+
 - **DiffusionNetwork**: U-Net architecture with attention and time embeddings
 - **TextEncoder**: Transformer-based encoder for conditional generation
 - **Metrics**: Evaluation suite (MSE, PSNR, SSIM, FID, LPIPS)
@@ -244,13 +237,13 @@ Documentation and additional materials are available online.
 
 We are actively developing TorchDiff with several improvements planned for future releases.
 
-**Model Extensions**  
+**Model Extensions**
 New diffusion variants and training algorithms from recent literature will be added as they become established. We are particularly interested in methods that improve sample efficiency or generation quality.
 
-**Performance Optimization**  
+**Performance Optimization**
 Sampling speed and memory efficiency remain active areas of research. We plan to integrate faster sampling methods and more efficient architectures as they emerge.
 
-**Experimental Utilities**  
+**Experimental Utilities**
 Additional tools for hyperparameter tuning, ablation studies, and model comparison will make experimentation more straightforward.
 
 ---
