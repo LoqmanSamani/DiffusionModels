@@ -1,5 +1,5 @@
-ldm
-==========
+LDM -- Latent Diffusion Models
+==============================
 
 .. automodule:: torchdiff.ldm
    :members:

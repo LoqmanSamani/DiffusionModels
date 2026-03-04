@@ -1,23 +1,17 @@
 from setuptools import setup, find_packages
 from pathlib import Path
 
-readme_files = ["README_PYPI.md", "README.md"]
 long_description = ""
-
-for readme_file in readme_files:
-    readme_path = Path(readme_file)
-    if readme_path.exists():
-        long_description = readme_path.read_text(encoding="utf-8")
-        break
+readme_path = Path("README.md")
+if readme_path.exists():
+    long_description = readme_path.read_text(encoding="utf-8")
 
 if not long_description:
     long_description = "A PyTorch-based library for diffusion models"
 
-#long_description = Path("README.md").read_text(encoding="utf-8") if Path("README.md").exists() else ""
-
 setup(
     name="TorchDiff",
-    version="2.4.0",
+    version="2.5.0",
     description="A PyTorch-based library for diffusion models",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -26,7 +20,7 @@ setup(
     url="https://github.com/LoqmanSamani/TorchDiff",
     project_urls={
         "Homepage": "https://loqmansamani.github.io/torchdiff",
-        "Documentation": "https://torchdiff.readthedio",
+        "Documentation": "https://torchdiff.readthedocs.io/en/latest/",
         "Source": "https://github.com/LoqmanSamani/TorchDiff",
     },
     license="MIT",

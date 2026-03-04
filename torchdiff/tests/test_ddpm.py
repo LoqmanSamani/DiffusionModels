@@ -278,7 +278,7 @@ class TestReverseDDPM:
 
     def test_invalid_pred_type(self, scheduler):
         """Test that invalid prediction type raises ValueError."""
-        with pytest.raises(ValueError, match="prediction_type must be one of"):
+        with pytest.raises(ValueError, match="pred_type must be one of"):
             ReverseDDPM(scheduler, pred_type="invalid")
 
     def test_invalid_var_type(self, scheduler):

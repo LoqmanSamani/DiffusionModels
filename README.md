@@ -1,14 +1,14 @@
 # TorchDiff
 
 <div align="center">
-  <img src="imgs/logo_.png" alt="TorchDiff Logo" width="300"/>
+  <img src="https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/imgs/logo_.png?raw=true" alt="TorchDiff Logo" width="300"/>
 </div>
 
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-red?style=plastic)](https://opensource.org/licenses/MIT)
 [![PyTorch](https://img.shields.io/badge/PyTorch-white?style=plastic&logo=pytorch&logoColor=red)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/version-2.4.0-blue?style=plastic)](https://pypi.org/project/torchdiff/)
+[![Version](https://img.shields.io/badge/version-2.5.0-blue?style=plastic)](https://pypi.org/project/torchdiff/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=plastic&logo=python&logoColor=white)](https://www.python.org/)
 [![Downloads](https://pepy.tech/badge/torchdiff)](https://pepy.tech/project/torchdiff)
 [![Stars](https://img.shields.io/github/stars/LoqmanSamani/TorchDiff?style=plastic&color=yellow)](https://github.com/LoqmanSamani/TorchDiff)
@@ -23,10 +23,10 @@
 
 **TorchDiff** is a PyTorch library for diffusion models, implementing foundational architectures from recent research. The library provides modular components for building, training, and sampling from diffusion-based generative models.
 
-Version 2.0.0 includes five major model families grounded in the diffusion modeling literature. **DDPM** (Ho et al., 2020) and **DDIM** (Song et al., 2021a) establish the core discrete-time framework. **SDE-based diffusion** (Song et al., 2021b) extends this to continuous stochastic processes with variance-exploding and variance-preserving formulations. **LDM** (Rombach et al., 2022) moves diffusion into learned latent spaces via variational autoencoders. **UnCLIP** (Ramesh et al., 2022) combines CLIP embeddings with hierarchical generation for text-to-image synthesis.
+Version 2.5.0 includes five major model families grounded in the diffusion modeling literature. **DDPM** (Ho et al., 2020) and **DDIM** (Song et al., 2021a) establish the core discrete-time framework. **SDE-based diffusion** (Song et al., 2021b) extends this to continuous stochastic processes with variance-exploding and variance-preserving formulations. **LDM** (Rombach et al., 2022) moves diffusion into learned latent spaces via variational autoencoders. **UnCLIP** (Ramesh et al., 2022) combines CLIP embeddings with hierarchical generation for text-to-image synthesis.
 
 <div align="center">
-  <img src="imgs/mount.png" alt="Diffusion Model Process" width="1000"/>
+  <img src="https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/imgs/mount.png?raw=true" alt="Diffusion Model Process" width="1000"/>
   <br>
   <em>Image generated using Sora</em>
   <br><br>
@@ -37,6 +37,16 @@ Each model breaks down into reusable components. Forward diffusion modules gradu
 The library includes two main architectural components. **DiffusionNetwork** provides a U-Net variant with temporal embeddings, cross-attention mechanisms, and residual blocks adapted from stable diffusion architectures. **TextEncoder** wraps transformer models like BERT for conditional generation tasks.
 
 We also provide evaluation utilities including standard metrics (MSE, PSNR, SSIM) and perceptual measures (FID, LPIPS) commonly used in generative modeling research.
+
+---
+
+## What's New in v2.5.0
+
+- **UnCLIP improvements**: Fixed CLIPContextProjection output dimension handling, corrected sampling loop index arithmetic, resolved NaN loss in upsampler/prior training via bfloat16 autocast, and fixed CLIPEmbeddingProjection reconstruction loss bug.
+- **Expanded test coverage**: Added test suites for LDM (AutoencoderLDM), UnCLIP (Scheduler, Forward/Reverse, Projections, TransformerPrior), and Utils (DiffusionNetwork, loss functions, Metrics).
+- **API completeness**: `TrainUnCLIPPrior` now properly exported; removed duplicate `SampleUnCLIP` import.
+- **Documentation**: Aligned all RST titles, added `torchmetrics` to mock imports for ReadTheDocs builds.
+- **Build fixes**: Corrected ReadTheDocs URL in setup.py, removed trailing commas from requirements.txt, unified README for both GitHub and PyPI.
 
 ---
 
@@ -198,6 +208,26 @@ Given the complexity, UnCLIP training requires more extensive setup than other m
 
 **Paper:** [Hierarchical Text-Conditional Image Generation with CLIP Latents](https://arxiv.org/abs/2204.06125)  
 **Example:** [UnCLIP Notebook](https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/examples/unclip/unclip.ipynb)
+
+---
+
+## Modular Design
+
+TorchDiff breaks each model into reusable components:
+
+| Component | Description |
+|-----------|-------------|
+| **Forward Diffusion** | Adds noise to data following model-specific schedules |
+| **Reverse Diffusion** | Removes noise to recover data via learned denoising |
+| **Scheduler** | Controls variance/noise schedules across timesteps |
+| **Training** | Complete training pipelines with mixed precision, gradient accumulation |
+| **Sampling** | Efficient inference and image generation routines |
+
+Additional utilities:
+- **DiffusionNetwork**: U-Net architecture with attention and time embeddings
+- **TextEncoder**: Transformer-based encoder for conditional generation
+- **Metrics**: Evaluation suite (MSE, PSNR, SSIM, FID, LPIPS)
+- **Loss Functions**: MSE, SNR-capped, VE sigma-weighted score matching
 
 ---
 

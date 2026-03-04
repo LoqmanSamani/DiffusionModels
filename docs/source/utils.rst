@@ -1,5 +1,5 @@
-Utils
-============
+Utilities
+=========
 
 .. automodule:: torchdiff.utils
    :members:

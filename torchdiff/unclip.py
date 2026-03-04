@@ -1143,16 +1143,21 @@ class CLIPContextProjection(nn.Module):
     Parameters
     ----------
     `clip_embed_dim` : int
-        Dimensionality of the input CLIP embedding (e.g., 319 or 512).
+        Dimensionality of the input CLIP embedding (e.g., 320 or 512).
     `num_tokens` : int, optional
         Number of context tokens to generate (default: 4).
+    `output_dim` : int, optional
+        Dimensionality of each output context token. If None, defaults to clip_embed_dim.
+        Use this when the input embedding has been reduced in dimensionality but the
+        output tokens need to match a different dimension (e.g., GLIDE text encoder output).
     """
-    def __init__(self, clip_embed_dim, num_tokens=4):
+    def __init__(self, clip_embed_dim, num_tokens=4, output_dim=None):
         super().__init__()
         self.clip_embed_dim = clip_embed_dim
         self.num_tokens = num_tokens
-        self.clip_proj = nn.Linear(clip_embed_dim, clip_embed_dim * num_tokens)
-        self.clip_embed_norm = nn.LayerNorm(clip_embed_dim)
+        self.output_dim = output_dim if output_dim is not None else clip_embed_dim
+        self.clip_proj = nn.Linear(clip_embed_dim, self.output_dim * num_tokens)
+        self.clip_embed_norm = nn.LayerNorm(self.output_dim)
 
     def forward(self, z_i):
         """Projects CLIP image embedding into context tokens.
@@ -1168,11 +1173,11 @@ class CLIPContextProjection(nn.Module):
         Returns
         -------
         c : torch.Tensor
-            Context tokens, shape (batch_size, num_tokens, input_dim).
+            Context tokens, shape (batch_size, num_tokens, output_dim).
         """
         batch_size = z_i.shape[0]
         proj = self.clip_proj(z_i)
-        c = proj.view(batch_size, self.num_tokens, self.clip_embed_dim)
+        c = proj.view(batch_size, self.num_tokens, self.output_dim)
         c = self.clip_embed_norm(c)
         return c
 
@@ -1320,8 +1325,8 @@ class CLIPEmbeddingProjection(nn.Module):
         loss : torch.Tensor
             Mean squared error loss between the original and reconstructed tensors.
         """
-        x = self.forward(x)
-        x_rec = self.inverse_transform(x)
+        x_reduced = self.forward(x)
+        x_rec = self.inverse_transform(x_reduced)
         return F.mse_loss(x_rec, x)
 
 ###==================================================================================================================###
@@ -1445,6 +1450,21 @@ class TrainUnClipDecoder(nn.Module):
         else:
             self.clip_text_proj = None
             self.clip_img_proj = None
+        # reinitialize decoder projections for reduced-dim input
+        if self.reduce_clip_embed_dim and clip_text_proj is not None and clip_img_proj is not None:
+            self.decoder_net.clip_decoder_proj = CLIPContextProjection(
+                clip_embed_dim=trans_embed_dim,
+                num_tokens=4,
+                output_dim=clip_embed_dim
+            ).to(self.device)
+            self.decoder_net.clip_time_proj = nn.Linear(
+                trans_embed_dim, clip_embed_dim
+            ).to(self.device)
+            # add new projection params to the optimizer
+            new_params = list(self.decoder_net.clip_decoder_proj.parameters()) + \
+                         list(self.decoder_net.clip_time_proj.parameters())
+            self.optim = optim  # store first so we can add param group
+            self.optim.add_param_group({'params': new_params})
         # training components
         self.clip_embed_dim = trans_embed_dim if self.reduce_clip_embed_dim else clip_embed_dim
         self.metrics_ = metrics_
@@ -2027,12 +2047,10 @@ class TrainUnClipDecoder(nn.Module):
                 val_losses.append(loss.item())
                 if self.metrics_ is not None and self.decoder_net.rwd_unclip is not None:
                     xt = torch.randn_like(imgs).to(self.device)
-                    timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
-                    for t in range(len(timesteps) - 1):
-                        t_ = timesteps[t].item()
-                        t_pre = timesteps[t+1].item()
-                        time = torch.full((xt.shape[0],), t_, device=self.device, dtype=torch.long)
-                        prev_time = torch.full((xt.shape[0],), t_pre, device=self.device, dtype=torch.long)
+                    num_val_steps = self.decoder_net.rwd_unclip.vs.sample_steps
+                    for t_idx in range(num_val_steps - 1, 0, -1):
+                        time = torch.full((xt.shape[0],), t_idx, device=self.device, dtype=torch.long)
+                        prev_time = torch.full((xt.shape[0],), t_idx - 1, device=self.device, dtype=torch.long)
                         img_embed = self.decoder_net._classifier_free_guidance(img_embed)
                         txt_embed = self.decoder_net._text_dropout(txt_embed)
                         c = self.decoder_net.clip_decoder_proj(img_embed)
@@ -2327,7 +2345,7 @@ class TrainUnCLIPPrior(nn.Module):
             train_losses_epoch = []
             for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device, non_blocking=True)
-                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu', enabled=self.use_autocast):
+                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu', dtype=torch.bfloat16, enabled=self.use_autocast):
                     loss = self._train_loss(x, y)
                     loss = loss / self.grad_acc
                 if self.use_autocast:
@@ -2727,24 +2745,19 @@ class SampleUnCLIP(nn.Module):
         else:
             txt_embed_reduced = txt_embed
             curr_embed_reduced = curr_embed
-        # prior diffusion sampling with batched CFG
-        timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
-        for t in tqdm(range(len(timesteps) - 1), desc="Prior diffusion", leave=True):
-            t_ = timesteps[t].item()
-            t_pre = timesteps[t + 1].item()
-            time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
-            prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+        # prior diffusion sampling with batched CFG (iterate sample-step indices)
+        num_prior_steps = self.prior_net.rwd_unclip.vs.sample_steps
+        for t_idx in tqdm(range(num_prior_steps - 1, 0, -1), desc="Prior diffusion", leave=True):
+            time = torch.full((self.batch_size,), t_idx, device=self.device, dtype=torch.long)
+            prev_time = torch.full((self.batch_size,), t_idx - 1, device=self.device, dtype=torch.long)
             guided_embed = self._prior_guided_pred(
                 txt_embed_reduced, curr_embed_reduced, time
             )
             curr_embed_reduced, _ = self.prior_net.rwd_unclip(
                 curr_embed_reduced, time, prev_time, guided_embed
             )
-        # convert back to full embedding dimension
-        if self.prior_dim_reduction:
-            f_img_embed = self.prior_net.clip_img_proj.inverse_transform(curr_embed_reduced)
-        else:
-            f_img_embed = curr_embed_reduced
+        # keep reduced-dim embedding for decoder (clip_decoder_proj was trained on reduced dims)
+        f_img_embed = curr_embed_reduced
         # free prior model and intermediate tensors
         self._move_model_to_device(self.prior_net, self.offload_device)
         del embed_noise, curr_embed, curr_embed_reduced, txt_embed
@@ -2761,13 +2774,11 @@ class SampleUnCLIP(nn.Module):
         glide_txt_embed = self.decoder_net._encode_text_with_glide(prompts)
         context = self.decoder_net._conc_embed(glide_txt_embed, proj_embed)
         curr_imgs = decoder_noise
-        # decoder diffusion with batched CFG
-        timesteps = self.decoder_net.fwd_unclip.vs.inference_timesteps.flip(0)
-        for t in tqdm(range(len(timesteps) - 1), desc="Decoder 64x64", leave=True):
-            t_ = timesteps[t].item()
-            t_pre = timesteps[t + 1].item()
-            time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
-            prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+        # decoder diffusion with batched CFG (iterate sample-step indices)
+        num_dec_steps = self.decoder_net.rwd_unclip.vs.sample_steps
+        for t_idx in tqdm(range(num_dec_steps - 1, 0, -1), desc="Decoder 64x64", leave=True):
+            time = torch.full((self.batch_size,), t_idx, device=self.device, dtype=torch.long)
+            prev_time = torch.full((self.batch_size,), t_idx - 1, device=self.device, dtype=torch.long)
             guided_pred = self._decoder_guided_pred(curr_imgs, time, context)
             curr_imgs, _ = self.decoder_net.rwd_unclip(
                 curr_imgs, time, prev_time, guided_pred
@@ -2784,12 +2795,11 @@ class SampleUnCLIP(nn.Module):
             (self.batch_size, self.init_img_size[0], 256, 256), device=self.device
         )
         curr_256_imgs = up_256_noise
-        timesteps = self.low_res_upsampler.rwd_unclip.vs.inference_timesteps.flip(0)
-        for t in tqdm(range(len(timesteps) - 1), desc="Upsampler 256x256", leave=True):
-            t_ = timesteps[t].item()
-            t_pre = timesteps[t + 1].item()
-            time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
-            prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+        # upsampler diffusion (iterate sample-step indices)
+        num_up1_steps = self.low_res_upsampler.rwd_unclip.vs.sample_steps
+        for t_idx in tqdm(range(num_up1_steps - 1, 0, -1), desc="Upsampler 256x256", leave=True):
+            time = torch.full((self.batch_size,), t_idx, device=self.device, dtype=torch.long)
+            prev_time = torch.full((self.batch_size,), t_idx - 1, device=self.device, dtype=torch.long)
             pred = self.low_res_upsampler(curr_256_imgs, time, samps_64x64)
             curr_256_imgs, _ = self.low_res_upsampler.rwd_unclip(
                 curr_256_imgs, time, prev_time, pred
@@ -2807,12 +2817,11 @@ class SampleUnCLIP(nn.Module):
                 (self.batch_size, self.init_img_size[0], 1024, 1024), device=self.device
             )
             curr_1024_imgs = up_1024_noise
-            timesteps = self.high_res_upsampler.rwd_unclip.vs.inference_timesteps.flip(0)
-            for t in tqdm(range(len(timesteps) - 1), desc="Upsampler 1024x1024", leave=True):
-                t_ = timesteps[t].item()
-                t_pre = timesteps[t + 1].item()
-                time = torch.full((self.batch_size,), t_, device=self.device, dtype=torch.long)
-                prev_time = torch.full((self.batch_size,), t_pre, device=self.device, dtype=torch.long)
+            # high-res upsampler diffusion (iterate sample-step indices)
+            num_up2_steps = self.high_res_upsampler.rwd_unclip.vs.sample_steps
+            for t_idx in tqdm(range(num_up2_steps - 1, 0, -1), desc="Upsampler 1024x1024", leave=True):
+                time = torch.full((self.batch_size,), t_idx, device=self.device, dtype=torch.long)
+                prev_time = torch.full((self.batch_size,), t_idx - 1, device=self.device, dtype=torch.long)
                 pred = self.high_res_upsampler(curr_1024_imgs, time, self.imgs_256)
                 curr_1024_imgs, _ = self.high_res_upsampler.rwd_unclip(
                     curr_1024_imgs, time, prev_time, pred
@@ -3362,7 +3371,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
             for step, (low_imgs, high_imgs) in enumerate(pbar):
                 low_imgs = low_imgs.to(self.device, non_blocking=True)
                 high_imgs = high_imgs.to(self.device, non_blocking=True)
-                with torch.autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu', enabled=self.use_autocast):
+                with torch.autocast(device_type='cuda' if self.device.type == 'cuda' else 'cpu', dtype=torch.bfloat16, enabled=self.use_autocast):
                     batch_size = high_imgs.shape[0]
                     timesteps = torch.randint(0, self.up_net.fwd_unclip.vs.train_steps, (batch_size,), device=self.device)
                     noise = torch.randn_like(high_imgs)

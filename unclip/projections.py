@@ -14,16 +14,21 @@ class CLIPContextProjection(nn.Module):
     Parameters
     ----------
     `clip_embed_dim` : int
-        Dimensionality of the input CLIP embedding (e.g., 319 or 512).
+        Dimensionality of the input CLIP embedding (e.g., 320 or 512).
     `num_tokens` : int, optional
         Number of context tokens to generate (default: 4).
+    `output_dim` : int, optional
+        Dimensionality of each output context token. If None, defaults to clip_embed_dim.
+        Use this when the input embedding has been reduced in dimensionality but the
+        output tokens need to match a different dimension (e.g., GLIDE text encoder output).
     """
-    def __init__(self, clip_embed_dim, num_tokens=4):
+    def __init__(self, clip_embed_dim, num_tokens=4, output_dim=None):
         super().__init__()
         self.clip_embed_dim = clip_embed_dim
         self.num_tokens = num_tokens
-        self.clip_proj = nn.Linear(clip_embed_dim, clip_embed_dim * num_tokens)
-        self.clip_embed_norm = nn.LayerNorm(clip_embed_dim)
+        self.output_dim = output_dim if output_dim is not None else clip_embed_dim
+        self.clip_proj = nn.Linear(clip_embed_dim, self.output_dim * num_tokens)
+        self.clip_embed_norm = nn.LayerNorm(self.output_dim)
 
     def forward(self, z_i):
         """Projects CLIP image embedding into context tokens.
@@ -39,11 +44,11 @@ class CLIPContextProjection(nn.Module):
         Returns
         -------
         c : torch.Tensor
-            Context tokens, shape (batch_size, num_tokens, input_dim).
+            Context tokens, shape (batch_size, num_tokens, output_dim).
         """
         batch_size = z_i.shape[0]
         proj = self.clip_proj(z_i)
-        c = proj.view(batch_size, self.num_tokens, self.clip_embed_dim)
+        c = proj.view(batch_size, self.num_tokens, self.output_dim)
         c = self.clip_embed_norm(c)
         return c
 

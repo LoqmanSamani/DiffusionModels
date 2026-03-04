@@ -1129,7 +1129,7 @@ class AutoencoderLDM(nn.Module):
         z, reg_loss = self.encode(x)
         x_hat = self.decode(z)
         recon_loss = F.mse_loss(x_hat, x)
-        total_loss = recon_loss.item() + reg_loss
+        total_loss = recon_loss + reg_loss
         return x_hat, total_loss, reg_loss, z
 
 
@@ -1613,7 +1613,7 @@ class TrainAE(nn.Module):
             max_epochs: int = 100,
             metrics_: Optional[Any] = None,
             device: str = 'cuda',
-            store_path: str = "vlc_model",
+            store_path: str = "vae_model",
             checkpoint: int = 10,
             kl_warmup_epochs: int = 10,
             patience: int = 10,

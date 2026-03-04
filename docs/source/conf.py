@@ -11,7 +11,7 @@ try:
     release = version = pkg_version("torchdiff")
 except Exception:
     # Fallback version if package import fails
-    release = version = "2.0.0"
+    release = version = "2.5.0"
 
 extensions = [
     'sphinx.ext.autodoc',
@@ -31,7 +31,8 @@ autodoc_member_order = 'bysource'
 # Mock heavy imports so RTD build doesn't break
 autodoc_mock_imports = [
     "torch", "torchvision", "torchaudio",
-    "lpips", "pytorch_fid", "transformers"
+    "lpips", "pytorch_fid", "transformers",
+    "torchmetrics"
 ]
 
 # Add more verbose autodoc settings
