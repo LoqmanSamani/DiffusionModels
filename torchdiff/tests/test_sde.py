@@ -147,7 +147,7 @@ class TestForwardSDE:
         x0 = torch.randn(batch_size, dim)
         noise = torch.randn(batch_size, dim)
         t = torch.rand(batch_size)
-        xt, score = forward_vp(x0, noise, t)
+        xt, score = forward_vp(x0, t, noise)
         assert xt.shape == (batch_size, dim)
         assert score.shape == (batch_size, dim)
 
@@ -158,7 +158,7 @@ class TestForwardSDE:
         x0 = torch.randn(batch_size, dim)
         noise = torch.randn(batch_size, dim)
         t = torch.ones(batch_size) * 0.5
-        xt, _ = forward_vp(x0, noise, t)
+        xt, _ = forward_vp(x0, t, noise)
         mean_coeff, _ = forward_vp.get_forward_params(t[:1])
         expected_mean = mean_coeff.item() * x0.mean(dim=0)
         actual_mean = xt.mean(dim=0)
@@ -171,7 +171,7 @@ class TestForwardSDE:
         x0 = torch.zeros(batch_size, dim)
         noise = torch.randn(batch_size, dim)
         t = torch.ones(batch_size) * 0.5
-        xt, _ = forward_vp(x0, noise, t)
+        xt, _ = forward_vp(x0, t, noise)
         _, std = forward_vp.get_forward_params(t[:1])
         expected_var = std.item() ** 2
         actual_var = xt.var().item()
@@ -179,16 +179,18 @@ class TestForwardSDE:
         assert abs(actual_var - expected_var) < 0.1  # Within 0.1 tolerance
 
     def test_score_computation(self, forward_vp):
-        """Test score = -ε / σ(t)"""
+        """Test score = -ε / σ(t) when pred_type='score'"""
+        scheduler = forward_vp.vs
+        forward_score = ForwardSDE(scheduler, method="vp", pred_type="score")
         batch_size = 16
         dim = 64
         x0 = torch.randn(batch_size, dim)
         noise = torch.randn(batch_size, dim)
         t = torch.rand(batch_size)
-        _, score = forward_vp(x0, noise, t)
-        _, std = forward_vp.get_forward_params(t)
-        std = forward_vp._broadcast_to_shape(std, x0.shape)
-        expected_score = -noise / (std + forward_vp.eps)
+        _, score = forward_score(x0, t, noise)
+        _, std = forward_score.get_forward_params(t)
+        std = forward_score._broadcast_to_shape(std, x0.shape)
+        expected_score = -noise / (std + forward_score.eps)
         assert torch.allclose(score, expected_score, atol=1e-6)
 
     def test_ve_mean_preserved(self, forward_ve):
@@ -233,7 +235,7 @@ class TestForwardSDE:
         x0 = torch.randn(batch_size, dim)
         noise = torch.randn(batch_size, dim)
         t = torch.zeros(batch_size)
-        xt, _ = forward_vp(x0, noise, t)
+        xt, _ = forward_vp(x0, t, noise)
         assert torch.allclose(xt, x0, atol=1e-5)
 
 
@@ -366,7 +368,7 @@ class TestIntegration:
         x0 = torch.randn(batch_size, dim)
         noise = torch.randn(batch_size, dim)
         t = torch.ones(batch_size) * 0.1
-        xt, true_score = forward_vp(x0, noise, t)
+        xt, true_noise = forward_vp(x0, t, noise)
         forward_ode = ForwardSDE(forward_vp.vs, method="ode")
         reverse_ode = ReverseSDE(reverse_vp.vs, method="ode")
 
@@ -380,8 +382,7 @@ class TestIntegration:
             mean_coeff = forward_ode._broadcast_to_shape(mean_coeff, x0.shape)
             std = forward_ode._broadcast_to_shape(std, x0.shape)
             epsilon = (x_curr - mean_coeff * x0) / std
-            score_curr = -epsilon / (std + 1e-8)
-            x_curr = reverse_ode(x_curr, score_curr, t_curr, dt, last_step=(i == num_steps - 1))
+            x_curr = reverse_ode(x_curr, epsilon, t_curr, dt, last_step=(i == num_steps - 1))
             t_curr = torch.clamp(t_curr + dt, min=0.0)
         recovery_error = torch.norm(x_curr - x0).item() / torch.norm(x0).item()
         assert recovery_error < 0.3
@@ -397,7 +398,7 @@ class TestIntegration:
         x0 = torch.randn(batch_size, dim)
         t_forward = torch.ones(batch_size) * 0.2
         noise = torch.randn(batch_size, dim)
-        xt, true_score = forward_ode(x0, noise, t_forward)
+        xt, true_score = forward_ode(x0, t_forward, noise)
 
         dt = -0.01
         num_steps = int(t_forward[0].item() / abs(dt))
@@ -410,9 +411,8 @@ class TestIntegration:
             std = forward_ode._broadcast_to_shape(std, x0.shape)
 
             epsilon = (x_curr - mean_coeff * x0) / std
-            score_curr = -epsilon / (std + 1e-8)
 
-            x_curr = reverse_ode(x_curr, score_curr, t_curr, dt)
+            x_curr = reverse_ode(x_curr, epsilon, t_curr, dt)
             t_curr = torch.clamp(t_curr + dt, min=0.0)
 
         recovery_error = torch.norm(x_curr - x0).item() / torch.norm(x0).item()
@@ -421,23 +421,25 @@ class TestIntegration:
         torch.manual_seed(42)
         x0_2 = torch.randn(batch_size, dim)
         noise_2 = torch.randn(batch_size, dim)
-        xt_2, _ = forward_ode(x0_2, noise_2, t_forward)
+        xt_2, _ = forward_ode(x0_2, t_forward, noise_2)
         x_out_1 = reverse_ode(xt_2, true_score, t_forward, -0.01)
         x_out_2 = reverse_ode(xt_2, true_score, t_forward, -0.01)
         assert torch.allclose(x_out_1, x_out_2, atol=1e-7)
 
     def test_score_matching_objective(self, forward_vp):
         """Test that the true score satisfies score matching"""
+        scheduler = forward_vp.vs
+        forward_score = ForwardSDE(scheduler, method="vp", pred_type="score")
         batch_size = 16
         dim = 64
         x0 = torch.randn(batch_size, dim)
         noise = torch.randn(batch_size, dim)
         t = torch.rand(batch_size)
 
-        xt, true_score = forward_vp(x0, noise, t)
-        mean_coeff, std = forward_vp.get_forward_params(t)
-        mean_coeff = forward_vp._broadcast_to_shape(mean_coeff, x0.shape)
-        std = forward_vp._broadcast_to_shape(std, x0.shape)
+        xt, true_score = forward_score(x0, t, noise)
+        mean_coeff, std = forward_score.get_forward_params(t)
+        mean_coeff = forward_score._broadcast_to_shape(mean_coeff, x0.shape)
+        std = forward_score._broadcast_to_shape(std, x0.shape)
 
         expected_score = -noise / std
         assert torch.allclose(true_score, expected_score, atol=1e-5)
@@ -457,7 +459,7 @@ class TestIntegration:
             t = torch.ones(batch_size) * t_val
             noise = torch.randn(batch_size, dim)
             noise -= noise.mean(dim=0, keepdim=True)
-            xt, _ = forward_ve(x0, noise, t)
+            xt, _ = forward_ve(x0, t, noise)
 
             means.append(xt.mean().item())
             variances.append(xt.var().item())
@@ -480,7 +482,7 @@ class TestIntegration:
         noise = torch.randn(batch_size, dim)
         t = torch.ones(batch_size) * 0.5
 
-        xt, score = forward_subvp(x0, noise, t)
+        xt, score = forward_subvp(x0, t, noise)
 
         mean_coeff, std = forward_subvp.get_forward_params(t[:1])
         assert torch.isclose(mean_coeff, torch.tensor(1.0), atol=1e-6)
@@ -501,7 +503,7 @@ class TestIntegration:
             x0 = torch.randn(batch_size, dim)
             noise = torch.randn(batch_size, dim)
             t = torch.rand(batch_size) * 0.9 + 0.05
-            xt, score = forward_sde(x0, noise, t)
+            xt, score = forward_sde(x0, t, noise)
             assert not torch.isnan(xt).any(), f"NaN in xt for method {method}"
             assert not torch.isinf(xt).any(), f"Inf in xt for method {method}"
             assert not torch.isnan(score).any(), f"NaN in score for method {method}"
@@ -530,12 +532,12 @@ class TestIntegration:
         noise = torch.randn(batch_size, dim)
 
         t_small = torch.ones(batch_size) * 1e-5
-        xt_small, score_small = forward_vp(x0, noise, t_small)
+        xt_small, score_small = forward_vp(x0, t_small, noise)
         assert not torch.isnan(xt_small).any()
         assert not torch.isnan(score_small).any()
 
         t_large = torch.ones(batch_size) * (1.0 - 1e-5)
-        xt_large, score_large = forward_vp(x0, noise, t_large)
+        xt_large, score_large = forward_vp(x0, t_large, noise)
         assert not torch.isnan(xt_large).any()
         assert not torch.isnan(score_large).any()
         x_prev = reverse_vp(xt_large, score_large, t_large, -0.001)

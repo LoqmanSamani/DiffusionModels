@@ -376,8 +376,7 @@ class SchedulerDDIM(nn.Module):
             Reshaped tensor suitable for broadcasting.
         """
         batch_size = t.shape[0]
-        out = t.to(t.device)
-        return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
+        return t.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
 
 
 ###==================================================================================================================###
@@ -506,6 +505,7 @@ class TrainDDIM(nn.Module):
             factor=0.5
         )
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
+        self._device_type = self.device.type if hasattr(self.device, 'type') else ('cuda' if 'cuda' in str(self.device) else 'cpu')
         if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -524,15 +524,17 @@ class TrainDDIM(nn.Module):
             raise ValueError("DDP enabled but LOCAL_RANK environment variable not set")
         if "WORLD_SIZE" not in os.environ:
             raise ValueError("DDP enabled but WORLD_SIZE environment variable not set")
-        if not torch.cuda.is_available():
-            raise RuntimeError("DDP requires CUDA but CUDA is not available")
         if not torch.distributed.is_initialized():
-            init_process_group(backend="nccl")
+            backend = "nccl" if torch.cuda.is_available() else "gloo"
+            init_process_group(backend=backend)
         self.ddp_rank = int(os.environ["RANK"])  # global rank across all nodes
         self.ddp_local_rank = int(os.environ["LOCAL_RANK"])  # local rank on current node
         self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # total number of processes
-        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
-        torch.cuda.set_device(self.device)
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+            torch.cuda.set_device(self.device)
+        else:
+            self.device = torch.device("cpu")
         self.master_process = self.ddp_rank == 0
         if self.master_process:
             print(f"DDP initialized with world_size={self.ddp_world_size}")
@@ -641,17 +643,12 @@ class TrainDDIM(nn.Module):
     def _wrap_models_for_ddp(self) -> None:
         """Wrap models with DistributedDataParallel for multi-GPU training."""
         if self.use_ddp:
-            self.diff_net = DDP(
-                self.diff_net,
-                device_ids=[self.ddp_local_rank],
-                find_unused_parameters=True
-            )
+            ddp_kwargs = dict(find_unused_parameters=False)
+            if self._device_type == 'cuda':
+                ddp_kwargs['device_ids'] = [self.ddp_local_rank]
+            self.diff_net = DDP(self.diff_net, **ddp_kwargs)
             if self.cond_net is not None:
-                self.cond_net = DDP(
-                    self.cond_net,
-                    device_ids=[self.ddp_local_rank],
-                    find_unused_parameters=True
-                )
+                self.cond_net = DDP(self.cond_net, **ddp_kwargs)
 
     def forward(self) -> Dict:
         """Trains the DDIM model to predict noise added by the forward diffusion process.
@@ -678,7 +675,10 @@ class TrainDDIM(nn.Module):
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
         self._wrap_models_for_ddp()
-        scaler = torch.GradScaler()
+        use_amp = self._device_type == 'cuda'
+        scaler = torch.amp.GradScaler(self._device_type, enabled=use_amp)
+        if use_amp:
+            torch.backends.cudnn.benchmark = True
         wait = 0
         for epoch in range(self.max_epochs):
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
@@ -691,7 +691,7 @@ class TrainDDIM(nn.Module):
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
-                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                with torch.autocast(device_type=self._device_type, enabled=use_amp):
                     noise = torch.randn_like(x)
                     t = torch.randint(0, self.fwd_ddim.vs.train_steps, (x.shape[0],), device=x.device)
                     xt, target = self.fwd_ddim(x, t, noise)
@@ -706,8 +706,8 @@ class TrainDDIM(nn.Module):
                         torch.nn.utils.clip_grad_norm_(self.cond_net.parameters(), max_norm=1.0)
                     scaler.step(self.optim)
                     scaler.update()
-                    self.optim.zero_grad()
-                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                    self.optim.zero_grad(set_to_none=True)
+                    if self.global_step < self.warmup_steps:
                         self.warmup_lr_scheduler.step()
                     self.global_step += 1
                 pbar.set_postfix({'Loss': f'{loss.item() * self.grad_acc:.4f}'})
@@ -1042,7 +1042,7 @@ class SampleDDIM(nn.Module):
         if conds is None and self.cond_net is not None:
             raise ValueError("Conditions must be provided for conditional model")
 
-        init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1]).to(self.device)
+        init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1], device=self.device)
         self.diff_net.eval()
         if self.cond_net:
             self.cond_net.eval()
@@ -1055,14 +1055,13 @@ class SampleDDIM(nn.Module):
             dynamic_ncols=True,
             leave=True,
         )
-        if self.cond_net is not None and conds is not None:
-            input_ids, attention_masks = self.tokenize(conds)
-            key_padding_mask = (attention_masks == 0)
-            y = self.cond_net(input_ids, key_padding_mask)
-        else:
-            y = None
-
         with torch.no_grad():
+            if self.cond_net is not None and conds is not None:
+                input_ids, attention_masks = self.tokenize(conds)
+                key_padding_mask = (attention_masks == 0)
+                y = self.cond_net(input_ids, key_padding_mask)
+            else:
+                y = None
             xt = init_samps
             for i in iterator:
                 t_current = timesteps[i].item()
@@ -1099,6 +1098,7 @@ class SampleDDIM(nn.Module):
         """
         self.device = device
         self.diff_net.to(device)
+        self.rwd_ddim.to(device)
         if self.cond_net:
             self.cond_net.to(device)
         return super().to(device)

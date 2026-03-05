@@ -666,6 +666,7 @@ class TrainSDE(nn.Module):
             factor=0.5
         )
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
+        self._device_type = self.device.type if hasattr(self.device, 'type') else ('cuda' if 'cuda' in str(self.device) else 'cpu')
         if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -686,18 +687,20 @@ class TrainSDE(nn.Module):
             raise ValueError("DDP enabled but LOCAL_RANK environment variable not set")
         if "WORLD_SIZE" not in os.environ:
             raise ValueError("DDP enabled but WORLD_SIZE environment variable not set")
-        if not torch.cuda.is_available():
-            raise RuntimeError("DDP requires CUDA but CUDA is not available")
         if not torch.distributed.is_initialized():
-            init_process_group(backend="nccl")
+            backend = "nccl" if torch.cuda.is_available() else "gloo"
+            init_process_group(backend=backend)
 
         # get rank info
         self.ddp_rank = int(os.environ["RANK"])
         self.ddp_local_rank = int(os.environ["LOCAL_RANK"])
         self.ddp_world_size = int(os.environ["WORLD_SIZE"])
 
-        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
-        torch.cuda.set_device(self.device)
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+            torch.cuda.set_device(self.device)
+        else:
+            self.device = torch.device("cpu")
         self.master_process = self.ddp_rank == 0
         if self.master_process:
             print(f"DDP initialized with world_size={self.ddp_world_size}")
@@ -809,17 +812,12 @@ class TrainSDE(nn.Module):
     def _wrap_models_for_ddp(self) -> None:
         """Wrap models with DistributedDataParallel for multi-GPU training."""
         if self.use_ddp:
-            self.score_net = DDP(
-                self.score_net,
-                device_ids=[self.ddp_local_rank],
-                find_unused_parameters=True
-            )
+            ddp_kwargs = dict(find_unused_parameters=False)
+            if self._device_type == 'cuda':
+                ddp_kwargs['device_ids'] = [self.ddp_local_rank]
+            self.score_net = DDP(self.score_net, **ddp_kwargs)
             if self.cond_net is not None:
-                self.cond_net = DDP(
-                    self.cond_net,
-                    device_ids=[self.ddp_local_rank],
-                    find_unused_parameters=True
-                )
+                self.cond_net = DDP(self.cond_net, **ddp_kwargs)
 
     def forward(self) -> Dict:
         """Trains the SDE model to predict noise added by the forward diffusion process.
@@ -852,7 +850,10 @@ class TrainSDE(nn.Module):
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
         self._wrap_models_for_ddp()
-        scaler = torch.GradScaler()
+        use_amp = self._device_type == 'cuda'
+        scaler = torch.amp.GradScaler(self._device_type, enabled=use_amp)
+        if use_amp:
+            torch.backends.cudnn.benchmark = True
         wait = 0
 
         for epoch in range(self.max_epochs):
@@ -867,7 +868,7 @@ class TrainSDE(nn.Module):
                 else:
                     y_encoded = None
 
-                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                with torch.autocast(device_type=self._device_type, enabled=use_amp):
                     noise = torch.randn_like(x)
                     t = self.sample_time(x.shape[0], self.time_eps)
                     xt, target = self.fwd_sde(x, t, noise)
@@ -886,8 +887,8 @@ class TrainSDE(nn.Module):
                         torch.nn.utils.clip_grad_norm_(self.cond_net.parameters(), max_norm=1.0)
                     scaler.step(self.optim)
                     scaler.update()
-                    self.optim.zero_grad()
-                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                    self.optim.zero_grad(set_to_none=True)
+                    if self.global_step < self.warmup_steps:
                         self.warmup_lr_scheduler.step()
                     self.global_step += 1
 
@@ -1041,53 +1042,52 @@ class TrainSDE(nn.Module):
         val_losses = []
         fid_scores, mse_scores, psnr_scores, ssim_scores, lpips_scores = [], [], [], [], []
         with torch.no_grad():
-            with torch.no_grad():
-                for x, y in self.val_loader:
-                    x = x.to(self.device)
-                    x_orig = x.clone()
-                    if self.cond_net is not None:
-                        y_encoded = self._process_conditional_input(y)
-                    else:
-                        y_encoded = None
+            for x, y in self.val_loader:
+                x = x.to(self.device)
+                x_orig = x.clone()
+                if self.cond_net is not None:
+                    y_encoded = self._process_conditional_input(y)
+                else:
+                    y_encoded = None
 
-                    noise = torch.randn_like(x)
-                    t = self.sample_time(x.shape[0], self.time_eps)
-                    xt, target = self.fwd_sde(x, t, noise)
-                    pred = self.score_net(xt, t, y_encoded, clip_embeddings=None)
-                    var = self.fwd_sde.vs.variance(t)
-                    if self.fwd_sde.method == "ve":
-                        sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
-                        loss = self.loss_fn(pred, target, sigma) / self.grad_acc
-                    else:
-                        loss = self.loss_fn(pred, target, var) / self.grad_acc
-                    val_losses.append(loss.item())
-                    if self.metrics_ is not None and self.rwd_sde is not None:
-                        xt = torch.randn_like(x).to(self.device)
-                        # reverse diffusion sampling
-                        t_schedule = torch.linspace(1.0, self.time_eps, self.num_steps + 1)
-                        dt = torch.tensor(-(1.0 - self.time_eps) / self.num_steps, device=xt.device, dtype=xt.dtype)
-                        for t in range(self.num_steps):
-                            t_current = float(t_schedule[t])
-                            t_batch = torch.full((xt.shape[0],), t_current, dtype=xt.dtype, device=self.device)
-                            pred = self.score_net(xt, t_batch, y_encoded, None)
-                            last_step = (t == self.num_steps - 1)
-                            xt = self.rwd_sde(xt, pred, t_batch, dt, last_step = last_step)
+                noise = torch.randn_like(x)
+                t = self.sample_time(x.shape[0], self.time_eps)
+                xt, target = self.fwd_sde(x, t, noise)
+                pred = self.score_net(xt, t, y_encoded, clip_embeddings=None)
+                var = self.fwd_sde.vs.variance(t)
+                if self.fwd_sde.method == "ve":
+                    sigma = self.fwd_sde.sigma_min * (self.fwd_sde.sigma_max / self.fwd_sde.sigma_min) ** t
+                    loss = self.loss_fn(pred, target, sigma) / self.grad_acc
+                else:
+                    loss = self.loss_fn(pred, target, var) / self.grad_acc
+                val_losses.append(loss.item())
+                if self.metrics_ is not None and self.rwd_sde is not None:
+                    xt = torch.randn(x.shape, device=self.device)
+                    # reverse diffusion sampling
+                    t_schedule = torch.linspace(1.0, self.time_eps, self.num_steps + 1, device=self.device)
+                    dt = torch.tensor(-(1.0 - self.time_eps) / self.num_steps, device=self.device, dtype=xt.dtype)
+                    for t in range(self.num_steps):
+                        t_current = float(t_schedule[t])
+                        t_batch = torch.full((xt.shape[0],), t_current, dtype=xt.dtype, device=self.device)
+                        pred = self.score_net(xt, t_batch, y_encoded, None)
+                        last_step = (t == self.num_steps - 1)
+                        xt = self.rwd_sde(xt, pred, t_batch, dt, last_step=last_step)
 
-                    x_hat = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
-                    if self.norm_output:
-                        x_hat = (x_hat - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
-                        x_orig = (x_orig - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
+                x_hat = torch.clamp(xt, min=self.norm_range[0], max=self.norm_range[1])
+                if self.norm_output:
+                    x_hat = (x_hat - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
+                    x_orig = (x_orig - self.norm_range[0]) / (self.norm_range[1] - self.norm_range[0])
 
-                    metrics_result = self.metrics_.forward(x_orig, x_hat)
-                    fid, mse, psnr, ssim, lpips_score = metrics_result
-                    if hasattr(self.metrics_, 'fid') and self.metrics_.fid:
-                        fid_scores.append(fid)
-                    if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
-                        mse_scores.append(mse)
-                        psnr_scores.append(psnr)
-                        ssim_scores.append(ssim)
-                    if hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
-                        lpips_scores.append(lpips_score)
+                metrics_result = self.metrics_.forward(x_orig, x_hat)
+                fid, mse, psnr, ssim, lpips_score = metrics_result
+                if hasattr(self.metrics_, 'fid') and self.metrics_.fid:
+                    fid_scores.append(fid)
+                if hasattr(self.metrics_, 'metrics') and self.metrics_.metrics:
+                    mse_scores.append(mse)
+                    psnr_scores.append(psnr)
+                    ssim_scores.append(ssim)
+                if hasattr(self.metrics_, 'lpips') and self.metrics_.lpips:
+                    lpips_scores.append(lpips_score)
 
         val_loss = torch.tensor(val_losses).mean().item()
         if self.use_ddp:

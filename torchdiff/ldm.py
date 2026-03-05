@@ -230,6 +230,7 @@ class TrainLDM(nn.Module):
                 raise ValueError(f"Failed to load default tokenizer: {e}. Please provide a tokenizer.")
         else:
             self.tokenizer = tokenizer
+        self._device_type = self.device.type if hasattr(self.device, 'type') else ('cuda' if 'cuda' in str(self.device) else 'cpu')
 
     def _setup_ddp(self) -> None:
         """Setup Distributed Data Parallel training configuration.
@@ -243,15 +244,17 @@ class TrainLDM(nn.Module):
             raise ValueError("DDP enabled but LOCAL_RANK environment variable not set")
         if "WORLD_SIZE" not in os.environ:
             raise ValueError("DDP enabled but WORLD_SIZE environment variable not set")
-        if not torch.cuda.is_available():
-            raise RuntimeError("DDP requires CUDA but CUDA is not available")
         if not torch.distributed.is_initialized():
-            init_process_group(backend="nccl")
+            backend = "nccl" if torch.cuda.is_available() else "gloo"
+            init_process_group(backend=backend)
         self.ddp_rank = int(os.environ["RANK"])  # global rank across all nodes
         self.ddp_local_rank = int(os.environ["LOCAL_RANK"])  # local rank on current node
         self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # total number of processes
-        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
-        torch.cuda.set_device(self.device)
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+            torch.cuda.set_device(self.device)
+        else:
+            self.device = torch.device("cpu")
         self.master_process = self.ddp_rank == 0
         if self.master_process:
             print(f"DDP initialized with world_size={self.ddp_world_size}")
@@ -359,17 +362,12 @@ class TrainLDM(nn.Module):
     def _wrap_models_for_ddp(self) -> None:
         """Wrap models with DistributedDataParallel for multi-GPU training."""
         if self.use_ddp:
-            self.diff_net = DDP(
-                self.diff_net,
-                device_ids=[self.ddp_local_rank],
-                find_unused_parameters=True
-            )
+            ddp_kwargs = dict(find_unused_parameters=False)
+            if self._device_type == 'cuda':
+                ddp_kwargs["device_ids"] = [self.ddp_local_rank]
+            self.diff_net = DDP(self.diff_net, **ddp_kwargs)
             if self.cond_net is not None:
-                self.cond_net = DDP(
-                    self.cond_net,
-                    device_ids=[self.ddp_local_rank],
-                    find_unused_parameters=True
-                )
+                self.cond_net = DDP(self.cond_net, **ddp_kwargs)
 
     def forward(self) -> Dict:
         """Trains the noise/score/v/x0 predictor and conditional model with mixed precision and evaluation metrics.
@@ -398,7 +396,10 @@ class TrainLDM(nn.Module):
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
         self._wrap_models_for_ddp()
-        scaler = torch.GradScaler()
+        use_amp = self._device_type == 'cuda'
+        scaler = torch.amp.GradScaler(enabled=use_amp)
+        if use_amp:
+            torch.backends.cudnn.benchmark = True
         wait = 0
         diff_steps = 0
         if self.diff_type == "ddpm":
@@ -418,7 +419,7 @@ class TrainLDM(nn.Module):
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
-                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                with torch.autocast(device_type=self._device_type, enabled=use_amp):
                     noise = torch.randn_like(x)
                     if self.diff_type == 'sde':
                         t = self.sample_time(x.shape[0], self.time_eps)
@@ -436,8 +437,8 @@ class TrainLDM(nn.Module):
                         torch.nn.utils.clip_grad_norm_(self.cond_net.parameters(), max_norm=1.0)
                     scaler.step(self.optim)
                     scaler.update()
-                    self.optim.zero_grad()
-                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                    self.optim.zero_grad(set_to_none=True)
+                    if self.global_step < self.warmup_steps:
                         self.warmup_lr_scheduler.step()
                     self.global_step += 1
 
@@ -807,7 +808,7 @@ class SampleLDM(nn.Module):
             raise ValueError("Conditions provided but no conditional model specified")
         if conds is None and self.cond_net is not None:
             raise ValueError("Conditions must be provided for conditional model")
-        init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1]).to(self.device)
+        init_samps = torch.randn(self.batch_size, self.in_channels, self.img_size[0], self.img_size[1], device=self.device)
         self.diff_net.eval()
         self.comp_net.eval()
         if self.cond_net:
@@ -1660,6 +1661,7 @@ class TrainAE(nn.Module):
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
         self.val_freq = val_freq
         self.log_freq = log_freq
+        self._device_type = self.device.type if hasattr(self.device, 'type') else ('cuda' if 'cuda' in str(self.device) else 'cpu')
 
     def _setup_ddp(self) -> None:
         """Setup Distributed Data Parallel training configuration.
@@ -1673,15 +1675,17 @@ class TrainAE(nn.Module):
             raise ValueError("DDP enabled but LOCAL_RANK environment variable not set")
         if "WORLD_SIZE" not in os.environ:
             raise ValueError("DDP enabled but WORLD_SIZE environment variable not set")
-        if not torch.cuda.is_available():
-            raise RuntimeError("DDP requires CUDA but CUDA is not available")
         if not torch.distributed.is_initialized():
-            init_process_group(backend="nccl")
+            backend = "nccl" if torch.cuda.is_available() else "gloo"
+            init_process_group(backend=backend)
         self.ddp_rank = int(os.environ["RANK"])  # global rank across all nodes
         self.ddp_local_rank = int(os.environ["LOCAL_RANK"])  # local rank on current node
         self.ddp_world_size = int(os.environ["WORLD_SIZE"])  # total number of processes
-        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
-        torch.cuda.set_device(self.device)
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+            torch.cuda.set_device(self.device)
+        else:
+            self.device = torch.device("cpu")
         self.master_process = self.ddp_rank == 0
         if self.master_process:
             print(f"DDP initialized with world_size={self.ddp_world_size}")
@@ -1766,11 +1770,10 @@ class TrainAE(nn.Module):
     def _wrap_models_for_ddp(self) -> None:
         """Wrap models with DistributedDataParallel for multi-GPU training"""
         if self.use_ddp:
-            self.model = DDP(
-                self.model,
-                device_ids=[self.ddp_local_rank],
-                find_unused_parameters=True
-            )
+            ddp_kwargs = dict(find_unused_parameters=False)
+            if self._device_type == 'cuda':
+                ddp_kwargs["device_ids"] = [self.ddp_local_rank]
+            self.model = DDP(self.model, **ddp_kwargs)
 
     def forward(self) -> Dict:
         """Trains the AutoencoderLDM model with mixed precision and evaluation metrics.
@@ -1790,21 +1793,25 @@ class TrainAE(nn.Module):
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
         self._wrap_models_for_ddp()
-        scaler = torch.GradScaler()
+        use_amp = self._device_type == 'cuda'
+        scaler = torch.amp.GradScaler(enabled=use_amp)
+        if use_amp:
+            torch.backends.cudnn.benchmark = True
         wait = 0
+        raw_model = self.model.module if self.use_ddp else self.model
         for epoch in range(self.max_epochs):
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
             if self.use_ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
                 self.train_loader.sampler.set_epoch(epoch)
-            if self.model.use_vq:
+            if raw_model.use_vq:
                 beta = 1.0
             else:
-                beta = min(1.0, epoch / self.kl_warmup_epochs) * self.model.beta
-                self.model.current_beta = beta
+                beta = min(1.0, epoch / self.kl_warmup_epochs) * raw_model.beta
+                raw_model.current_beta = beta
             train_losses_epoch = []
             for step, (x, y) in enumerate(pbar):
                 x = x.to(self.device)
-                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                with torch.autocast(device_type=self._device_type, enabled=use_amp):
                     x_hat, loss, reg_loss, z = self.model(x)
                     loss = loss / self.grad_acc
 
@@ -1814,8 +1821,8 @@ class TrainAE(nn.Module):
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     scaler.step(self.optim)
                     scaler.update()
-                    self.optim.zero_grad()
-                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                    self.optim.zero_grad(set_to_none=True)
+                    if self.global_step < self.warmup_steps:
                         self.warmup_lr_scheduler.step()
                     self.global_step += 1
 

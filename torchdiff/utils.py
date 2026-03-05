@@ -222,10 +222,11 @@ class EncoderLayer(torch.nn.Module):
             batch_first=True
         )
         self.output_projection = nn.Linear(input_dimension, output_dimension) if input_dimension != output_dimension else nn.Identity()
-        self.norm1 = self.norm1 = nn.LayerNorm(normalized_shape=input_dimension, eps=epsilon)
+        self.residual_projection = nn.Linear(input_dimension, output_dimension, bias=False) if input_dimension != output_dimension else nn.Identity()
+        self.norm1 = nn.LayerNorm(normalized_shape=output_dimension, eps=epsilon)
         self.dropout1 = nn.Dropout(dropout_rate)
         self.feedforward = FeedForward(
-            embedding_dimension=input_dimension,
+            embedding_dimension=output_dimension,
             scaling_value=scaling_value,
             dropout_rate=dropout_rate
         )
@@ -253,9 +254,9 @@ class EncoderLayer(torch.nn.Module):
         - Residual connections and normalization are applied after attention and
           feedforward layers.
         """
-        attn_output, _ = self.attention(x, key_padding_mask=attention_mask)
+        attn_output, _ = self.attention(x, x, x, key_padding_mask=attention_mask)
         attn_output = self.output_projection(attn_output)
-        x = self.norm1(x + self.dropout1(attn_output))
+        x = self.norm1(self.residual_projection(x) + self.dropout1(attn_output))
         ff_output = self.feedforward(x)
         x = self.norm2(x + self.dropout2(ff_output))
         return x
@@ -515,7 +516,8 @@ class Embedding(nn.Module):
         )
         pos_enc = torch.zeros((1, seq_len, self.embedding_dimension), dtype=torch.float32, device=device)
         pos_enc[:, :, 0::2] = torch.sin(position * div_term)
-        pos_enc[:, :, 1::2] = torch.cos(position * div_term[:, :-1] if self.embedding_dimension % 2 else div_term)
+        cos_div_term = div_term[:-1] if self.embedding_dimension % 2 else div_term
+        pos_enc[:, :, 1::2] = torch.cos(position * cos_div_term)
         return pos_enc
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
@@ -819,12 +821,13 @@ class ResBlock(nn.Module):
             Output tensor after residual layers (and optional attention).
         """
         h = x
+        t_emb_activated = F.silu(t_emb)
         for i, layer in enumerate(self.res_layers):
             res = h
             h = layer['norm1'](h)
             h = F.silu(h)
             h = layer['conv1'](h)
-            h = h + layer['time_emb'](F.silu(t_emb))[:, :, None, None]
+            h = h + layer['time_emb'](t_emb_activated)[:, :, None, None]
             h = layer['norm2'](h)
             h = F.silu(h)
             h = layer['dropout'](h)
@@ -982,7 +985,7 @@ def snr_capped_loss(pred_noise: torch.Tensor, target_noise: torch.Tensor, varian
         Scalar tensor representing the SNR-weighted mean squared error.
     """
     snr = (1 - variance) / variance.clamp(min=1e-8)
-    weight = torch.minimum(snr, torch.tensor(gamma, device=snr.device))
+    weight = snr.clamp(max=gamma)
     while weight.dim() < target_noise.dim():
         weight = weight.unsqueeze(-1)
     return ((pred_noise - target_noise) ** 2 * weight).mean()

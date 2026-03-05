@@ -35,12 +35,11 @@ autodoc_mock_imports = [
     "torchmetrics"
 ]
 
-# Add more verbose autodoc settings
+# Autodoc settings — only document members DEFINED in each module
 autodoc_default_options = {
     'members': True,
     'undoc-members': True,
     'show-inheritance': True,
-    'imported-members': True,
 }
 
 # Show more warnings

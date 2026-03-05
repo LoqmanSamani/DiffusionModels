@@ -74,6 +74,16 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/build/
+
+# Training checkpoints / outputs
+ddim_train/
+ddpm_train/
+sde_train/
+vae_model/
+unclip_upsampler/
+*.pth
+!examples/**/*.pth
 
 # PyBuilder
 .pybuilder/

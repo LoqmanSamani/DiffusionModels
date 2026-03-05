@@ -252,13 +252,22 @@ class ReverseDDPM(nn.Module):
         # posterior mean: μ_θ(x_t, t) = coef1 * x_0 + coef2 * x_t
         posterior_mean = coef1 * pred_x0 + coef2 * xt
         # variance
-        variance = self.get_variance(t, pred_var)
-        variance = self.vs.get_index(variance, xt.shape)
+        if self.var_type == "fixed_small":
+            # use precomputed sqrt for fixed_small (most common case)
+            sqrt_var = self.vs.sqrt_posterior_variance[t]
+            sqrt_var = self.vs.get_index(sqrt_var, xt.shape)
+        elif self.var_type == "fixed_large":
+            sqrt_var = self.vs.sqrt_betas[t]
+            sqrt_var = self.vs.get_index(sqrt_var, xt.shape)
+        else:
+            variance = self.get_variance(t, pred_var)
+            variance = self.vs.get_index(variance, xt.shape)
+            sqrt_var = torch.sqrt(variance)
         # sample noise (no noise for t=0)
         noise = torch.randn_like(xt)
-        mask = (t != 0).float().view(-1, *([1] * (len(xt.shape) - 1)))
+        nonzero_mask = (t != 0).float().view(-1, *([1] * (len(xt.shape) - 1)))
         # sample x_{t-1} ~ p_θ(x_{t-1} | x_t)
-        x_prev = posterior_mean + mask * torch.sqrt(variance) * noise
+        x_prev = posterior_mean + nonzero_mask * sqrt_var * noise
         return x_prev, pred_x0
 
 
@@ -362,6 +371,10 @@ class SchedulerDDPM(nn.Module):
         posterior_mean_coef1 = betas * torch.sqrt(alphas_cumprod_prev) / (1.0 - alphas_cumprod)
         posterior_mean_coef2 = (1.0 - alphas_cumprod_prev) * torch.sqrt(alphas) / (1.0 - alphas_cumprod)
 
+        # precompute square roots for reverse step efficiency
+        sqrt_posterior_variance = torch.sqrt(torch.clamp(posterior_variance, min=1e-20))
+        sqrt_betas = torch.sqrt(betas)
+
         # register as buffers
         self.register_buffer('betas', betas)
         self.register_buffer('alphas', alphas)
@@ -373,6 +386,8 @@ class SchedulerDDPM(nn.Module):
         self.register_buffer('posterior_log_variance', posterior_log_variance)
         self.register_buffer('posterior_mean_coef1', posterior_mean_coef1)
         self.register_buffer('posterior_mean_coef2', posterior_mean_coef2)
+        self.register_buffer('sqrt_posterior_variance', sqrt_posterior_variance)
+        self.register_buffer('sqrt_betas', sqrt_betas)
 
     def get_index(self, t: torch.Tensor, x_shape: torch.Size) -> torch.Tensor:
         """
@@ -386,8 +401,7 @@ class SchedulerDDPM(nn.Module):
             Tensor reshaped to (batch, 1, ..., 1) for broadcasting.
         """
         batch_size = t.shape[0]
-        out = t.to(t.device)
-        return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
+        return t.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
 
 
 ###==================================================================================================================###
@@ -517,6 +531,7 @@ class TrainDDPM(nn.Module):
             factor=0.5
         )
         self.warmup_lr_scheduler = self.warmup_scheduler(self.optim, warmup_steps)
+        self._device_type = self.device.type if hasattr(self.device, 'type') else ('cuda' if 'cuda' in str(self.device) else 'cpu')
         if tokenizer is None:
             try:
                 self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -662,17 +677,12 @@ class TrainDDPM(nn.Module):
     def _wrap_models_for_ddp(self) -> None:
         """Wrap models with DistributedDataParallel for multi-GPU training."""
         if self.use_ddp:
-            self.diff_net = DDP(
-                self.diff_net,
-                device_ids=[self.ddp_local_rank],
-                find_unused_parameters=True
-            )
+            ddp_kwargs = dict(find_unused_parameters=False)
+            if self._device_type == 'cuda':
+                ddp_kwargs['device_ids'] = [self.ddp_local_rank]
+            self.diff_net = DDP(self.diff_net, **ddp_kwargs)
             if self.cond_net is not None:
-                self.cond_net = DDP(
-                    self.cond_net,
-                    device_ids=[self.ddp_local_rank],
-                    find_unused_parameters=True
-                )
+                self.cond_net = DDP(self.cond_net, **ddp_kwargs)
 
     def forward(self) -> Dict:
         """Trains the DDPM model to predict noise added by the forward diffusion process.
@@ -699,7 +709,10 @@ class TrainDDPM(nn.Module):
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
         self._wrap_models_for_ddp()
-        scaler = torch.GradScaler()
+        use_amp = self._device_type == 'cuda'
+        scaler = torch.amp.GradScaler(self._device_type, enabled=use_amp)
+        if use_amp:
+            torch.backends.cudnn.benchmark = True
         wait = 0
         for epoch in range(self.max_epochs):
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)
@@ -712,7 +725,7 @@ class TrainDDPM(nn.Module):
                     y_encoded = self._process_conditional_input(y)
                 else:
                     y_encoded = None
-                with torch.autocast(device_type='cuda' if self.device == 'cuda' else 'cpu'):
+                with torch.autocast(device_type=self._device_type, enabled=use_amp):
                     noise = torch.randn_like(x)
                     t = torch.randint(0, self.fwd_ddpm.vs.time_steps, (x.shape[0],), device=x.device)
                     xt, target = self.fwd_ddpm(x, t, noise)
@@ -727,8 +740,8 @@ class TrainDDPM(nn.Module):
                         torch.nn.utils.clip_grad_norm_(self.cond_net.parameters(), max_norm=1.0)
                     scaler.step(self.optim)
                     scaler.update()
-                    self.optim.zero_grad()
-                    if self.global_step > 0 and self.global_step < self.warmup_steps:
+                    self.optim.zero_grad(set_to_none=True)
+                    if self.global_step < self.warmup_steps:
                         self.warmup_lr_scheduler.step()
                     self.global_step += 1
 
@@ -1065,13 +1078,13 @@ class SampleDDPM(nn.Module):
             dynamic_ncols=True,
             leave=True,
         )
-        if self.cond_model is not None and conds is not None:
-            input_ids, attention_masks = self.tokenize(conds)
-            key_padding_mask = (attention_masks == 0)
-            y = self.cond_model(input_ids, key_padding_mask)
-        else:
-            y = None
         with torch.no_grad():
+            if self.cond_model is not None and conds is not None:
+                input_ids, attention_masks = self.tokenize(conds)
+                key_padding_mask = (attention_masks == 0)
+                y = self.cond_model(input_ids, key_padding_mask)
+            else:
+                y = None
             xt = init_samps
             for step in iterator:
                 time_steps = torch.full((self.batch_size,), step, device=self.device, dtype=torch.long)
