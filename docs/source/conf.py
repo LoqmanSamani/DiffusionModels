@@ -32,7 +32,7 @@ autodoc_member_order = 'bysource'
 autodoc_mock_imports = [
     "torch", "torchvision", "torchaudio",
     "lpips", "pytorch_fid", "transformers",
-    "torchmetrics"
+    "torchmetrics", "tqdm",
 ]
 
 # Autodoc settings — only document members DEFINED in each module
