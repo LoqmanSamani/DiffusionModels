@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-red?style=plastic)](https://opensource.org/licenses/MIT)
 [![PyTorch](https://img.shields.io/badge/PyTorch-white?style=plastic&logo=pytorch&logoColor=red)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/version-2.6.0-blue?style=plastic)](https://pypi.org/project/torchdiff/)
+[![Version](https://img.shields.io/badge/version-2.7.0-blue?style=plastic)](https://pypi.org/project/torchdiff/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=plastic&logo=python&logoColor=white)](https://www.python.org/)
 [![Downloads](https://pepy.tech/badge/torchdiff)](https://pepy.tech/project/torchdiff)
 [![Stars](https://img.shields.io/github/stars/LoqmanSamani/TorchDiff?style=plastic&color=yellow)](https://github.com/LoqmanSamani/TorchDiff)
@@ -16,6 +16,9 @@
 [![Issues](https://img.shields.io/github/issues/LoqmanSamani/TorchDiff?style=plastic&color=red)](https://github.com/LoqmanSamani/TorchDiff/issues)
 
 </div>
+
+
+
 
 ---
 
