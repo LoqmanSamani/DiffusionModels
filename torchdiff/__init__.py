@@ -1,4 +1,4 @@
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
 from .ddim import ForwardDDIM, ReverseDDIM, SchedulerDDIM, TrainDDIM, SampleDDIM
 from .ddpm import ForwardDDPM, ReverseDDPM, SchedulerDDPM, TrainDDPM, SampleDDPM

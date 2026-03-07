@@ -1,5 +1,5 @@
-SDE -- Score-Based Generative Models via Stochastic Differential Equations
-==========================================================================
+SDE
+===
 
 .. automodule:: torchdiff.sde
    :members:

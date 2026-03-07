@@ -1,5 +1,5 @@
-DDIM -- Denoising Diffusion Implicit Models
-============================================
+DDIM
+====
 
 .. automodule:: torchdiff.ddim
    :members:

@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-red?style=plastic)](https://opensource.org/licenses/MIT)
 [![PyTorch](https://img.shields.io/badge/PyTorch-white?style=plastic&logo=pytorch&logoColor=red)](https://pytorch.org/)
-[![Version](https://img.shields.io/badge/version-2.5.0-blue?style=plastic)](https://pypi.org/project/torchdiff/)
+[![Version](https://img.shields.io/badge/version-2.6.0-blue?style=plastic)](https://pypi.org/project/torchdiff/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?style=plastic&logo=python&logoColor=white)](https://www.python.org/)
 [![Downloads](https://pepy.tech/badge/torchdiff)](https://pepy.tech/project/torchdiff)
 [![Stars](https://img.shields.io/github/stars/LoqmanSamani/TorchDiff?style=plastic&color=yellow)](https://github.com/LoqmanSamani/TorchDiff)
@@ -23,7 +23,7 @@
 
 **TorchDiff** is a PyTorch library for diffusion models, implementing foundational architectures from recent research. The library provides modular components for building, training, and sampling from diffusion-based generative models.
 
-Version 2.5.0 includes five major model families grounded in the diffusion modeling literature. **DDPM** (Ho et al., 2020) and **DDIM** (Song et al., 2021a) establish the core discrete-time framework. **SDE-based diffusion** (Song et al., 2021b) extends this to continuous stochastic processes with variance-exploding and variance-preserving formulations. **LDM** (Rombach et al., 2022) moves diffusion into learned latent spaces via variational autoencoders. **UnCLIP** (Ramesh et al., 2022) combines CLIP embeddings with hierarchical generation for text-to-image synthesis.
+Version 2.6.0 includes five major model families grounded in the diffusion modeling literature. **DDPM** (Ho et al., 2020) and **DDIM** (Song et al., 2021a) establish the core discrete-time framework. **SDE-based diffusion** (Song et al., 2021b) extends this to continuous stochastic processes with variance-exploding and variance-preserving formulations. **LDM** (Rombach et al., 2022) moves diffusion into learned latent spaces via variational autoencoders. **UnCLIP** (Ramesh et al., 2022) combines CLIP embeddings with hierarchical generation for text-to-image synthesis.
 
 <div align="center">
   <img src="https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/imgs/mount.png?raw=true" alt="Diffusion Model Process" width="1000"/>

@@ -11,7 +11,7 @@ try:
     release = version = pkg_version("torchdiff")
 except Exception:
     # Fallback version if package import fails
-    release = version = "2.5.0"
+    release = version = "2.6.0"
 
 extensions = [
     'sphinx.ext.autodoc',

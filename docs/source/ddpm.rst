@@ -1,5 +1,5 @@
-DDPM -- Denoising Diffusion Probabilistic Models
-=================================================
+DDPM
+====
 
 .. automodule:: torchdiff.ddpm
    :members:

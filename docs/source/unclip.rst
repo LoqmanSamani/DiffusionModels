@@ -1,5 +1,5 @@
-UnCLIP -- Hierarchical Text-Conditional Image Generation
-========================================================
+UnCLIP
+======
 
 .. automodule:: torchdiff.unclip
    :members:
