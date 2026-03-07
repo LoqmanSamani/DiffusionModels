@@ -189,6 +189,7 @@ class TrainLDM(nn.Module):
             use_comp: bool = False,
             time_eps: float = 1e-5,
             num_steps: int = 400,
+            use_amp: bool = False,
             *args
     ) -> None:
         super().__init__()
@@ -197,6 +198,7 @@ class TrainLDM(nn.Module):
         self.diff_type = diff_type
         self.use_ddp = use_ddp
         self.grad_acc = grad_acc
+        self.use_amp = use_amp
         if isinstance(device, str):
             self.device = torch.device(device)
         else:
@@ -411,10 +413,8 @@ class TrainLDM(nn.Module):
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
         self._wrap_models_for_ddp()
-        use_amp = self._device_type == 'cuda'
+        use_amp = self.use_amp and self._device_type == 'cuda'
         scaler = torch.amp.GradScaler(enabled=use_amp)
-        if use_amp:
-            torch.backends.cudnn.benchmark = True
         wait = 0
         diff_steps = 0
         if self.diff_type == "ddpm":
@@ -1639,11 +1639,13 @@ class TrainAE(nn.Module):
             grad_acc: int = 1,
             log_freq: int = 1,
             use_comp: bool = False,
+            use_amp: bool = False,
             *args
     ) -> None:
         super().__init__()
         self.use_ddp = use_ddp
         self.grad_acc = grad_acc
+        self.use_amp = use_amp
         if isinstance(device, str):
             self.device = torch.device(device)
         else:
@@ -1808,10 +1810,8 @@ class TrainAE(nn.Module):
                 if self.master_process:
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
         self._wrap_models_for_ddp()
-        use_amp = self._device_type == 'cuda'
+        use_amp = self.use_amp and self._device_type == 'cuda'
         scaler = torch.amp.GradScaler(enabled=use_amp)
-        if use_amp:
-            torch.backends.cudnn.benchmark = True
         wait = 0
         raw_model = self.model.module if self.use_ddp else self.model
         for epoch in range(self.max_epochs):

@@ -471,6 +471,9 @@ class TrainDDPM(nn.Module):
         Number of epochs before printing loss.
     use_comp : bool, optional
         whether the model is internally compiled using torch.compile (default: false)
+    use_amp : bool, optional
+        Whether to use automatic mixed precision (AMP) for training (default: False).
+        Enable only on GPUs with good fp16 support (e.g., Ampere or newer).
     """
     def __init__(
             self,
@@ -497,11 +500,13 @@ class TrainDDPM(nn.Module):
             grad_acc: int = 1,
             log_freq: int = 1,
             use_comp: bool = False,
+            use_amp: bool = False,
             *args
     ) -> None:
         super().__init__()
         self.use_ddp = use_ddp
         self.grad_acc = grad_acc
+        self.use_amp = use_amp
         if isinstance(device, str):
             self.device = torch.device(device)
         else:
@@ -717,10 +722,8 @@ class TrainDDPM(nn.Module):
                     print(f"Model compilation failed: {e}. Continuing without compilation.")
 
         self._wrap_models_for_ddp()
-        use_amp = self._device_type == 'cuda'
+        use_amp = self.use_amp and self._device_type == 'cuda'
         scaler = torch.amp.GradScaler(self._device_type, enabled=use_amp)
-        if use_amp:
-            torch.backends.cudnn.benchmark = True
         wait = 0
         for epoch in range(self.max_epochs):
             pbar = tqdm(self.train_loader, desc=f"Epoch {epoch + 1}/{self.max_epochs}", disable=not self.master_process)

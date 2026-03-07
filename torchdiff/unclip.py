@@ -1442,7 +1442,7 @@ class TrainUnClipDecoder(nn.Module):
             trans_embed_dim: int = 312,
             norm_clip_embed: bool = True,
             finetune_clip_proj: bool = False, # if text_projection and image_projection model should be finetune
-            use_autocast: bool =  True
+            use_autocast: bool =  False
     ):
         super().__init__()
         # training configuration
@@ -2211,7 +2211,7 @@ class TrainUnCLIPPrior(nn.Module):
             reduce_clip_embed_dim: bool = True,
             trans_embed_dim: int = 319,
             norm_clip_embed: bool = True,
-            use_autocast: bool = True
+            use_autocast: bool = False
     ) -> None:
         super().__init__()
         self.use_ddp = use_ddp
@@ -3339,7 +3339,7 @@ class TrainUpsamplerUnCLIP(nn.Module):
             use_comp: bool = False,
             norm_range: Tuple[float, float] = (-1.0, 1.0),
             norm_out: bool = True,
-            use_autocast: bool = True
+            use_autocast: bool = False
     ) -> None:
         super().__init__()
         # training configuration
