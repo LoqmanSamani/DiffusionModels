@@ -26,7 +26,7 @@
 
 **TorchDiff** is a PyTorch library for diffusion models, implementing foundational architectures from recent research. The library provides modular components for building, training, and sampling from diffusion-based generative models.
 
-Version 2.6.0 includes five major model families grounded in the diffusion modeling literature. **DDPM** (Ho et al., 2020) and **DDIM** (Song et al., 2021a) establish the core discrete-time framework. **SDE-based diffusion** (Song et al., 2021b) extends this to continuous stochastic processes with variance-exploding and variance-preserving formulations. **LDM** (Rombach et al., 2022) moves diffusion into learned latent spaces via variational autoencoders. **UnCLIP** (Ramesh et al., 2022) combines CLIP embeddings with hierarchical generation for text-to-image synthesis.
+Version 2.7.0 includes five major model families grounded in the diffusion modeling literature. **DDPM** (Ho et al., 2020) and **DDIM** (Song et al., 2021a) establish the core discrete-time framework. **SDE-based diffusion** (Song et al., 2021b) extends this to continuous stochastic processes with variance-exploding and variance-preserving formulations. **LDM** (Rombach et al., 2022) moves diffusion into learned latent spaces via variational autoencoders. **UnCLIP** (Ramesh et al., 2022) combines CLIP embeddings with hierarchical generation for text-to-image synthesis.
 
 <div align="center">
   <img src="https://github.com/LoqmanSamani/TorchDiff/blob/systembiology/imgs/mount.png?raw=true" alt="Diffusion Model Process" width="1000"/>
