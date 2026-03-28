@@ -14,8 +14,7 @@
 [![Stars](https://img.shields.io/github/stars/LoqmanSamani/TorchDiff?style=plastic&color=yellow)](https://github.com/LoqmanSamani/TorchDiff)
 [![Forks](https://img.shields.io/github/forks/LoqmanSamani/TorchDiff?style=plastic&color=orange)](https://github.com/LoqmanSamani/TorchDiff)
 [![Issues](https://img.shields.io/github/issues/LoqmanSamani/TorchDiff?style=plastic&color=red)](https://github.com/LoqmanSamani/TorchDiff/issues)
-
-<a href="https://loqmansamani.github.io/CppNet/"><img src="https://img.shields.io/badge/Docs-Website-58a6ff.svg" alt="Website"/></a>
+<a href="https://loqmansamani.github.io/torchdiff/"><img src="https://img.shields.io/badge/Web-TorchDiff-58a6ff.svg" alt="Website"/></a>
 
 </div>
 
